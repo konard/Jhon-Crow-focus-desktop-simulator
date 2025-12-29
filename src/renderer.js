@@ -80,6 +80,15 @@ let timerState = {
 let draggedPresetType = null;
 let dragPreviewElement = null;
 
+// Examine mode state (bringing object closer to camera)
+let examineState = {
+  active: false,
+  object: null,
+  originalPosition: null,
+  originalRotation: null,
+  originalScale: null
+};
+
 // ============================================================================
 // INITIALIZATION
 // ============================================================================
@@ -1130,6 +1139,18 @@ function addObjectToDesk(type, options = {}) {
   object.position.x = options.x !== undefined ? options.x : (Math.random() - 0.5) * deskHalfWidth * 2;
   object.position.z = options.z !== undefined ? options.z : (Math.random() - 0.5) * deskHalfDepth * 2;
 
+  // Apply rotation if specified
+  if (options.rotationY !== undefined) {
+    object.rotation.y = options.rotationY;
+    object.userData.rotationY = options.rotationY;
+  }
+
+  // Apply scale if specified
+  if (options.scale !== undefined && options.scale > 0) {
+    object.scale.set(options.scale, options.scale, options.scale);
+    object.userData.scale = options.scale;
+  }
+
   deskObjects.push(object);
   scene.add(object);
 
@@ -1163,8 +1184,11 @@ function updateObjectColor(object, colorType, colorValue) {
   // Store position and state
   const position = { x: object.position.x, y: object.position.y, z: object.position.z };
   const rotation = { x: object.rotation.x, y: object.rotation.y, z: object.rotation.z };
+  const scale = { x: object.scale.x, y: object.scale.y, z: object.scale.z };
   const id = object.userData.id;
   const originalY = object.userData.originalY;
+  const savedRotationY = object.userData.rotationY;
+  const savedScale = object.userData.scale;
 
   // Create new object with updated colors
   const newObject = creator({
@@ -1172,13 +1196,16 @@ function updateObjectColor(object, colorType, colorValue) {
     accentColor: object.userData.accentColor
   });
 
-  // Restore position, rotation and other properties
+  // Restore position, rotation, scale and other properties
   newObject.position.set(position.x, position.y, position.z);
   newObject.rotation.set(rotation.x, rotation.y, rotation.z);
+  newObject.scale.set(scale.x, scale.y, scale.z);
   newObject.userData.id = id;
   newObject.userData.originalY = originalY;
   newObject.userData.targetY = position.y;
   newObject.userData.isLifted = false;
+  newObject.userData.rotationY = savedRotationY;
+  newObject.userData.scale = savedScale;
 
   // Replace in scene and array
   const index = deskObjects.indexOf(object);
@@ -1246,6 +1273,7 @@ function setupEventListeners() {
   container.addEventListener('mouseup', onMouseUp, false);
   container.addEventListener('contextmenu', onRightClick, false);
   container.addEventListener('dblclick', onDoubleClick, false);
+  container.addEventListener('wheel', onMouseWheel, { passive: false });
 
   // Window resize
   window.addEventListener('resize', onWindowResize, false);
@@ -1484,6 +1512,70 @@ function onMouseUp(event) {
   }
 }
 
+function onMouseWheel(event) {
+  updateMousePosition(event);
+
+  // Check if hovering over an object
+  raycaster.setFromCamera(mouse, camera);
+  const intersects = raycaster.intersectObjects(deskObjects, true);
+
+  if (intersects.length > 0) {
+    // Find the root object
+    let object = intersects[0].object;
+    while (object.parent && !deskObjects.includes(object)) {
+      object = object.parent;
+    }
+
+    if (deskObjects.includes(object)) {
+      event.preventDefault();
+
+      // Check if Shift key is held for scaling, otherwise rotate
+      if (event.shiftKey) {
+        // Scale object (preserving proportions)
+        const scaleDelta = event.deltaY > 0 ? 0.95 : 1.05;
+        const minScale = 0.3;
+        const maxScale = 3.0;
+
+        const newScale = object.scale.x * scaleDelta;
+        if (newScale >= minScale && newScale <= maxScale) {
+          object.scale.set(newScale, newScale, newScale);
+          object.userData.scale = newScale;
+          saveState();
+        }
+      } else {
+        // Rotate object around Y axis (perpendicular to desk)
+        const rotationDelta = event.deltaY > 0 ? 0.15 : -0.15;
+        object.rotation.y += rotationDelta;
+        object.userData.rotationY = object.rotation.y;
+        saveState();
+      }
+    }
+  } else {
+    // If not hovering over an object, adjust camera distance
+    event.preventDefault();
+    const zoomDelta = event.deltaY > 0 ? 0.3 : -0.3;
+
+    // Calculate new camera position (move along the view direction)
+    const direction = new THREE.Vector3();
+    camera.getWorldDirection(direction);
+
+    const newX = camera.position.x - direction.x * zoomDelta;
+    const newY = camera.position.y - direction.y * zoomDelta;
+    const newZ = camera.position.z - direction.z * zoomDelta;
+
+    // Limit camera distance
+    const minDistance = 3;
+    const maxDistance = 15;
+    const lookAt = new THREE.Vector3(CONFIG.camera.lookAt.x, CONFIG.camera.lookAt.y, CONFIG.camera.lookAt.z);
+    const newPos = new THREE.Vector3(newX, newY, newZ);
+    const distance = newPos.distanceTo(lookAt);
+
+    if (distance >= minDistance && distance <= maxDistance) {
+      camera.position.set(newX, newY, newZ);
+    }
+  }
+}
+
 function onRightClick(event) {
   event.preventDefault();
 
@@ -1527,6 +1619,12 @@ function onRightClick(event) {
 function onDoubleClick(event) {
   updateMousePosition(event);
 
+  // If already in examine mode, exit it
+  if (examineState.active) {
+    exitExamineMode();
+    return;
+  }
+
   raycaster.setFromCamera(mouse, camera);
   const intersects = raycaster.intersectObjects(deskObjects, true);
 
@@ -1536,10 +1634,80 @@ function onDoubleClick(event) {
       object = object.parent;
     }
 
-    if (deskObjects.includes(object) && object.userData.interactive) {
-      openInteractionModal(object);
+    if (deskObjects.includes(object)) {
+      // Enter examine mode - bring object closer to camera
+      enterExamineMode(object);
+
+      // Also open interaction modal if object is interactive
+      if (object.userData.interactive) {
+        openInteractionModal(object);
+      }
     }
   }
+}
+
+function enterExamineMode(object) {
+  // Store original state
+  examineState.active = true;
+  examineState.object = object;
+  examineState.originalPosition = object.position.clone();
+  examineState.originalRotation = object.rotation.clone();
+  examineState.originalScale = object.scale.clone();
+
+  // Calculate position close to camera
+  const examineDistance = 2.5;
+  const direction = new THREE.Vector3();
+  camera.getWorldDirection(direction);
+
+  // Target position in front of the camera
+  const targetPosition = new THREE.Vector3(
+    camera.position.x + direction.x * examineDistance,
+    camera.position.y + direction.y * examineDistance + 0.3, // Slight offset up
+    camera.position.z + direction.z * examineDistance
+  );
+
+  // Animate object to examine position
+  object.userData.examineTarget = targetPosition;
+  object.userData.isExamining = true;
+
+  // Scale up slightly for better view
+  const examineScale = Math.max(object.scale.x * 1.5, 1.2);
+  object.userData.examineScaleTarget = examineScale;
+
+  // Add visual hint that object is being examined
+  document.body.style.cursor = 'zoom-out';
+}
+
+function exitExamineMode() {
+  if (!examineState.active || !examineState.object) return;
+
+  const object = examineState.object;
+
+  // Animate back to original position
+  object.userData.examineTarget = examineState.originalPosition;
+  object.userData.examineScaleTarget = examineState.originalScale.x;
+  object.userData.isExamining = false;
+  object.userData.isReturning = true;
+
+  // Close interaction modal if open
+  closeInteractionModal();
+
+  // Reset cursor
+  document.body.style.cursor = 'default';
+
+  // Clear examine state after animation
+  setTimeout(() => {
+    if (object.userData.isReturning) {
+      object.position.copy(examineState.originalPosition);
+      object.scale.copy(examineState.originalScale);
+      object.userData.isReturning = false;
+    }
+    examineState.active = false;
+    examineState.object = null;
+    examineState.originalPosition = null;
+    examineState.originalRotation = null;
+    examineState.originalScale = null;
+  }, 500);
 }
 
 // ============================================================================
@@ -1920,6 +2088,8 @@ async function saveState() {
       type: obj.userData.type,
       x: obj.position.x,
       z: obj.position.z,
+      rotationY: obj.userData.rotationY || obj.rotation.y,
+      scale: obj.userData.scale || obj.scale.x,
       mainColor: obj.userData.mainColor,
       accentColor: obj.userData.accentColor
     }))
@@ -1941,6 +2111,8 @@ async function loadState() {
         addObjectToDesk(objData.type, {
           x: objData.x,
           z: objData.z,
+          rotationY: objData.rotationY,
+          scale: objData.scale,
           mainColor: objData.mainColor,
           accentColor: objData.accentColor
         });
@@ -1968,7 +2140,44 @@ function animate() {
 
   // Update object positions (lift/drop animation)
   deskObjects.forEach(obj => {
-    if (obj.userData.targetY !== undefined) {
+    // Handle examine mode animation
+    if (obj.userData.examineTarget) {
+      const targetPos = obj.userData.examineTarget;
+      const speed = 0.12;
+
+      obj.position.x += (targetPos.x - obj.position.x) * speed;
+      obj.position.y += (targetPos.y - obj.position.y) * speed;
+      obj.position.z += (targetPos.z - obj.position.z) * speed;
+
+      // Scale animation for examine mode
+      if (obj.userData.examineScaleTarget !== undefined) {
+        const scaleDiff = obj.userData.examineScaleTarget - obj.scale.x;
+        if (Math.abs(scaleDiff) > 0.001) {
+          const newScale = obj.scale.x + scaleDiff * speed;
+          obj.scale.set(newScale, newScale, newScale);
+        }
+      }
+
+      // Slow rotation while examining
+      if (obj.userData.isExamining) {
+        obj.rotation.y += 0.005;
+      }
+
+      // Check if animation is complete
+      const dist = new THREE.Vector3(
+        targetPos.x - obj.position.x,
+        targetPos.y - obj.position.y,
+        targetPos.z - obj.position.z
+      ).length();
+
+      if (dist < 0.01 && !obj.userData.isExamining && obj.userData.isReturning) {
+        obj.userData.examineTarget = null;
+        obj.userData.examineScaleTarget = undefined;
+        obj.userData.isReturning = false;
+      }
+    }
+    // Normal lift/drop animation (only when not examining)
+    else if (obj.userData.targetY !== undefined && !obj.userData.isExamining) {
       const diff = obj.userData.targetY - obj.position.y;
       if (Math.abs(diff) > 0.001) {
         const speed = obj.userData.isLifted ? CONFIG.physics.liftSpeed : CONFIG.physics.dropSpeed;
