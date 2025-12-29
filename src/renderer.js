@@ -140,29 +140,33 @@ const physicsState = {
   angularVelocities: new Map(),  // Store angular velocity for each object (y-axis spin)
   tiltState: new Map(),          // Store tilt state for each object (x, z tilt angles)
   tiltVelocities: new Map(),     // Store tilt velocity for each object
+  lastDragPosition: null,        // Track drag position for velocity calculation
+  lastDragTime: 0,               // Track time for velocity calculation
+  dragVelocity: { x: 0, z: 0 },  // Velocity of dragged object
   friction: 0.85,
   bounceFactor: 0.4,
-  pushForce: 0.08,
-  tiltForce: 0.15,               // How easily objects tip
-  tiltRecovery: 0.05,            // How quickly objects recover from tilt
+  pushForce: 0.04,               // Reduced base push force (was 0.08)
+  minPushSpeed: 0.02,            // Minimum drag speed needed to apply full push force
+  tiltForce: 0.08,               // Reduced tilt force (was 0.15) - objects harder to tip
+  tiltRecovery: 0.08,            // Increased recovery (was 0.05) - objects return upright faster
   maxTilt: Math.PI / 3,          // Maximum tilt before falling over (~60 degrees)
   tipOverThreshold: Math.PI / 4  // Angle at which object tips over completely (~45 degrees)
 };
 
 // Object weight/stability configurations (affects how easily they tip)
 const OBJECT_PHYSICS = {
-  'clock': { weight: 0.5, stability: 0.4, height: 0.6 },      // Light, tall, easy to tip
-  'lamp': { weight: 0.8, stability: 0.6, height: 0.9 },       // Medium weight, tall
-  'plant': { weight: 1.2, stability: 0.8, height: 0.5 },      // Heavy pot, stable
-  'coffee': { weight: 0.4, stability: 0.5, height: 0.3 },     // Light mug
-  'laptop': { weight: 1.5, stability: 0.9, height: 0.3 },     // Heavy, flat, very stable
+  'clock': { weight: 0.5, stability: 0.5, height: 0.6 },      // Light, tall, somewhat tippy
+  'lamp': { weight: 1.2, stability: 0.85, height: 0.9 },      // Heavy base, very stable (was 0.8/0.6)
+  'plant': { weight: 1.4, stability: 0.9, height: 0.5 },      // Heavy pot, very stable
+  'coffee': { weight: 0.4, stability: 0.6, height: 0.3 },     // Light mug, medium stability
+  'laptop': { weight: 1.5, stability: 0.95, height: 0.3 },    // Heavy, flat, very stable
   'notebook': { weight: 0.3, stability: 0.95, height: 0.1 },  // Light, flat, very stable
-  'pen-holder': { weight: 0.6, stability: 0.5, height: 0.4 }, // Medium, can tip
-  'books': { weight: 0.8, stability: 0.85, height: 0.15 },    // Book, flat, stable
-  'photo-frame': { weight: 0.3, stability: 0.3, height: 0.5 },// Light, tall, tips easily
-  'globe': { weight: 1.0, stability: 0.6, height: 0.5 },      // Medium, balanced
-  'trophy': { weight: 0.9, stability: 0.5, height: 0.4 },     // Medium, can tip
-  'hourglass': { weight: 0.5, stability: 0.4, height: 0.35 }  // Light, tips easily
+  'pen-holder': { weight: 0.6, stability: 0.6, height: 0.4 }, // Medium, somewhat stable
+  'books': { weight: 0.8, stability: 0.9, height: 0.15 },     // Book, flat, stable
+  'photo-frame': { weight: 0.3, stability: 0.35, height: 0.5 },// Light, tall, tips easier
+  'globe': { weight: 1.0, stability: 0.7, height: 0.5 },      // Medium, balanced
+  'trophy': { weight: 0.9, stability: 0.6, height: 0.4 },     // Medium, somewhat stable
+  'hourglass': { weight: 0.5, stability: 0.45, height: 0.35 } // Light, can tip
 };
 
 // ============================================================================
@@ -618,45 +622,80 @@ function createLamp(options = {}) {
     accentColor: options.accentColor || '#fbbf24'
   };
 
-  // Base - matte material (no metalness/glare)
-  const baseGeometry = new THREE.CylinderGeometry(0.3, 0.35, 0.08, 32);
   const baseMaterial = new THREE.MeshStandardMaterial({
     color: new THREE.Color(group.userData.mainColor),
     roughness: 0.9,   // Very rough = no glare
     metalness: 0.0    // No metalness = no reflections
   });
+
+  // Heavy circular base for stability
+  const baseGeometry = new THREE.CylinderGeometry(0.25, 0.28, 0.05, 32);
   const base = new THREE.Mesh(baseGeometry, baseMaterial);
+  base.position.y = 0.025;
   base.castShadow = true;
   group.add(base);
 
-  // Arm - more upright (reduced tilt angle), matte material
-  const armGeometry = new THREE.CylinderGeometry(0.03, 0.03, 0.8, 16);
-  const armMaterial = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(group.userData.mainColor),
-    roughness: 0.9,   // Matte finish
-    metalness: 0.0    // No reflections
-  });
-  const arm = new THREE.Mesh(armGeometry, armMaterial);
-  arm.position.y = 0.4;
-  arm.rotation.z = Math.PI / 24;  // Slightly tilted, mostly upright
-  arm.castShadow = true;
-  group.add(arm);
+  // Vertical post from base
+  const postGeometry = new THREE.CylinderGeometry(0.02, 0.02, 0.15, 16);
+  const post = new THREE.Mesh(postGeometry, baseMaterial);
+  post.position.y = 0.125;
+  post.castShadow = true;
+  group.add(post);
 
-  // Lamp head (cone shade) - pointing downward, matte material
-  const headGeometry = new THREE.ConeGeometry(0.25, 0.3, 32, 1, true);
-  const headMaterial = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(group.userData.mainColor),
-    roughness: 0.9,   // Matte finish
-    metalness: 0.0,   // No reflections
-    side: THREE.DoubleSide
-  });
-  const head = new THREE.Mesh(headGeometry, headMaterial);
-  head.position.set(0.05, 0.82, 0);
-  head.rotation.z = -Math.PI / 12;   // Pointing mostly downward
-  head.castShadow = true;
-  group.add(head);
+  // First angled arm segment (going up and forward at ~60 degrees)
+  const arm1Group = new THREE.Group();
+  arm1Group.position.set(0, 0.2, 0);
+  arm1Group.rotation.z = -Math.PI / 6;  // Tilt forward ~30 degrees
 
-  // Light bulb (emissive sphere)
+  const arm1Geometry = new THREE.CylinderGeometry(0.015, 0.015, 0.45, 16);
+  const arm1 = new THREE.Mesh(arm1Geometry, baseMaterial);
+  arm1.position.y = 0.225;  // Center of arm
+  arm1.castShadow = true;
+  arm1Group.add(arm1);
+
+  // Joint at top of first arm
+  const joint1Geometry = new THREE.SphereGeometry(0.025, 16, 16);
+  const joint1 = new THREE.Mesh(joint1Geometry, baseMaterial);
+  joint1.position.y = 0.45;
+  arm1Group.add(joint1);
+
+  group.add(arm1Group);
+
+  // Second arm segment (angled to bring lamp head forward)
+  const arm2Group = new THREE.Group();
+  // Position at the joint of first arm (accounting for arm1Group rotation)
+  arm2Group.position.set(0.225, 0.59, 0);
+  arm2Group.rotation.z = Math.PI / 4;  // Angle back ~45 degrees
+
+  const arm2Geometry = new THREE.CylinderGeometry(0.015, 0.015, 0.35, 16);
+  const arm2 = new THREE.Mesh(arm2Geometry, baseMaterial);
+  arm2.position.y = 0.175;
+  arm2.castShadow = true;
+  arm2Group.add(arm2);
+
+  group.add(arm2Group);
+
+  // Lamp head (round shade pointing down at ~4-10 degree angle)
+  const headGroup = new THREE.Group();
+  // Position at end of second arm
+  headGroup.position.set(0.35, 0.83, 0);
+  // Rotate to point slightly forward and down (~7 degrees from vertical)
+  headGroup.rotation.z = Math.PI / 25;  // ~7.2 degrees forward tilt
+
+  // Outer shade (dome shape)
+  const shadeGeometry = new THREE.SphereGeometry(0.15, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2);
+  const shade = new THREE.Mesh(shadeGeometry, baseMaterial);
+  shade.rotation.x = Math.PI;  // Flip so open side faces down
+  shade.castShadow = true;
+  headGroup.add(shade);
+
+  // Shade rim
+  const rimGeometry = new THREE.TorusGeometry(0.15, 0.01, 8, 32);
+  const rim = new THREE.Mesh(rimGeometry, baseMaterial);
+  rim.rotation.x = Math.PI / 2;
+  headGroup.add(rim);
+
+  // Light bulb (round, visible from below)
   const bulbGeometry = new THREE.SphereGeometry(0.08, 16, 16);
   const bulbMaterial = new THREE.MeshStandardMaterial({
     color: new THREE.Color(group.userData.accentColor),
@@ -665,50 +704,54 @@ function createLamp(options = {}) {
     roughness: 0.2
   });
   const bulb = new THREE.Mesh(bulbGeometry, bulbMaterial);
-  bulb.position.set(0.05, 0.72, 0);
+  bulb.position.y = -0.05;  // Slightly below shade rim
   bulb.name = 'bulb';
-  group.add(bulb);
+  headGroup.add(bulb);
 
-  // SpotLight for focused beam under the lamp (wider coverage)
+  // SpotLight for focused beam (pointing at ~7 degrees forward, not at base)
+  // Light hits the desk area in front of the lamp, not directly on the base
   const spotLight = new THREE.SpotLight(
     new THREE.Color(group.userData.accentColor),
-    3.0,           // High intensity for visible beam
+    3.5,           // High intensity for visible beam
     6,             // Distance the light reaches
-    Math.PI / 4,   // Wider cone angle (~45 degrees) for broader spotlight area
-    0.3,           // Soft edge (penumbra)
+    Math.PI / 4,   // Wide cone angle (~45 degrees) for broad spotlight
+    0.4,           // Soft edge (penumbra)
     1.5            // Decay
   );
-  spotLight.position.set(0.05, 0.70, 0);
-  spotLight.target.position.set(0.05, 0, 0);  // Point straight down at desk
+  spotLight.position.set(0, -0.08, 0);
+  // Target point is forward and down from lamp (on desk surface in front)
+  spotLight.target.position.set(0.8, -0.85, 0);
   spotLight.castShadow = true;
   spotLight.shadow.mapSize.width = 512;
   spotLight.shadow.mapSize.height = 512;
   spotLight.name = 'lampSpotLight';
-  group.add(spotLight);
-  group.add(spotLight.target);
+  headGroup.add(spotLight);
+  headGroup.add(spotLight.target);
 
-  // Additional ambient/hemisphere light for residual illumination of half the desk
-  const hemisphereLight = new THREE.HemisphereLight(
-    new THREE.Color(group.userData.accentColor),  // Sky color (warm)
-    0x000000,  // Ground color (dark)
-    0.3        // Low intensity for subtle ambient effect
-  );
-  hemisphereLight.position.set(0.05, 0.72, 0);
-  hemisphereLight.name = 'lampAmbient';
-  group.add(hemisphereLight);
-
-  // Point light for softer ambient spread (illuminates area around the lamp)
+  // Point light for softer ambient spread (residual illumination)
   const ambientLight = new THREE.PointLight(
     new THREE.Color(group.userData.accentColor),
-    0.8,    // Moderate intensity
-    8,      // Larger range to cover half the desk
+    0.6,    // Moderate intensity
+    6,      // Range to cover desk area
     2       // Decay
   );
-  ambientLight.position.set(0.05, 0.72, 0);
-  ambientLight.name = 'lampLight';  // Keep name for toggle compatibility
-  group.add(ambientLight);
+  ambientLight.position.set(0, -0.05, 0);
+  ambientLight.name = 'lampLight';
+  headGroup.add(ambientLight);
 
-  group.position.y = getDeskSurfaceY() + 0.04;
+  // Hemisphere light for subtle ambient (residual glow on surroundings)
+  const hemisphereLight = new THREE.HemisphereLight(
+    new THREE.Color(group.userData.accentColor),
+    0x000000,
+    0.2
+  );
+  hemisphereLight.position.set(0, -0.05, 0);
+  hemisphereLight.name = 'lampAmbient';
+  headGroup.add(hemisphereLight);
+
+  group.add(headGroup);
+
+  group.position.y = getDeskSurfaceY();
 
   return group;
 }
@@ -1431,7 +1474,21 @@ function updateObjectColor(object, colorType, colorValue) {
 // ============================================================================
 // PHYSICS SYSTEM
 // ============================================================================
+
+// Custom collision radii for objects where the bounding box is inaccurate
+// (e.g., laptop screen extends the bbox but shouldn't collide at that distance)
+const OBJECT_COLLISION_RADII = {
+  'laptop': 0.45,  // Base is 0.8 x 0.5, radius should be ~half diagonal but tight
+  'lamp': 0.35     // Base is small, don't use tall shade for collision
+};
+
 function getObjectBounds(object) {
+  // Use custom collision radius if defined for this object type
+  const type = object.userData.type;
+  if (OBJECT_COLLISION_RADII[type] !== undefined) {
+    return OBJECT_COLLISION_RADII[type] * (object.scale?.x || 1);
+  }
+
   // Calculate approximate bounding radius for collision detection
   const box = new THREE.Box3().setFromObject(object);
   const size = new THREE.Vector3();
@@ -1587,9 +1644,19 @@ function updatePhysics() {
         const normalX = dx / dist;
         const normalZ = dz / dist;
 
-        // Calculate push force based on weight difference
+        // Calculate drag speed for force scaling
+        const dragSpeed = Math.sqrt(
+          physicsState.dragVelocity.x * physicsState.dragVelocity.x +
+          physicsState.dragVelocity.z * physicsState.dragVelocity.z
+        );
+
+        // Scale force by drag speed (slow = less force, fast = more force)
+        // Minimum threshold to prevent tiny movements from causing big reactions
+        const speedMultiplier = Math.max(0, Math.min(1, (dragSpeed - physicsState.minPushSpeed) / 0.1));
+
+        // Calculate push force based on weight difference and speed
         const weightRatio = draggedPhysics.weight / otherPhysics.weight;
-        const pushMultiplier = Math.min(weightRatio * 1.5, 3.0);
+        const pushMultiplier = Math.min(weightRatio * 1.5, 3.0) * speedMultiplier;
 
         const pushX = normalX * physicsState.pushForce * pushMultiplier;
         const pushZ = normalZ * physicsState.pushForce * pushMultiplier;
@@ -1598,16 +1665,17 @@ function updatePhysics() {
         vel.x += pushX;
         vel.z += pushZ;
 
-        // Add tilt based on collision (objects tip away from collision point)
+        // Add tilt based on collision (only if moving fast enough)
+        // Higher stability means harder to tip
         const tiltVel = physicsState.tiltVelocities.get(obj.userData.id);
-        const tiltAmount = physicsState.tiltForce * (1 - otherPhysics.stability) * pushMultiplier;
+        const tiltAmount = physicsState.tiltForce * (1 - otherPhysics.stability) * pushMultiplier * speedMultiplier;
         tiltVel.x += normalX * tiltAmount;
         tiltVel.z += normalZ * tiltAmount;
 
-        // Add some spin based on collision angle
+        // Add some spin based on collision angle (also scaled by speed)
         const crossProduct = dx * pushZ - dz * pushX;
         const angVel = physicsState.angularVelocities.get(obj.userData.id);
-        physicsState.angularVelocities.set(obj.userData.id, angVel + crossProduct * 0.3);
+        physicsState.angularVelocities.set(obj.userData.id, angVel + crossProduct * 0.3 * speedMultiplier);
 
         // Separate objects to prevent overlap
         const overlap = minDist - dist;
@@ -1956,9 +2024,25 @@ function setupEventListeners() {
 }
 
 function onMouseDown(event) {
-  // Middle mouse button - no longer needed for camera look (now always active)
+  // Middle mouse button - quick interaction (toggle lamp, flip hourglass, etc.)
   if (event.button === 1) {
     event.preventDefault();
+    updateMousePosition(event);
+
+    raycaster.setFromCamera(mouse, camera);
+    const intersects = raycaster.intersectObjects(deskObjects, true);
+
+    if (intersects.length > 0) {
+      let object = intersects[0].object;
+      while (object.parent && !deskObjects.includes(object)) {
+        object = object.parent;
+      }
+
+      if (deskObjects.includes(object)) {
+        // Perform quick toggle interaction based on object type
+        performQuickInteraction(object);
+      }
+    }
     return;
   }
 
@@ -2040,8 +2124,23 @@ function onMouseMove(event) {
       const halfWidth = CONFIG.desk.width / 2 - 0.2;
       const halfDepth = CONFIG.desk.depth / 2 - 0.2;
 
-      selectedObject.position.x = Math.max(-halfWidth, Math.min(halfWidth, point.x));
-      selectedObject.position.z = Math.max(-halfDepth, Math.min(halfDepth, point.z));
+      const newX = Math.max(-halfWidth, Math.min(halfWidth, point.x));
+      const newZ = Math.max(-halfDepth, Math.min(halfDepth, point.z));
+
+      // Track drag velocity for physics collision force scaling
+      const now = Date.now();
+      if (physicsState.lastDragPosition && physicsState.lastDragTime > 0) {
+        const dt = (now - physicsState.lastDragTime) / 1000; // Convert to seconds
+        if (dt > 0 && dt < 0.1) { // Ignore stale data
+          physicsState.dragVelocity.x = (newX - physicsState.lastDragPosition.x) / dt;
+          physicsState.dragVelocity.z = (newZ - physicsState.lastDragPosition.z) / dt;
+        }
+      }
+      physicsState.lastDragPosition = { x: newX, z: newZ };
+      physicsState.lastDragTime = now;
+
+      selectedObject.position.x = newX;
+      selectedObject.position.z = newZ;
     }
   }
 
@@ -2087,6 +2186,12 @@ function onMouseUp(event) {
     selectedObject.userData.isLifted = false;
     selectedObject.userData.targetY = selectedObject.userData.originalY;
     isDragging = false;
+
+    // Reset drag velocity tracking
+    physicsState.lastDragPosition = null;
+    physicsState.lastDragTime = 0;
+    physicsState.dragVelocity = { x: 0, z: 0 };
+
     saveState();
   }
 }
@@ -2130,6 +2235,17 @@ function onMouseWheel(event) {
     return;
   }
 
+  // If dragging an object, scroll down enters examine mode (brings object closer)
+  if (isDragging && selectedObject && event.deltaY > 0) {
+    event.preventDefault();
+    // Stop dragging and enter examine mode
+    isDragging = false;
+    selectedObject.userData.isLifted = false;
+    selectedObject.userData.targetY = selectedObject.userData.originalY;
+    enterExamineMode(selectedObject);
+    return;
+  }
+
   // Check if hovering over an object
   raycaster.setFromCamera(mouse, camera);
   const intersects = raycaster.intersectObjects(deskObjects, true);
@@ -2166,28 +2282,30 @@ function onMouseWheel(event) {
       }
     }
   } else {
-    // If not hovering over an object, adjust camera distance
-    event.preventDefault();
-    const zoomDelta = event.deltaY > 0 ? 0.3 : -0.3;
+    // If not hovering over an object, adjust camera distance ONLY if Alt is held
+    if (event.altKey) {
+      event.preventDefault();
+      const zoomDelta = event.deltaY > 0 ? 0.3 : -0.3;
 
-    // Calculate new camera position (move along the view direction)
-    const direction = new THREE.Vector3();
-    camera.getWorldDirection(direction);
+      // Calculate new camera position (move along the view direction)
+      const direction = new THREE.Vector3();
+      camera.getWorldDirection(direction);
 
-    const newX = camera.position.x - direction.x * zoomDelta;
-    const newY = camera.position.y - direction.y * zoomDelta;
-    const newZ = camera.position.z - direction.z * zoomDelta;
+      const newX = camera.position.x - direction.x * zoomDelta;
+      const newY = camera.position.y - direction.y * zoomDelta;
+      const newZ = camera.position.z - direction.z * zoomDelta;
 
-    // Limit camera distance
-    const minDistance = 3;
-    const maxDistance = 15;
-    const lookAt = new THREE.Vector3(CONFIG.camera.lookAt.x, CONFIG.camera.lookAt.y, CONFIG.camera.lookAt.z);
-    const newPos = new THREE.Vector3(newX, newY, newZ);
-    const distance = newPos.distanceTo(lookAt);
+      // Limit camera distance
+      const minDistance = 3;
+      const maxDistance = 15;
+      const lookAt = new THREE.Vector3(CONFIG.camera.lookAt.x, CONFIG.camera.lookAt.y, CONFIG.camera.lookAt.z);
+      const newPos = new THREE.Vector3(newX, newY, newZ);
+      const distance = newPos.distanceTo(lookAt);
 
-    if (distance >= minDistance && distance <= maxDistance) {
-      camera.position.set(newX, newY, newZ);
-      saveState();
+      if (distance >= minDistance && distance <= maxDistance) {
+        camera.position.set(newX, newY, newZ);
+        saveState();
+      }
     }
   }
 }
@@ -2699,6 +2817,79 @@ function setupHourglassHandlers(object) {
 
     animateFlip();
   });
+}
+
+// Quick interaction function for middle-click toggle actions
+// This allows simple interactions without picking up or opening modal
+function performQuickInteraction(object) {
+  const type = object.userData.type;
+
+  switch (type) {
+    case 'lamp':
+      // Toggle lamp on/off
+      object.userData.isOn = !object.userData.isOn;
+
+      const bulb = object.getObjectByName('bulb');
+      const light = object.getObjectByName('lampLight');
+      const spotLight = object.getObjectByName('lampSpotLight');
+      const ambientLight = object.getObjectByName('lampAmbient');
+
+      if (object.userData.isOn) {
+        if (bulb) bulb.material.emissiveIntensity = 1.5;
+        if (light) light.intensity = 0.8;
+        if (spotLight) spotLight.intensity = 3.0;
+        if (ambientLight) ambientLight.intensity = 0.3;
+      } else {
+        if (bulb) bulb.material.emissiveIntensity = 0;
+        if (light) light.intensity = 0;
+        if (spotLight) spotLight.intensity = 0;
+        if (ambientLight) ambientLight.intensity = 0;
+      }
+      break;
+
+    case 'hourglass':
+      // Flip hourglass animation
+      const startRotation = object.rotation.z;
+      const endRotation = startRotation + Math.PI;
+      const duration = 500;
+      const startTime = Date.now();
+
+      function animateFlip() {
+        const elapsed = Date.now() - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+
+        // Ease in-out
+        const easeProgress = progress < 0.5
+          ? 2 * progress * progress
+          : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+
+        object.rotation.z = startRotation + (endRotation - startRotation) * easeProgress;
+
+        if (progress < 1) {
+          requestAnimationFrame(animateFlip);
+        }
+      }
+
+      animateFlip();
+      break;
+
+    case 'globe':
+      // Toggle globe rotation
+      if (object.userData.rotationSpeed > 0) {
+        object.userData.rotationSpeed = 0;
+      } else {
+        object.userData.rotationSpeed = 0.01;
+      }
+      break;
+
+    default:
+      // For non-toggle objects, open the interaction modal instead
+      if (object.userData.interactive) {
+        enterExamineMode(object);
+        openInteractionModal(object);
+      }
+      break;
+  }
 }
 
 function updateMousePosition(event) {
