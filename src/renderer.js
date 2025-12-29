@@ -854,12 +854,24 @@ function createPlant(options = {}) {
   return group;
 }
 
+// Drink color presets
+const DRINK_COLORS = {
+  coffee: { color: 0x3d2914, name: 'Coffee' },
+  tea: { color: 0x8b4513, name: 'Tea' },
+  water: { color: 0x87ceeb, name: 'Water' },
+  milk: { color: 0xfffaf0, name: 'Milk' },
+  juice: { color: 0xffa500, name: 'Orange Juice' }
+};
+
 function createCoffeeMug(options = {}) {
   const group = new THREE.Group();
   group.userData = {
     type: 'coffee',
     name: 'Coffee Mug',
-    interactive: false,
+    interactive: true, // Now interactive for drink customization
+    drinkType: 'coffee',
+    liquidLevel: 1.0, // 0-1, how full the mug is
+    wavePhase: 0,
     mainColor: options.mainColor || '#ffffff',
     accentColor: options.accentColor || '#3b82f6'
   };
@@ -890,15 +902,17 @@ function createCoffeeMug(options = {}) {
   handle.castShadow = true;
   group.add(handle);
 
-  // Coffee liquid
-  const coffeeGeometry = new THREE.CylinderGeometry(0.1, 0.1, 0.02, 32);
-  const coffeeMaterial = new THREE.MeshStandardMaterial({
-    color: 0x3d2914,
-    roughness: 0.3
+  // Liquid surface (can show waves when animated)
+  const liquidGeometry = new THREE.CylinderGeometry(0.095, 0.095, 0.02, 32);
+  const liquidMaterial = new THREE.MeshStandardMaterial({
+    color: DRINK_COLORS.coffee.color,
+    roughness: 0.2,
+    metalness: 0.1
   });
-  const coffee = new THREE.Mesh(coffeeGeometry, coffeeMaterial);
-  coffee.position.y = 0.18;
-  group.add(coffee);
+  const liquid = new THREE.Mesh(liquidGeometry, liquidMaterial);
+  liquid.name = 'liquid';
+  liquid.position.y = 0.18;
+  group.add(liquid);
 
   // Decorative stripe
   const stripeGeometry = new THREE.CylinderGeometry(0.121, 0.121, 0.04, 32, 1, true);
@@ -2747,7 +2761,8 @@ function openInteractionModal(object) {
     'globe': '🌍',
     'hourglass': '⏳',
     'metronome': '🎵',
-    'photo-frame': '🖼️'
+    'photo-frame': '🖼️',
+    'coffee': '☕'
   };
 
   title.textContent = object.userData.name;
@@ -2892,6 +2907,33 @@ function getInteractionContent(object) {
         </div>
       `;
 
+    case 'coffee':
+      const currentDrink = DRINK_COLORS[object.userData.drinkType] || DRINK_COLORS.coffee;
+      return `
+        <div class="timer-controls">
+          <div class="timer-display">
+            <div class="time" style="font-size: 24px;">${currentDrink.name}</div>
+            <div style="color: rgba(255,255,255,0.6); margin-top: 10px;">Choose your drink</div>
+          </div>
+          <div class="timer-buttons" style="flex-wrap: wrap; gap: 10px;">
+            ${Object.entries(DRINK_COLORS).map(([key, drink]) => `
+              <button class="timer-btn ${object.userData.drinkType === key ? 'pause' : 'start'}"
+                      data-drink="${key}" style="min-width: 80px;">
+                ${drink.name}
+              </button>
+            `).join('')}
+          </div>
+          <div style="margin-top: 15px;">
+            <label style="color: rgba(255,255,255,0.7); display: block; margin-bottom: 8px;">
+              Fill Level: ${Math.round(object.userData.liquidLevel * 100)}%
+            </label>
+            <input type="range" id="mug-level" min="0" max="100"
+                   value="${object.userData.liquidLevel * 100}"
+                   style="width: 100%; accent-color: #4f46e5;">
+          </div>
+        </div>
+      `;
+
     default:
       return `<p style="color: rgba(255,255,255,0.7);">No interactions available for this object.</p>`;
   }
@@ -2919,6 +2961,9 @@ function setupInteractionHandlers(object) {
       break;
     case 'photo-frame':
       setupPhotoFrameHandlers(object);
+      break;
+    case 'coffee':
+      setupMugHandlers(object);
       break;
   }
 }
@@ -3274,6 +3319,58 @@ function setupPhotoFrameHandlers(object) {
       photoSurface.material.needsUpdate = true;
     }
   });
+}
+
+function setupMugHandlers(object) {
+  const drinkButtons = document.querySelectorAll('[data-drink]');
+  const levelSlider = document.getElementById('mug-level');
+
+  drinkButtons.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const drinkType = btn.dataset.drink;
+      object.userData.drinkType = drinkType;
+
+      // Update liquid color
+      const liquid = object.getObjectByName('liquid');
+      if (liquid && DRINK_COLORS[drinkType]) {
+        liquid.material.color.set(DRINK_COLORS[drinkType].color);
+        liquid.material.needsUpdate = true;
+      }
+
+      // Update button styles
+      drinkButtons.forEach(b => {
+        b.className = `timer-btn ${b.dataset.drink === drinkType ? 'pause' : 'start'}`;
+      });
+
+      // Update title display
+      const titleDisplay = document.querySelector('.timer-display .time');
+      if (titleDisplay && DRINK_COLORS[drinkType]) {
+        titleDisplay.textContent = DRINK_COLORS[drinkType].name;
+      }
+    });
+  });
+
+  if (levelSlider) {
+    levelSlider.addEventListener('input', (e) => {
+      const level = parseInt(e.target.value) / 100;
+      object.userData.liquidLevel = level;
+
+      // Update liquid height and position
+      const liquid = object.getObjectByName('liquid');
+      if (liquid) {
+        const maxHeight = 0.12; // Max liquid height inside mug
+        const newHeight = Math.max(0.005, maxHeight * level);
+        liquid.scale.y = level > 0.05 ? 1 : 0; // Hide if nearly empty
+        liquid.position.y = 0.1 + newHeight / 2 + 0.02; // Adjust position based on fill
+      }
+
+      // Update label
+      const label = levelSlider.previousElementSibling;
+      if (label) {
+        label.textContent = `Fill Level: ${Math.round(level * 100)}%`;
+      }
+    });
+  }
 }
 
 // Quick interaction function for middle-click toggle actions
