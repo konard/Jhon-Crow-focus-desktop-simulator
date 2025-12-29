@@ -33,7 +33,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: focus-desktop-simulator-setup
-          path: dist/*.exe
+          path: dist/*Setup*.exe
           if-no-files-found: warn
 
       - name: Upload portable artifact
