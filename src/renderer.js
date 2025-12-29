@@ -1,6 +1,7 @@
 // Focus Desktop Simulator - Main Renderer
 // Uses Three.js for 3D isometric desk simulation
-// Three.js is loaded via CDN in index.html (available as global THREE)
+// Three.js is loaded locally in index.html (available as global THREE)
+// Includes pixel art post-processing effect (Signalis-style)
 
 // ============================================================================
 // CONFIGURATION
@@ -31,6 +32,13 @@ const CONFIG = {
     ambient: 0x404060,
     directional: 0xffffff,
     ground: 0x2d3748
+  },
+  // Pixel art post-processing settings (Signalis-style)
+  pixelation: {
+    enabled: true,
+    pixelSize: 4,           // Size of pixels (higher = more pixelated)
+    normalEdgeStrength: 0.3, // Edge detection based on normals
+    depthEdgeStrength: 0.4   // Edge detection based on depth
   }
 };
 
@@ -48,6 +56,12 @@ let mouse;
 let previousMousePosition = { x: 0, y: 0 };
 let objectIdCounter = 0;
 
+// Pixel art post-processing state
+let pixelRenderTarget, normalRenderTarget;
+let pixelatedMaterial, normalMaterial;
+let fsQuad, fsCamera, fsGeometry;
+let renderResolution = new THREE.Vector2();
+
 // ============================================================================
 // INITIALIZATION
 // ============================================================================
@@ -62,13 +76,18 @@ function init() {
   camera.position.set(CONFIG.camera.position.x, CONFIG.camera.position.y, CONFIG.camera.position.z);
   camera.lookAt(CONFIG.camera.lookAt.x, CONFIG.camera.lookAt.y, CONFIG.camera.lookAt.z);
 
-  // Create renderer
-  renderer = new THREE.WebGLRenderer({ antialias: true });
+  // Create renderer - disable antialiasing for pixel art effect
+  renderer = new THREE.WebGLRenderer({ antialias: !CONFIG.pixelation.enabled });
   renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setPixelRatio(CONFIG.pixelation.enabled ? 1 : Math.min(window.devicePixelRatio, 2));
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+  // Setup pixel art post-processing if enabled
+  if (CONFIG.pixelation.enabled) {
+    setupPixelArtPostProcessing();
+  }
 
   // Create raycaster for mouse interaction
   raycaster = new THREE.Raycaster();
@@ -108,6 +127,150 @@ function init() {
   setTimeout(() => {
     document.getElementById('loading').classList.add('hidden');
   }, 500);
+}
+
+// ============================================================================
+// PIXEL ART POST-PROCESSING SETUP (Signalis-style)
+// ============================================================================
+function setupPixelArtPostProcessing() {
+  const pixelSize = CONFIG.pixelation.pixelSize;
+
+  // Calculate render resolution (lower resolution for pixel art effect)
+  const width = Math.floor(window.innerWidth / pixelSize);
+  const height = Math.floor(window.innerHeight / pixelSize);
+  renderResolution.set(width, height);
+
+  // Create render target for the main scene (low resolution)
+  pixelRenderTarget = new THREE.WebGLRenderTarget(width, height, {
+    minFilter: THREE.NearestFilter,
+    magFilter: THREE.NearestFilter,
+    format: THREE.RGBAFormat,
+    type: THREE.HalfFloatType
+  });
+  pixelRenderTarget.depthTexture = new THREE.DepthTexture(width, height);
+
+  // Create render target for normals (for edge detection)
+  normalRenderTarget = new THREE.WebGLRenderTarget(width, height, {
+    minFilter: THREE.NearestFilter,
+    magFilter: THREE.NearestFilter,
+    format: THREE.RGBAFormat,
+    type: THREE.HalfFloatType
+  });
+
+  // Material for rendering normals
+  normalMaterial = new THREE.MeshNormalMaterial();
+
+  // Create fullscreen quad for post-processing
+  fsCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  fsGeometry = new THREE.BufferGeometry();
+  fsGeometry.setAttribute('position', new THREE.Float32BufferAttribute([-1, 3, 0, -1, -1, 0, 3, -1, 0], 3));
+  fsGeometry.setAttribute('uv', new THREE.Float32BufferAttribute([0, 2, 0, 0, 2, 0], 2));
+
+  // Create the pixelated shader material
+  pixelatedMaterial = new THREE.ShaderMaterial({
+    uniforms: {
+      tDiffuse: { value: null },
+      tDepth: { value: null },
+      tNormal: { value: null },
+      resolution: { value: new THREE.Vector4(width, height, 1 / width, 1 / height) },
+      normalEdgeStrength: { value: CONFIG.pixelation.normalEdgeStrength },
+      depthEdgeStrength: { value: CONFIG.pixelation.depthEdgeStrength }
+    },
+    vertexShader: `
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform sampler2D tDiffuse;
+      uniform sampler2D tDepth;
+      uniform sampler2D tNormal;
+      uniform vec4 resolution;
+      uniform float normalEdgeStrength;
+      uniform float depthEdgeStrength;
+      varying vec2 vUv;
+
+      float getDepth(int x, int y) {
+        return texture2D(tDepth, vUv + vec2(x, y) * resolution.zw).r;
+      }
+
+      vec3 getNormal(int x, int y) {
+        return texture2D(tNormal, vUv + vec2(x, y) * resolution.zw).rgb * 2.0 - 1.0;
+      }
+
+      float depthEdgeIndicator(float depth, vec3 normal) {
+        float diff = 0.0;
+        diff += clamp(getDepth(1, 0) - depth, 0.0, 1.0);
+        diff += clamp(getDepth(-1, 0) - depth, 0.0, 1.0);
+        diff += clamp(getDepth(0, 1) - depth, 0.0, 1.0);
+        diff += clamp(getDepth(0, -1) - depth, 0.0, 1.0);
+        return floor(smoothstep(0.01, 0.02, diff) * 2.0) / 2.0;
+      }
+
+      float neighborNormalEdgeIndicator(int x, int y, float depth, vec3 normal) {
+        float depthDiff = getDepth(x, y) - depth;
+        vec3 neighborNormal = getNormal(x, y);
+        vec3 normalEdgeBias = vec3(1.0, 1.0, 1.0);
+        float normalDiff = dot(normal - neighborNormal, normalEdgeBias);
+        float normalIndicator = clamp(smoothstep(-0.01, 0.01, normalDiff), 0.0, 1.0);
+        float depthIndicator = clamp(sign(depthDiff * 0.25 + 0.0025), 0.0, 1.0);
+        return (1.0 - dot(normal, neighborNormal)) * depthIndicator * normalIndicator;
+      }
+
+      float normalEdgeIndicator(float depth, vec3 normal) {
+        float indicator = 0.0;
+        indicator += neighborNormalEdgeIndicator(0, -1, depth, normal);
+        indicator += neighborNormalEdgeIndicator(0, 1, depth, normal);
+        indicator += neighborNormalEdgeIndicator(-1, 0, depth, normal);
+        indicator += neighborNormalEdgeIndicator(1, 0, depth, normal);
+        return step(0.1, indicator);
+      }
+
+      void main() {
+        vec4 texel = texture2D(tDiffuse, vUv);
+        float depth = 0.0;
+        vec3 normal = vec3(0.0);
+
+        if (depthEdgeStrength > 0.0 || normalEdgeStrength > 0.0) {
+          depth = getDepth(0, 0);
+          normal = getNormal(0, 0);
+        }
+
+        float dei = 0.0;
+        if (depthEdgeStrength > 0.0) {
+          dei = depthEdgeIndicator(depth, normal);
+        }
+
+        float nei = 0.0;
+        if (normalEdgeStrength > 0.0) {
+          nei = normalEdgeIndicator(depth, normal);
+        }
+
+        // Apply edge darkening for that crisp pixel art outline look
+        float edgeFactor = dei > 0.0 ? (1.0 - depthEdgeStrength * dei) : (1.0 + normalEdgeStrength * nei);
+
+        gl_FragColor = texel * edgeFactor;
+      }
+    `
+  });
+
+  fsQuad = new THREE.Mesh(fsGeometry, pixelatedMaterial);
+}
+
+function updatePixelArtRenderTargets() {
+  if (!CONFIG.pixelation.enabled) return;
+
+  const pixelSize = CONFIG.pixelation.pixelSize;
+  const width = Math.floor(window.innerWidth / pixelSize);
+  const height = Math.floor(window.innerHeight / pixelSize);
+  renderResolution.set(width, height);
+
+  pixelRenderTarget.setSize(width, height);
+  normalRenderTarget.setSize(width, height);
+
+  pixelatedMaterial.uniforms.resolution.value.set(width, height, 1 / width, 1 / height);
 }
 
 // ============================================================================
@@ -1262,6 +1425,11 @@ function onWindowResize() {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+
+  // Update pixel art render targets if enabled
+  if (CONFIG.pixelation.enabled) {
+    updatePixelArtRenderTargets();
+  }
 }
 
 // ============================================================================
@@ -1338,7 +1506,41 @@ function animate() {
     }
   });
 
+  // Render with pixel art post-processing if enabled
+  if (CONFIG.pixelation.enabled) {
+    renderPixelArt();
+  } else {
+    renderer.render(scene, camera);
+  }
+}
+
+// ============================================================================
+// PIXEL ART RENDER PASS
+// ============================================================================
+function renderPixelArt() {
+  const uniforms = pixelatedMaterial.uniforms;
+
+  // Pass 1: Render scene to low-resolution texture
+  renderer.setRenderTarget(pixelRenderTarget);
+  renderer.clear();
   renderer.render(scene, camera);
+
+  // Pass 2: Render normals for edge detection
+  const overrideMaterial = scene.overrideMaterial;
+  renderer.setRenderTarget(normalRenderTarget);
+  scene.overrideMaterial = normalMaterial;
+  renderer.clear();
+  renderer.render(scene, camera);
+  scene.overrideMaterial = overrideMaterial;
+
+  // Pass 3: Apply pixelated shader to screen
+  uniforms.tDiffuse.value = pixelRenderTarget.texture;
+  uniforms.tDepth.value = pixelRenderTarget.depthTexture;
+  uniforms.tNormal.value = normalRenderTarget.texture;
+
+  renderer.setRenderTarget(null);
+  renderer.clear();
+  renderer.render(fsQuad, fsCamera);
 }
 
 // ============================================================================
