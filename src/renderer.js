@@ -89,6 +89,92 @@ let examineState = {
   originalScale: null
 };
 
+// Pointer lock state
+let pointerLockState = {
+  isLocked: false,
+  showInstructions: true  // Show instructions on first load
+};
+
+// ============================================================================
+// CAMERA CONTROL POINTS (Starting position and direction)
+// ============================================================================
+// These control points define the default camera state at startup.
+// Based on the original camera.lookAt(CONFIG.camera.lookAt) behavior.
+// To change the starting view, modify CONFIG.camera.position and CONFIG.camera.lookAt.
+function calculateCameraAnglesFromLookAt(cameraPos, lookAtPos) {
+  // Calculate direction vector from camera to lookAt point
+  const dx = lookAtPos.x - cameraPos.x;
+  const dy = lookAtPos.y - cameraPos.y;
+  const dz = lookAtPos.z - cameraPos.z;
+
+  // Calculate total length for pitch calculation
+  const totalLen = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+  // yaw: horizontal angle from positive z axis (using atan2 for correct quadrant)
+  const yaw = Math.atan2(dx, dz);
+
+  // pitch: vertical angle (negative when looking down)
+  const pitch = Math.asin(dy / totalLen);
+
+  return { yaw, pitch };
+}
+
+// Calculate default angles from CONFIG control points
+const DEFAULT_CAMERA_ANGLES = calculateCameraAnglesFromLookAt(
+  CONFIG.camera.position,
+  CONFIG.camera.lookAt
+);
+
+// First-person camera look state
+let cameraLookState = {
+  isLooking: true,   // Always enabled by default (FPS-style)
+  sensitivity: 0.002,
+  // Initial angles calculated from CONFIG.camera.lookAt control point
+  yaw: DEFAULT_CAMERA_ANGLES.yaw,     // Horizontal rotation - facing the desk
+  pitch: DEFAULT_CAMERA_ANGLES.pitch, // Vertical rotation - looking down at desk surface
+  minPitch: -1.0,    // Looking down limit (towards desk, not past it)
+  maxPitch: 0.1,     // Looking up limit (slightly above horizontal)
+  // Yaw limits centered around the default yaw (±0.8 radians ~ ±45 degrees)
+  minYaw: DEFAULT_CAMERA_ANGLES.yaw - 0.8,  // Limit horizontal rotation to left
+  maxYaw: DEFAULT_CAMERA_ANGLES.yaw + 0.8   // Limit horizontal rotation to right
+};
+
+// Physics state for objects
+const physicsState = {
+  enabled: true,
+  velocities: new Map(),         // Store velocity for each object (x, z)
+  angularVelocities: new Map(),  // Store angular velocity for each object (y-axis spin)
+  tiltState: new Map(),          // Store tilt state for each object (x, z tilt angles)
+  tiltVelocities: new Map(),     // Store tilt velocity for each object
+  lastDragPosition: null,        // Track drag position for velocity calculation
+  lastDragTime: 0,               // Track time for velocity calculation
+  dragVelocity: { x: 0, z: 0 },  // Velocity of dragged object
+  friction: 0.85,
+  bounceFactor: 0.4,
+  pushForce: 0.04,               // Reduced base push force (was 0.08)
+  minPushSpeed: 0.02,            // Minimum drag speed needed to apply full push force
+  tiltForce: 0.08,               // Reduced tilt force (was 0.15) - objects harder to tip
+  tiltRecovery: 0.08,            // Increased recovery (was 0.05) - objects return upright faster
+  maxTilt: Math.PI / 3,          // Maximum tilt before falling over (~60 degrees)
+  tipOverThreshold: Math.PI / 4  // Angle at which object tips over completely (~45 degrees)
+};
+
+// Object weight/stability configurations (affects how easily they tip)
+const OBJECT_PHYSICS = {
+  'clock': { weight: 0.5, stability: 0.5, height: 0.6 },      // Light, tall, somewhat tippy
+  'lamp': { weight: 1.2, stability: 0.85, height: 0.9 },      // Heavy base, very stable (was 0.8/0.6)
+  'plant': { weight: 1.4, stability: 0.9, height: 0.5 },      // Heavy pot, very stable
+  'coffee': { weight: 0.4, stability: 0.6, height: 0.3 },     // Light mug, medium stability
+  'laptop': { weight: 1.5, stability: 0.95, height: 0.3 },    // Heavy, flat, very stable
+  'notebook': { weight: 0.3, stability: 0.95, height: 0.1 },  // Light, flat, very stable
+  'pen-holder': { weight: 0.6, stability: 0.6, height: 0.4 }, // Medium, somewhat stable
+  'books': { weight: 0.8, stability: 0.9, height: 0.15 },     // Book, flat, stable
+  'photo-frame': { weight: 0.3, stability: 0.35, height: 0.5 },// Light, tall, tips easier
+  'globe': { weight: 1.0, stability: 0.7, height: 0.5 },      // Medium, balanced
+  'trophy': { weight: 0.9, stability: 0.6, height: 0.4 },     // Medium, somewhat stable
+  'hourglass': { weight: 0.5, stability: 0.45, height: 0.35 } // Light, can tip
+};
+
 // ============================================================================
 // INITIALIZATION
 // ============================================================================
@@ -97,11 +183,14 @@ function init() {
   scene = new THREE.Scene();
   scene.background = new THREE.Color(CONFIG.colors.background);
 
-  // Create camera (isometric-like perspective)
+  // Create camera (first-person desk view)
+  // CONTROL POINTS: Position from CONFIG.camera.position, direction from CONFIG.camera.lookAt
   const aspect = window.innerWidth / window.innerHeight;
   camera = new THREE.PerspectiveCamera(CONFIG.camera.fov, aspect, CONFIG.camera.near, CONFIG.camera.far);
   camera.position.set(CONFIG.camera.position.x, CONFIG.camera.position.y, CONFIG.camera.position.z);
-  camera.lookAt(CONFIG.camera.lookAt.x, CONFIG.camera.lookAt.y, CONFIG.camera.lookAt.z);
+  // Apply initial camera look direction based on CONFIG.camera.lookAt control point
+  // The yaw/pitch are calculated from the lookAt point in DEFAULT_CAMERA_ANGLES
+  updateCameraLook();
 
   // Create renderer - disable antialiasing for pixel art effect
   renderer = new THREE.WebGLRenderer({ antialias: !CONFIG.pixelation.enabled });
@@ -139,6 +228,9 @@ function init() {
 
   // Setup event listeners
   setupEventListeners();
+
+  // Initialize previousMousePosition to screen center to prevent jump on first move
+  previousMousePosition = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
 
   // Load saved state
   loadState();
@@ -402,7 +494,7 @@ function createClock(options = {}) {
     accentColor: options.accentColor || '#1e293b'
   };
 
-  // Clock body
+  // Clock body (frame)
   const bodyGeometry = new THREE.CylinderGeometry(0.4, 0.4, 0.1, 32);
   const bodyMaterial = new THREE.MeshStandardMaterial({
     color: new THREE.Color(group.userData.mainColor),
@@ -414,7 +506,7 @@ function createClock(options = {}) {
   body.castShadow = true;
   group.add(body);
 
-  // Clock face
+  // Clock face (white background)
   const faceGeometry = new THREE.CircleGeometry(0.35, 32);
   const faceMaterial = new THREE.MeshStandardMaterial({
     color: 0xfafafa,
@@ -424,39 +516,79 @@ function createClock(options = {}) {
   face.position.z = 0.051;
   group.add(face);
 
-  // Hour hand
-  const hourGeometry = new THREE.BoxGeometry(0.03, 0.18, 0.02);
+  // Add hour markers (12 small dots around the dial)
+  const markerMaterial = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(group.userData.accentColor),
+    roughness: 0.3,
+    metalness: 0.5
+  });
+
+  for (let i = 0; i < 12; i++) {
+    const angle = (i / 12) * Math.PI * 2 - Math.PI / 2; // Start at 12 o'clock
+    const radius = 0.28;
+    const markerSize = (i % 3 === 0) ? 0.025 : 0.015; // Larger markers at 12, 3, 6, 9
+
+    const markerGeometry = new THREE.CircleGeometry(markerSize, 8);
+    const marker = new THREE.Mesh(markerGeometry, markerMaterial);
+    marker.position.set(
+      Math.cos(angle) * radius,
+      Math.sin(angle) * radius,
+      0.052
+    );
+    group.add(marker);
+  }
+
+  // Hand material
   const handMaterial = new THREE.MeshStandardMaterial({
     color: new THREE.Color(group.userData.accentColor),
     roughness: 0.3,
     metalness: 0.7
   });
+
+  // Hour hand - pivot group (rotates around center)
+  const hourPivot = new THREE.Group();
+  hourPivot.name = 'hourHand';
+  hourPivot.position.z = 0.06;
+
+  // Hour hand geometry (offset so one end is at pivot)
+  const hourGeometry = new THREE.BoxGeometry(0.035, 0.15, 0.02);
   const hourHand = new THREE.Mesh(hourGeometry, handMaterial);
-  hourHand.position.set(0, 0.09, 0.06);
-  hourHand.name = 'hourHand';
-  group.add(hourHand);
+  hourHand.position.y = 0.075; // Half the length, so it pivots from one end
+  hourPivot.add(hourHand);
+  group.add(hourPivot);
 
-  // Minute hand
-  const minuteGeometry = new THREE.BoxGeometry(0.02, 0.25, 0.02);
+  // Minute hand - pivot group
+  const minutePivot = new THREE.Group();
+  minutePivot.name = 'minuteHand';
+  minutePivot.position.z = 0.07;
+
+  // Minute hand geometry
+  const minuteGeometry = new THREE.BoxGeometry(0.025, 0.22, 0.02);
   const minuteHand = new THREE.Mesh(minuteGeometry, handMaterial);
-  minuteHand.position.set(0, 0.125, 0.07);
-  minuteHand.name = 'minuteHand';
-  group.add(minuteHand);
+  minuteHand.position.y = 0.11; // Half the length
+  minutePivot.add(minuteHand);
+  group.add(minutePivot);
 
-  // Second hand
-  const secondGeometry = new THREE.BoxGeometry(0.01, 0.28, 0.01);
+  // Second hand - pivot group
+  const secondPivot = new THREE.Group();
+  secondPivot.name = 'secondHand';
+  secondPivot.position.z = 0.08;
+
   const secondMaterial = new THREE.MeshStandardMaterial({
     color: 0xef4444,
     roughness: 0.3,
     metalness: 0.5
   });
-  const secondHand = new THREE.Mesh(secondGeometry, secondMaterial);
-  secondHand.position.set(0, 0.14, 0.08);
-  secondHand.name = 'secondHand';
-  group.add(secondHand);
 
-  // Center dot
-  const centerGeometry = new THREE.SphereGeometry(0.03, 16, 16);
+  // Second hand geometry
+  const secondGeometry = new THREE.BoxGeometry(0.012, 0.26, 0.01);
+  const secondHand = new THREE.Mesh(secondGeometry, secondMaterial);
+  secondHand.position.y = 0.13; // Half the length
+  secondPivot.add(secondHand);
+  group.add(secondPivot);
+
+  // Center dot (covers pivot point)
+  const centerGeometry = new THREE.SphereGeometry(0.035, 16, 16);
   const centerMaterial = new THREE.MeshStandardMaterial({
     color: new THREE.Color(group.userData.accentColor),
     roughness: 0.2,
@@ -496,64 +628,138 @@ function createLamp(options = {}) {
     accentColor: options.accentColor || '#fbbf24'
   };
 
-  // Base
-  const baseGeometry = new THREE.CylinderGeometry(0.3, 0.35, 0.08, 32);
   const baseMaterial = new THREE.MeshStandardMaterial({
     color: new THREE.Color(group.userData.mainColor),
-    roughness: 0.3,
-    metalness: 0.7
+    roughness: 0.9,   // Very rough = no glare
+    metalness: 0.0    // No metalness = no reflections
   });
+
+  // Heavy circular base for stability
+  const baseGeometry = new THREE.CylinderGeometry(0.25, 0.28, 0.05, 32);
   const base = new THREE.Mesh(baseGeometry, baseMaterial);
+  base.position.y = 0.025;
   base.castShadow = true;
   group.add(base);
 
-  // Arm
-  const armGeometry = new THREE.CylinderGeometry(0.03, 0.03, 0.8, 16);
-  const armMaterial = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(group.userData.mainColor),
-    roughness: 0.3,
-    metalness: 0.7
-  });
-  const arm = new THREE.Mesh(armGeometry, armMaterial);
-  arm.position.y = 0.4;
-  arm.rotation.z = Math.PI / 8;
-  arm.castShadow = true;
-  group.add(arm);
+  // Vertical post from base
+  const postGeometry = new THREE.CylinderGeometry(0.02, 0.02, 0.15, 16);
+  const post = new THREE.Mesh(postGeometry, baseMaterial);
+  post.position.y = 0.125;
+  post.castShadow = true;
+  group.add(post);
 
-  // Lamp head (cone shade)
-  const headGeometry = new THREE.ConeGeometry(0.25, 0.3, 32, 1, true);
-  const headMaterial = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(group.userData.mainColor),
-    roughness: 0.4,
-    metalness: 0.5,
-    side: THREE.DoubleSide
-  });
-  const head = new THREE.Mesh(headGeometry, headMaterial);
-  head.position.set(0.15, 0.75, 0);
-  head.rotation.z = -Math.PI / 4;
-  head.castShadow = true;
-  group.add(head);
+  // First angled arm segment (going up and forward at ~60 degrees)
+  const arm1Group = new THREE.Group();
+  arm1Group.position.set(0, 0.2, 0);
+  arm1Group.rotation.z = -Math.PI / 6;  // Tilt forward ~30 degrees
 
-  // Light bulb (emissive sphere)
+  const arm1Geometry = new THREE.CylinderGeometry(0.015, 0.015, 0.45, 16);
+  const arm1 = new THREE.Mesh(arm1Geometry, baseMaterial);
+  arm1.position.y = 0.225;  // Center of arm
+  arm1.castShadow = true;
+  arm1Group.add(arm1);
+
+  // Joint at top of first arm
+  const joint1Geometry = new THREE.SphereGeometry(0.025, 16, 16);
+  const joint1 = new THREE.Mesh(joint1Geometry, baseMaterial);
+  joint1.position.y = 0.45;
+  arm1Group.add(joint1);
+
+  group.add(arm1Group);
+
+  // Second arm segment (angled to bring lamp head forward)
+  const arm2Group = new THREE.Group();
+  // Position at the joint of first arm (accounting for arm1Group rotation)
+  arm2Group.position.set(0.225, 0.59, 0);
+  arm2Group.rotation.z = Math.PI / 4;  // Angle back ~45 degrees
+
+  const arm2Geometry = new THREE.CylinderGeometry(0.015, 0.015, 0.35, 16);
+  const arm2 = new THREE.Mesh(arm2Geometry, baseMaterial);
+  arm2.position.y = 0.175;
+  arm2.castShadow = true;
+  arm2Group.add(arm2);
+
+  group.add(arm2Group);
+
+  // Lamp head (round shade pointing down at ~4-10 degree angle)
+  const headGroup = new THREE.Group();
+  // Position at end of second arm
+  headGroup.position.set(0.35, 0.83, 0);
+  // Rotate to point slightly forward and down (~7 degrees from vertical)
+  headGroup.rotation.z = Math.PI / 25;  // ~7.2 degrees forward tilt
+
+  // Outer shade (dome shape) - dome on top, open at bottom
+  // Use the BOTTOM hemisphere (phiStart=0, phiLength=2π, thetaStart=π/2, thetaLength=π/2)
+  // This creates a dome that curves UPWARD with the hollow part facing DOWN
+  const shadeGeometry = new THREE.SphereGeometry(0.15, 32, 16, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2);
+  const shade = new THREE.Mesh(shadeGeometry, baseMaterial);
+  // Position the shade so the rim is at y=0 and dome curves upward
+  shade.position.y = 0;
+  shade.castShadow = true;
+  headGroup.add(shade);
+
+  // Shade rim
+  const rimGeometry = new THREE.TorusGeometry(0.15, 0.01, 8, 32);
+  const rim = new THREE.Mesh(rimGeometry, baseMaterial);
+  rim.rotation.x = Math.PI / 2;
+  headGroup.add(rim);
+
+  // Light bulb (round, visible from below)
   const bulbGeometry = new THREE.SphereGeometry(0.08, 16, 16);
   const bulbMaterial = new THREE.MeshStandardMaterial({
     color: new THREE.Color(group.userData.accentColor),
     emissive: new THREE.Color(group.userData.accentColor),
-    emissiveIntensity: 0.8,
+    emissiveIntensity: 1.5,
     roughness: 0.2
   });
   const bulb = new THREE.Mesh(bulbGeometry, bulbMaterial);
-  bulb.position.set(0.15, 0.65, 0);
+  bulb.position.y = -0.05;  // Slightly below shade rim
   bulb.name = 'bulb';
-  group.add(bulb);
+  headGroup.add(bulb);
 
-  // Add point light
-  const light = new THREE.PointLight(new THREE.Color(group.userData.accentColor), 0.5, 3);
-  light.position.set(0.15, 0.65, 0);
-  light.name = 'lampLight';
-  group.add(light);
+  // SpotLight for focused beam - brighter main light
+  const spotLight = new THREE.SpotLight(
+    new THREE.Color(group.userData.accentColor),
+    6.0,           // Increased intensity for brighter beam (was 3.5)
+    8,             // Increased distance (was 6)
+    Math.PI / 3.5, // Wider cone angle (~51 degrees) for broader spotlight
+    0.3,           // Slightly sharper edge for more defined beam
+    1.2            // Less decay for brighter far reach
+  );
+  spotLight.position.set(0, -0.08, 0);
+  // Target point straight down to illuminate desk area
+  spotLight.target.position.set(0.3, -1.0, 0);
+  spotLight.castShadow = true;
+  spotLight.shadow.mapSize.width = 512;
+  spotLight.shadow.mapSize.height = 512;
+  spotLight.name = 'lampSpotLight';
+  headGroup.add(spotLight);
+  headGroup.add(spotLight.target);
 
-  group.position.y = getDeskSurfaceY() + 0.04;
+  // Point light for residual illumination of the entire desk
+  const ambientLight = new THREE.PointLight(
+    new THREE.Color(group.userData.accentColor),
+    1.2,    // Increased intensity (was 0.6) for better desk coverage
+    12,     // Increased range to cover entire desk (was 6)
+    1.5     // Less decay for wider spread
+  );
+  ambientLight.position.set(0, -0.05, 0);
+  ambientLight.name = 'lampLight';
+  headGroup.add(ambientLight);
+
+  // Hemisphere light for ambient glow on the entire desk and surroundings
+  const hemisphereLight = new THREE.HemisphereLight(
+    new THREE.Color(group.userData.accentColor),
+    0x000000,
+    0.4     // Increased from 0.2 for more ambient illumination
+  );
+  hemisphereLight.position.set(0, -0.05, 0);
+  hemisphereLight.name = 'lampAmbient';
+  headGroup.add(hemisphereLight);
+
+  group.add(headGroup);
+
+  group.position.y = getDeskSurfaceY();
 
   return group;
 }
@@ -840,31 +1046,47 @@ function createBooks(options = {}) {
   const group = new THREE.Group();
   group.userData = {
     type: 'books',
-    name: 'Books',
+    name: 'Book',
     interactive: false,
     mainColor: options.mainColor || '#7c3aed',
     accentColor: options.accentColor || '#f59e0b'
   };
 
-  const bookColors = [
-    new THREE.Color(group.userData.mainColor),
-    new THREE.Color(group.userData.accentColor),
-    new THREE.Color('#ef4444')
-  ];
-
-  bookColors.forEach((color, i) => {
-    const bookGeometry = new THREE.BoxGeometry(0.25, 0.35 - i * 0.03, 0.05 + Math.random() * 0.02);
-    const bookMaterial = new THREE.MeshStandardMaterial({
-      color: color,
-      roughness: 0.7
-    });
-    const book = new THREE.Mesh(bookGeometry, bookMaterial);
-    book.position.y = 0.175 - i * 0.015;
-    book.rotation.z = Math.PI / 2;
-    book.position.z = i * 0.06;
-    book.castShadow = true;
-    group.add(book);
+  // Single book model
+  // Book cover
+  const coverMaterial = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(group.userData.mainColor),
+    roughness: 0.7
   });
+
+  const coverGeometry = new THREE.BoxGeometry(0.28, 0.04, 0.38);
+  const cover = new THREE.Mesh(coverGeometry, coverMaterial);
+  cover.position.y = 0.02;
+  cover.castShadow = true;
+  group.add(cover);
+
+  // Pages (white interior)
+  const pagesMaterial = new THREE.MeshStandardMaterial({
+    color: 0xf5f5f0,
+    roughness: 0.9
+  });
+
+  const pagesGeometry = new THREE.BoxGeometry(0.26, 0.035, 0.36);
+  const pages = new THREE.Mesh(pagesGeometry, pagesMaterial);
+  pages.position.y = 0.02;
+  group.add(pages);
+
+  // Spine detail
+  const spineMaterial = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(group.userData.accentColor),
+    roughness: 0.6
+  });
+
+  const spineGeometry = new THREE.BoxGeometry(0.02, 0.045, 0.38);
+  const spine = new THREE.Mesh(spineGeometry, spineMaterial);
+  spine.position.set(-0.13, 0.02, 0);
+  spine.castShadow = true;
+  group.add(spine);
 
   group.position.y = getDeskSurfaceY();
 
@@ -1164,8 +1386,46 @@ function removeObject(object) {
   if (index > -1) {
     deskObjects.splice(index, 1);
     scene.remove(object);
+    // Clean up physics data
+    physicsState.velocities.delete(object.userData.id);
+    physicsState.angularVelocities.delete(object.userData.id);
+    physicsState.tiltState.delete(object.userData.id);
+    physicsState.tiltVelocities.delete(object.userData.id);
     saveState();
   }
+}
+
+// Reset an object that has fallen over back to upright position
+function resetFallenObject(object) {
+  if (!object.userData.isFallen) return;
+
+  object.userData.isFallen = false;
+
+  // Reset rotation to upright (preserve Y rotation)
+  const yRotation = object.rotation.y;
+  const physics = getObjectPhysics(object);
+
+  // Get the original base rotation for this object type
+  const creator = PRESET_CREATORS[object.userData.type];
+  if (creator) {
+    // Create a temporary object to get default rotation
+    const temp = creator({});
+    object.rotation.x = temp.rotation.x;
+    object.rotation.z = temp.rotation.z;
+    object.rotation.y = yRotation;
+    object.position.y = temp.position.y;
+    scene.remove(temp);
+  } else {
+    object.rotation.x = 0;
+    object.rotation.z = 0;
+    object.rotation.y = yRotation;
+    object.position.y = object.userData.originalY;
+  }
+
+  // Reset tilt state
+  physicsState.tiltState.set(object.userData.id, { x: 0, z: 0 });
+  physicsState.tiltVelocities.set(object.userData.id, { x: 0, z: 0 });
+  object.userData.baseTiltX = undefined;
 }
 
 function updateObjectColor(object, colorType, colorValue) {
@@ -1220,6 +1480,353 @@ function updateObjectColor(object, colorType, colorValue) {
 }
 
 // ============================================================================
+// PHYSICS SYSTEM
+// ============================================================================
+
+// Custom collision radii for objects where the bounding box is inaccurate
+// (e.g., laptop screen extends the bbox but shouldn't collide at that distance)
+const OBJECT_COLLISION_RADII = {
+  'laptop': 0.45,  // Base is 0.8 x 0.5, radius should be ~half diagonal but tight
+  'lamp': 0.35     // Base is small, don't use tall shade for collision
+};
+
+function getObjectBounds(object) {
+  // Use custom collision radius if defined for this object type
+  const type = object.userData.type;
+  if (OBJECT_COLLISION_RADII[type] !== undefined) {
+    return OBJECT_COLLISION_RADII[type] * (object.scale?.x || 1);
+  }
+
+  // Calculate approximate bounding radius for collision detection
+  const box = new THREE.Box3().setFromObject(object);
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  // Use the largest horizontal dimension as the collision radius
+  return Math.max(size.x, size.z) / 2;
+}
+
+function initPhysicsForObject(object) {
+  if (!physicsState.velocities.has(object.userData.id)) {
+    physicsState.velocities.set(object.userData.id, { x: 0, z: 0 });
+    physicsState.angularVelocities.set(object.userData.id, 0);
+    physicsState.tiltState.set(object.userData.id, { x: 0, z: 0 });
+    physicsState.tiltVelocities.set(object.userData.id, { x: 0, z: 0 });
+  }
+}
+
+function getObjectPhysics(object) {
+  const type = object.userData.type;
+  return OBJECT_PHYSICS[type] || { weight: 1.0, stability: 0.5, height: 0.3 };
+}
+
+function updatePhysics() {
+  if (!physicsState.enabled) return;
+
+  const deskHalfWidth = CONFIG.desk.width / 2 - 0.2;
+  const deskHalfDepth = CONFIG.desk.depth / 2 - 0.2;
+
+  // Update velocities, positions, and tilting for all non-dragged objects
+  deskObjects.forEach(obj => {
+    // Skip if object is being dragged, examined, or is in examine mode
+    if (obj === selectedObject && isDragging) return;
+    if (obj.userData.isExamining || obj.userData.isReturning) return;
+    if (examineState.active && examineState.object === obj) return;
+    if (obj.userData.isFallen) return;  // Skip physics for fallen objects
+
+    initPhysicsForObject(obj);
+
+    const vel = physicsState.velocities.get(obj.userData.id);
+    const angVel = physicsState.angularVelocities.get(obj.userData.id);
+    const tilt = physicsState.tiltState.get(obj.userData.id);
+    const tiltVel = physicsState.tiltVelocities.get(obj.userData.id);
+    const physics = getObjectPhysics(obj);
+
+    // Apply velocity
+    if (Math.abs(vel.x) > 0.001 || Math.abs(vel.z) > 0.001) {
+      obj.position.x += vel.x;
+      obj.position.z += vel.z;
+
+      // Apply friction
+      vel.x *= physicsState.friction;
+      vel.z *= physicsState.friction;
+
+      // Clamp to desk bounds with bounce
+      if (obj.position.x > deskHalfWidth) {
+        obj.position.x = deskHalfWidth;
+        vel.x = -vel.x * physicsState.bounceFactor;
+      } else if (obj.position.x < -deskHalfWidth) {
+        obj.position.x = -deskHalfWidth;
+        vel.x = -vel.x * physicsState.bounceFactor;
+      }
+
+      if (obj.position.z > deskHalfDepth) {
+        obj.position.z = deskHalfDepth;
+        vel.z = -vel.z * physicsState.bounceFactor;
+      } else if (obj.position.z < -deskHalfDepth) {
+        obj.position.z = -deskHalfDepth;
+        vel.z = -vel.z * physicsState.bounceFactor;
+      }
+    }
+
+    // Apply angular velocity (rotation around Y axis)
+    if (Math.abs(angVel) > 0.001) {
+      obj.rotation.y += angVel;
+      physicsState.angularVelocities.set(obj.userData.id, angVel * physicsState.friction);
+    }
+
+    // Apply tilt velocity and update tilt
+    if (tilt && tiltVel) {
+      // Apply tilt velocity
+      tilt.x += tiltVel.x;
+      tilt.z += tiltVel.z;
+
+      // Apply friction to tilt velocity
+      tiltVel.x *= 0.9;
+      tiltVel.z *= 0.9;
+
+      // Recovery force - objects try to return to upright based on stability
+      const recoveryForce = physicsState.tiltRecovery * physics.stability;
+      tiltVel.x -= tilt.x * recoveryForce;
+      tiltVel.z -= tilt.z * recoveryForce;
+
+      // Check if object has tipped over
+      const totalTilt = Math.sqrt(tilt.x * tilt.x + tilt.z * tilt.z);
+      if (totalTilt > physicsState.tipOverThreshold) {
+        // Object tips over! Complete the fall
+        obj.userData.isFallen = true;
+
+        // Animate falling to the side
+        const fallDirection = { x: tilt.x / totalTilt, z: tilt.z / totalTilt };
+        obj.rotation.x = fallDirection.z * Math.PI / 2;
+        obj.rotation.z = -fallDirection.x * Math.PI / 2;
+
+        // Adjust position to rest on the side
+        const heightOffset = physics.height * 0.3;
+        obj.position.y = getDeskSurfaceY() + heightOffset;
+
+        // Clear physics state for this object
+        physicsState.tiltState.set(obj.userData.id, { x: 0, z: 0 });
+        physicsState.tiltVelocities.set(obj.userData.id, { x: 0, z: 0 });
+      } else {
+        // Clamp tilt to max
+        if (Math.abs(tilt.x) > physicsState.maxTilt) {
+          tilt.x = Math.sign(tilt.x) * physicsState.maxTilt;
+        }
+        if (Math.abs(tilt.z) > physicsState.maxTilt) {
+          tilt.z = Math.sign(tilt.z) * physicsState.maxTilt;
+        }
+
+        // Apply tilt to object rotation (add to existing rotation for objects like clock)
+        // Store original rotation if not stored
+        if (obj.userData.baseTiltX === undefined) {
+          obj.userData.baseTiltX = obj.rotation.x;
+        }
+        obj.rotation.x = obj.userData.baseTiltX + tilt.z;
+        obj.rotation.z = -tilt.x;
+      }
+    }
+  });
+
+  // Check collisions between dragged object and other objects
+  if (isDragging && selectedObject) {
+    const draggedRadius = getObjectBounds(selectedObject);
+    const draggedPhysics = getObjectPhysics(selectedObject);
+
+    deskObjects.forEach(obj => {
+      if (obj === selectedObject) return;
+      if (obj.userData.isExamining || obj.userData.isReturning) return;
+      if (obj.userData.isFallen) return;
+
+      initPhysicsForObject(obj);
+
+      const otherRadius = getObjectBounds(obj);
+      const otherPhysics = getObjectPhysics(obj);
+      const minDist = (draggedRadius + otherRadius) * 0.7;
+
+      const dx = obj.position.x - selectedObject.position.x;
+      const dz = obj.position.z - selectedObject.position.z;
+      const dist = Math.sqrt(dx * dx + dz * dz);
+
+      if (dist < minDist && dist > 0.01) {
+        // Collision detected! Push and tilt the other object
+        const normalX = dx / dist;
+        const normalZ = dz / dist;
+
+        // Calculate drag speed for force scaling
+        const dragSpeed = Math.sqrt(
+          physicsState.dragVelocity.x * physicsState.dragVelocity.x +
+          physicsState.dragVelocity.z * physicsState.dragVelocity.z
+        );
+
+        // Scale force by drag speed (slow = less force, fast = more force)
+        // Minimum threshold to prevent tiny movements from causing big reactions
+        const speedMultiplier = Math.max(0, Math.min(1, (dragSpeed - physicsState.minPushSpeed) / 0.1));
+
+        // Calculate push force based on weight difference and speed
+        const weightRatio = draggedPhysics.weight / otherPhysics.weight;
+        const pushMultiplier = Math.min(weightRatio * 1.5, 3.0) * speedMultiplier;
+
+        const pushX = normalX * physicsState.pushForce * pushMultiplier;
+        const pushZ = normalZ * physicsState.pushForce * pushMultiplier;
+
+        const vel = physicsState.velocities.get(obj.userData.id);
+        vel.x += pushX;
+        vel.z += pushZ;
+
+        // Add tilt based on collision (only if moving fast enough)
+        // Higher stability means harder to tip
+        const tiltVel = physicsState.tiltVelocities.get(obj.userData.id);
+        const tiltAmount = physicsState.tiltForce * (1 - otherPhysics.stability) * pushMultiplier * speedMultiplier;
+        tiltVel.x += normalX * tiltAmount;
+        tiltVel.z += normalZ * tiltAmount;
+
+        // Add some spin based on collision angle (also scaled by speed)
+        const crossProduct = dx * pushZ - dz * pushX;
+        const angVel = physicsState.angularVelocities.get(obj.userData.id);
+        physicsState.angularVelocities.set(obj.userData.id, angVel + crossProduct * 0.3 * speedMultiplier);
+
+        // Separate objects to prevent overlap
+        const overlap = minDist - dist;
+        obj.position.x += normalX * overlap * 0.5;
+        obj.position.z += normalZ * overlap * 0.5;
+      }
+    });
+  }
+
+  // Check collisions from rotating objects (when an object is being scrolled to rotate)
+  deskObjects.forEach(rotatingObj => {
+    if (rotatingObj.userData.isExamining || rotatingObj.userData.isReturning) return;
+    if (rotatingObj.userData.isFallen) return;
+
+    const rotAngVel = physicsState.angularVelocities.get(rotatingObj.userData.id);
+    if (!rotAngVel || Math.abs(rotAngVel) < 0.01) return;
+
+    const rotRadius = getObjectBounds(rotatingObj);
+    const rotPhysics = getObjectPhysics(rotatingObj);
+
+    deskObjects.forEach(obj => {
+      if (obj === rotatingObj) return;
+      if (obj === selectedObject && isDragging) return;
+      if (obj.userData.isExamining || obj.userData.isReturning) return;
+      if (obj.userData.isFallen) return;
+
+      initPhysicsForObject(obj);
+
+      const otherRadius = getObjectBounds(obj);
+      const otherPhysics = getObjectPhysics(obj);
+      const minDist = (rotRadius + otherRadius) * 0.8;
+
+      const dx = obj.position.x - rotatingObj.position.x;
+      const dz = obj.position.z - rotatingObj.position.z;
+      const dist = Math.sqrt(dx * dx + dz * dz);
+
+      if (dist < minDist && dist > 0.01) {
+        // Rotating object hitting another object
+        const normalX = dx / dist;
+        const normalZ = dz / dist;
+
+        // Calculate tangent force from rotation
+        const tangentX = -normalZ * Math.sign(rotAngVel);
+        const tangentZ = normalX * Math.sign(rotAngVel);
+
+        const rotSpeed = Math.abs(rotAngVel) * rotRadius;
+        const forceMultiplier = rotPhysics.weight / otherPhysics.weight;
+
+        const vel = physicsState.velocities.get(obj.userData.id);
+        vel.x += (normalX * 0.5 + tangentX * 0.5) * rotSpeed * forceMultiplier * 0.5;
+        vel.z += (normalZ * 0.5 + tangentZ * 0.5) * rotSpeed * forceMultiplier * 0.5;
+
+        // Add tilt from rotating collision
+        const tiltVel = physicsState.tiltVelocities.get(obj.userData.id);
+        const tiltAmount = physicsState.tiltForce * (1 - otherPhysics.stability) * rotSpeed * forceMultiplier;
+        tiltVel.x += normalX * tiltAmount * 0.5;
+        tiltVel.z += normalZ * tiltAmount * 0.5;
+      }
+    });
+  });
+
+  // Check collisions between all pairs of non-dragged moving objects
+  for (let i = 0; i < deskObjects.length; i++) {
+    const objA = deskObjects[i];
+    if (objA === selectedObject && isDragging) continue;
+    if (objA.userData.isExamining || objA.userData.isReturning) continue;
+    if (objA.userData.isFallen) continue;
+
+    const radiusA = getObjectBounds(objA);
+    const physicsA = getObjectPhysics(objA);
+    const velA = physicsState.velocities.get(objA.userData.id);
+    if (!velA) continue;
+
+    for (let j = i + 1; j < deskObjects.length; j++) {
+      const objB = deskObjects[j];
+      if (objB === selectedObject && isDragging) continue;
+      if (objB.userData.isExamining || objB.userData.isReturning) continue;
+      if (objB.userData.isFallen) continue;
+
+      const radiusB = getObjectBounds(objB);
+      const physicsB = getObjectPhysics(objB);
+      const velB = physicsState.velocities.get(objB.userData.id);
+      if (!velB) continue;
+
+      const minDist = (radiusA + radiusB) * 0.7;
+
+      const dx = objB.position.x - objA.position.x;
+      const dz = objB.position.z - objA.position.z;
+      const dist = Math.sqrt(dx * dx + dz * dz);
+
+      if (dist < minDist && dist > 0.01) {
+        // Elastic collision between two objects
+        const nx = dx / dist;
+        const nz = dz / dist;
+
+        // Relative velocity
+        const dvx = velA.x - velB.x;
+        const dvz = velA.z - velB.z;
+
+        // Relative velocity along collision normal
+        const dvn = dvx * nx + dvz * nz;
+
+        // Only resolve if objects are moving towards each other
+        if (dvn > 0) {
+          // Weighted elastic collision based on object weights
+          const totalWeight = physicsA.weight + physicsB.weight;
+          const weightA = physicsA.weight / totalWeight;
+          const weightB = physicsB.weight / totalWeight;
+
+          velA.x -= dvn * nx * weightB;
+          velA.z -= dvn * nz * weightB;
+          velB.x += dvn * nx * weightA;
+          velB.z += dvn * nz * weightA;
+
+          // Add tilt from collision
+          const impactSpeed = Math.sqrt(dvx * dvx + dvz * dvz);
+          const tiltVelA = physicsState.tiltVelocities.get(objA.userData.id);
+          const tiltVelB = physicsState.tiltVelocities.get(objB.userData.id);
+
+          if (tiltVelA) {
+            const tiltAmountA = impactSpeed * physicsState.tiltForce * (1 - physicsA.stability) * weightB;
+            tiltVelA.x -= nx * tiltAmountA;
+            tiltVelA.z -= nz * tiltAmountA;
+          }
+          if (tiltVelB) {
+            const tiltAmountB = impactSpeed * physicsState.tiltForce * (1 - physicsB.stability) * weightA;
+            tiltVelB.x += nx * tiltAmountB;
+            tiltVelB.z += nz * tiltAmountB;
+          }
+        }
+
+        // Separate objects
+        const overlap = minDist - dist;
+        objA.position.x -= (nx * overlap * 0.25);
+        objA.position.z -= (nz * overlap * 0.25);
+        objB.position.x += (nx * overlap * 0.25);
+        objB.position.z += (nz * overlap * 0.25);
+      }
+    }
+  }
+}
+
+// ============================================================================
 // CLOCK UPDATE
 // ============================================================================
 function updateClock() {
@@ -1237,25 +1844,26 @@ function updateClock() {
       const minuteHand = obj.getObjectByName('minuteHand');
       const secondHand = obj.getObjectByName('secondHand');
 
+      // Calculate angles for real time display
+      // Hands rotate clockwise, so we use negative angles
+      // 12 o'clock is at the top (positive Y), which is 0 radians for our setup
+
       if (hourHand) {
+        // Hour hand: full rotation every 12 hours, plus gradual movement based on minutes
         const hourAngle = -((now.getHours() % 12) / 12) * Math.PI * 2 - (now.getMinutes() / 60) * (Math.PI / 6);
         hourHand.rotation.z = hourAngle;
-        hourHand.position.y = Math.cos(hourAngle) * 0.09;
-        hourHand.position.x = Math.sin(hourAngle) * 0.09;
       }
 
       if (minuteHand) {
-        const minuteAngle = -(now.getMinutes() / 60) * Math.PI * 2;
+        // Minute hand: full rotation every 60 minutes, plus gradual movement based on seconds
+        const minuteAngle = -(now.getMinutes() / 60) * Math.PI * 2 - (now.getSeconds() / 60) * (Math.PI / 30);
         minuteHand.rotation.z = minuteAngle;
-        minuteHand.position.y = Math.cos(minuteAngle) * 0.125;
-        minuteHand.position.x = Math.sin(minuteAngle) * 0.125;
       }
 
       if (secondHand) {
+        // Second hand: full rotation every 60 seconds
         const secondAngle = -(now.getSeconds() / 60) * Math.PI * 2;
         secondHand.rotation.z = secondAngle;
-        secondHand.position.y = Math.cos(secondAngle) * 0.14;
-        secondHand.position.x = Math.sin(secondAngle) * 0.14;
       }
     }
   });
@@ -1272,7 +1880,7 @@ function setupEventListeners() {
   container.addEventListener('mousemove', onMouseMove, false);
   container.addEventListener('mouseup', onMouseUp, false);
   container.addEventListener('contextmenu', onRightClick, false);
-  container.addEventListener('dblclick', onDoubleClick, false);
+  // Double-click examine removed - use drag+scroll instead
   container.addEventListener('wheel', onMouseWheel, { passive: false });
 
   // Window resize
@@ -1421,9 +2029,98 @@ function setupEventListeners() {
   // Modal close button
   document.getElementById('close-modal').addEventListener('click', closeInteractionModal);
   document.getElementById('modal-overlay').addEventListener('click', closeInteractionModal);
+
+  // Pointer lock setup
+  setupPointerLock(container);
+}
+
+// ============================================================================
+// POINTER LOCK (FPS-style mouse capture)
+// ============================================================================
+function setupPointerLock(container) {
+  const crosshair = document.getElementById('crosshair');
+  const instructions = document.getElementById('pointer-lock-instructions');
+
+  // Show initial instructions
+  if (pointerLockState.showInstructions) {
+    instructions.classList.add('visible');
+  }
+
+  // Click to request pointer lock
+  container.addEventListener('click', (e) => {
+    // Don't lock if clicking on UI elements or in examine mode
+    if (e.target.closest('#menu') || e.target.closest('#customization-panel') ||
+        e.target.closest('#interaction-modal') || isDragging) {
+      return;
+    }
+
+    // Request pointer lock
+    if (!pointerLockState.isLocked) {
+      container.requestPointerLock = container.requestPointerLock ||
+                                     container.mozRequestPointerLock ||
+                                     container.webkitRequestPointerLock;
+      if (container.requestPointerLock) {
+        container.requestPointerLock();
+      }
+    }
+  });
+
+  // Pointer lock change handler
+  document.addEventListener('pointerlockchange', onPointerLockChange);
+  document.addEventListener('mozpointerlockchange', onPointerLockChange);
+  document.addEventListener('webkitpointerlockchange', onPointerLockChange);
+
+  function onPointerLockChange() {
+    const lockElement = document.pointerLockElement ||
+                        document.mozPointerLockElement ||
+                        document.webkitPointerLockElement;
+
+    if (lockElement === container) {
+      // Pointer is locked
+      pointerLockState.isLocked = true;
+      pointerLockState.showInstructions = false;
+      crosshair.classList.add('visible');
+      instructions.classList.remove('visible');
+    } else {
+      // Pointer is unlocked
+      pointerLockState.isLocked = false;
+      crosshair.classList.remove('visible');
+    }
+  }
+
+  // Pointer lock error handler
+  document.addEventListener('pointerlockerror', onPointerLockError);
+  document.addEventListener('mozpointerlockerror', onPointerLockError);
+  document.addEventListener('webkitpointerlockerror', onPointerLockError);
+
+  function onPointerLockError() {
+    console.warn('Pointer lock failed');
+  }
 }
 
 function onMouseDown(event) {
+  // Middle mouse button - quick interaction (toggle lamp, flip hourglass, etc.)
+  if (event.button === 1) {
+    event.preventDefault();
+    updateMousePosition(event);
+
+    raycaster.setFromCamera(mouse, camera);
+    const intersects = raycaster.intersectObjects(deskObjects, true);
+
+    if (intersects.length > 0) {
+      let object = intersects[0].object;
+      while (object.parent && !deskObjects.includes(object)) {
+        object = object.parent;
+      }
+
+      if (deskObjects.includes(object)) {
+        // Perform quick toggle interaction based on object type
+        performQuickInteraction(object);
+      }
+    }
+    return;
+  }
+
   if (event.button !== 0) return; // Left click only
 
   updateMousePosition(event);
@@ -1448,6 +2145,11 @@ function onMouseDown(event) {
       object.userData.isExamining = false;
       object.userData.isReturning = false;
 
+      // Reset fallen object when picked up
+      if (object.userData.isFallen) {
+        resetFallenObject(object);
+      }
+
       // Lift the object
       object.userData.isLifted = true;
       object.userData.targetY = object.userData.originalY + CONFIG.physics.liftHeight;
@@ -1459,6 +2161,39 @@ function onMouseDown(event) {
 }
 
 function onMouseMove(event) {
+  // Use pointer lock movement data if locked, otherwise use delta from previous position
+  let deltaX, deltaY;
+  if (pointerLockState.isLocked) {
+    // Use movementX/Y for pointer lock (raw mouse movement)
+    deltaX = event.movementX || event.mozMovementX || event.webkitMovementX || 0;
+    deltaY = event.movementY || event.mozMovementY || event.webkitMovementY || 0;
+  } else {
+    // Fallback to calculating delta from previous position
+    deltaX = event.clientX - previousMousePosition.x;
+    deltaY = event.clientY - previousMousePosition.y;
+  }
+
+  // FPS-style camera look - active when pointer is locked and not dragging
+  const modal = document.getElementById('interaction-modal');
+  const isModalOpen = modal && modal.classList.contains('open');
+
+  if (pointerLockState.isLocked && cameraLookState.isLooking && !isDragging && !isModalOpen) {
+    // Update yaw and pitch
+    cameraLookState.yaw -= deltaX * cameraLookState.sensitivity;
+    cameraLookState.pitch -= deltaY * cameraLookState.sensitivity;
+
+    // Clamp pitch to prevent flipping (looking too far up or down)
+    cameraLookState.pitch = Math.max(cameraLookState.minPitch, Math.min(cameraLookState.maxPitch, cameraLookState.pitch));
+
+    // Clamp yaw to prevent rotating too far left/right (seated person perspective)
+    cameraLookState.yaw = Math.max(cameraLookState.minYaw, Math.min(cameraLookState.maxYaw, cameraLookState.yaw));
+
+    // Update camera direction
+    updateCameraLook();
+  }
+
+  previousMousePosition = { x: event.clientX, y: event.clientY };
+
   updateMousePosition(event);
 
   if (isDragging && selectedObject) {
@@ -1472,8 +2207,23 @@ function onMouseMove(event) {
       const halfWidth = CONFIG.desk.width / 2 - 0.2;
       const halfDepth = CONFIG.desk.depth / 2 - 0.2;
 
-      selectedObject.position.x = Math.max(-halfWidth, Math.min(halfWidth, point.x));
-      selectedObject.position.z = Math.max(-halfDepth, Math.min(halfDepth, point.z));
+      const newX = Math.max(-halfWidth, Math.min(halfWidth, point.x));
+      const newZ = Math.max(-halfDepth, Math.min(halfDepth, point.z));
+
+      // Track drag velocity for physics collision force scaling
+      const now = Date.now();
+      if (physicsState.lastDragPosition && physicsState.lastDragTime > 0) {
+        const dt = (now - physicsState.lastDragTime) / 1000; // Convert to seconds
+        if (dt > 0 && dt < 0.1) { // Ignore stale data
+          physicsState.dragVelocity.x = (newX - physicsState.lastDragPosition.x) / dt;
+          physicsState.dragVelocity.z = (newZ - physicsState.lastDragPosition.z) / dt;
+        }
+      }
+      physicsState.lastDragPosition = { x: newX, z: newZ };
+      physicsState.lastDragTime = now;
+
+      selectedObject.position.x = newX;
+      selectedObject.position.z = newZ;
     }
   }
 
@@ -1509,11 +2259,22 @@ function onMouseMove(event) {
 }
 
 function onMouseUp(event) {
+  // Middle mouse button no longer used for camera look
+  if (event.button === 1) {
+    return;
+  }
+
   if (isDragging && selectedObject) {
     // Drop the object
     selectedObject.userData.isLifted = false;
     selectedObject.userData.targetY = selectedObject.userData.originalY;
     isDragging = false;
+
+    // Reset drag velocity tracking
+    physicsState.lastDragPosition = null;
+    physicsState.lastDragTime = 0;
+    physicsState.dragVelocity = { x: 0, z: 0 };
+
     saveState();
   }
 }
@@ -1521,12 +2282,17 @@ function onMouseUp(event) {
 function onMouseWheel(event) {
   updateMousePosition(event);
 
-  // If in examine mode, allow rotation and scaling the examined object with scroll
-  // Uses same controls as normal mode: scroll = rotate, shift+scroll = resize
+  // If in examine mode: scroll UP exits examine mode, scroll DOWN with Shift scales
   if (examineState.active && examineState.object) {
     event.preventDefault();
 
     const object = examineState.object;
+
+    // Scroll UP (deltaY < 0) exits examine mode and returns object to its place
+    if (event.deltaY < 0 && !event.shiftKey) {
+      exitExamineMode();
+      return;
+    }
 
     if (event.shiftKey) {
       // Scale object (preserving proportions) with Shift+scroll
@@ -1547,13 +2313,24 @@ function onMouseWheel(event) {
         }
         saveState();
       }
-    } else {
-      // Rotate object around Y axis (perpendicular to desk) with scroll
-      const rotationDelta = event.deltaY > 0 ? 0.15 : -0.15;
+    } else if (event.deltaY > 0) {
+      // Scroll DOWN rotates object around Y axis
+      const rotationDelta = 0.15;
       object.rotation.y += rotationDelta;
       object.userData.rotationY = object.rotation.y;
       saveState();
     }
+    return;
+  }
+
+  // If dragging an object, scroll down enters examine mode (brings object closer)
+  if (isDragging && selectedObject && event.deltaY > 0) {
+    event.preventDefault();
+    // Stop dragging and enter examine mode
+    isDragging = false;
+    selectedObject.userData.isLifted = false;
+    selectedObject.userData.targetY = selectedObject.userData.originalY;
+    enterExamineMode(selectedObject);
     return;
   }
 
@@ -1593,28 +2370,30 @@ function onMouseWheel(event) {
       }
     }
   } else {
-    // If not hovering over an object, adjust camera distance
-    event.preventDefault();
-    const zoomDelta = event.deltaY > 0 ? 0.3 : -0.3;
+    // If not hovering over an object, adjust camera distance ONLY if Alt is held
+    if (event.altKey) {
+      event.preventDefault();
+      const zoomDelta = event.deltaY > 0 ? 0.3 : -0.3;
 
-    // Calculate new camera position (move along the view direction)
-    const direction = new THREE.Vector3();
-    camera.getWorldDirection(direction);
+      // Calculate new camera position (move along the view direction)
+      const direction = new THREE.Vector3();
+      camera.getWorldDirection(direction);
 
-    const newX = camera.position.x - direction.x * zoomDelta;
-    const newY = camera.position.y - direction.y * zoomDelta;
-    const newZ = camera.position.z - direction.z * zoomDelta;
+      const newX = camera.position.x - direction.x * zoomDelta;
+      const newY = camera.position.y - direction.y * zoomDelta;
+      const newZ = camera.position.z - direction.z * zoomDelta;
 
-    // Limit camera distance
-    const minDistance = 3;
-    const maxDistance = 15;
-    const lookAt = new THREE.Vector3(CONFIG.camera.lookAt.x, CONFIG.camera.lookAt.y, CONFIG.camera.lookAt.z);
-    const newPos = new THREE.Vector3(newX, newY, newZ);
-    const distance = newPos.distanceTo(lookAt);
+      // Limit camera distance
+      const minDistance = 3;
+      const maxDistance = 15;
+      const lookAt = new THREE.Vector3(CONFIG.camera.lookAt.x, CONFIG.camera.lookAt.y, CONFIG.camera.lookAt.z);
+      const newPos = new THREE.Vector3(newX, newY, newZ);
+      const distance = newPos.distanceTo(lookAt);
 
-    if (distance >= minDistance && distance <= maxDistance) {
-      camera.position.set(newX, newY, newZ);
-      saveState();
+      if (distance >= minDistance && distance <= maxDistance) {
+        camera.position.set(newX, newY, newZ);
+        saveState();
+      }
     }
   }
 }
@@ -1659,35 +2438,7 @@ function onRightClick(event) {
   }
 }
 
-function onDoubleClick(event) {
-  updateMousePosition(event);
-
-  // If already in examine mode, exit it
-  if (examineState.active) {
-    exitExamineMode();
-    return;
-  }
-
-  raycaster.setFromCamera(mouse, camera);
-  const intersects = raycaster.intersectObjects(deskObjects, true);
-
-  if (intersects.length > 0) {
-    let object = intersects[0].object;
-    while (object.parent && !deskObjects.includes(object)) {
-      object = object.parent;
-    }
-
-    if (deskObjects.includes(object)) {
-      // Enter examine mode - bring object closer to camera
-      enterExamineMode(object);
-
-      // Also open interaction modal if object is interactive
-      if (object.userData.interactive) {
-        openInteractionModal(object);
-      }
-    }
-  }
-}
+// Double-click examine removed - use drag+scroll down to enter, scroll up to exit
 
 function enterExamineMode(object) {
   // Store original state
@@ -2028,13 +2779,21 @@ function setupLampHandlers(object) {
 
     const bulb = object.getObjectByName('bulb');
     const light = object.getObjectByName('lampLight');
+    const spotLight = object.getObjectByName('lampSpotLight');
+    const ambientLight = object.getObjectByName('lampAmbient');
 
     if (object.userData.isOn) {
       if (bulb) {
-        bulb.material.emissiveIntensity = 0.8;
+        bulb.material.emissiveIntensity = 1.5;
       }
       if (light) {
-        light.intensity = 0.5;
+        light.intensity = 0.8;
+      }
+      if (spotLight) {
+        spotLight.intensity = 3.0;
+      }
+      if (ambientLight) {
+        ambientLight.intensity = 0.3;
       }
       status.textContent = 'ON';
       toggleBtn.textContent = 'Turn Off';
@@ -2045,6 +2804,12 @@ function setupLampHandlers(object) {
       }
       if (light) {
         light.intensity = 0;
+      }
+      if (spotLight) {
+        spotLight.intensity = 0;
+      }
+      if (ambientLight) {
+        ambientLight.intensity = 0;
       }
       status.textContent = 'OFF';
       toggleBtn.textContent = 'Turn On';
@@ -2114,10 +2879,101 @@ function setupHourglassHandlers(object) {
   });
 }
 
+// Quick interaction function for middle-click toggle actions
+// This allows simple interactions without picking up or opening modal
+function performQuickInteraction(object) {
+  const type = object.userData.type;
+
+  switch (type) {
+    case 'lamp':
+      // Toggle lamp on/off
+      object.userData.isOn = !object.userData.isOn;
+
+      const bulb = object.getObjectByName('bulb');
+      const light = object.getObjectByName('lampLight');
+      const spotLight = object.getObjectByName('lampSpotLight');
+      const ambientLight = object.getObjectByName('lampAmbient');
+
+      if (object.userData.isOn) {
+        if (bulb) bulb.material.emissiveIntensity = 1.5;
+        if (light) light.intensity = 0.8;
+        if (spotLight) spotLight.intensity = 3.0;
+        if (ambientLight) ambientLight.intensity = 0.3;
+      } else {
+        if (bulb) bulb.material.emissiveIntensity = 0;
+        if (light) light.intensity = 0;
+        if (spotLight) spotLight.intensity = 0;
+        if (ambientLight) ambientLight.intensity = 0;
+      }
+      break;
+
+    case 'hourglass':
+      // Flip hourglass animation
+      const startRotation = object.rotation.z;
+      const endRotation = startRotation + Math.PI;
+      const duration = 500;
+      const startTime = Date.now();
+
+      function animateFlip() {
+        const elapsed = Date.now() - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+
+        // Ease in-out
+        const easeProgress = progress < 0.5
+          ? 2 * progress * progress
+          : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+
+        object.rotation.z = startRotation + (endRotation - startRotation) * easeProgress;
+
+        if (progress < 1) {
+          requestAnimationFrame(animateFlip);
+        }
+      }
+
+      animateFlip();
+      break;
+
+    case 'globe':
+      // Toggle globe rotation
+      if (object.userData.rotationSpeed > 0) {
+        object.userData.rotationSpeed = 0;
+      } else {
+        object.userData.rotationSpeed = 0.01;
+      }
+      break;
+
+    default:
+      // For non-toggle objects, open the interaction modal instead
+      if (object.userData.interactive) {
+        enterExamineMode(object);
+        openInteractionModal(object);
+      }
+      break;
+  }
+}
+
 function updateMousePosition(event) {
-  const rect = renderer.domElement.getBoundingClientRect();
-  mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-  mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+  if (pointerLockState.isLocked) {
+    // When pointer is locked, the cursor is effectively at the center of the screen
+    mouse.x = 0;
+    mouse.y = 0;
+  } else {
+    const rect = renderer.domElement.getBoundingClientRect();
+    mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+  }
+}
+
+function updateCameraLook() {
+  // Calculate new camera direction based on yaw and pitch
+  const lookAt = new THREE.Vector3();
+
+  // Convert spherical to Cartesian coordinates
+  lookAt.x = camera.position.x + Math.sin(cameraLookState.yaw) * Math.cos(cameraLookState.pitch);
+  lookAt.y = camera.position.y + Math.sin(cameraLookState.pitch);
+  lookAt.z = camera.position.z + Math.cos(cameraLookState.yaw) * Math.cos(cameraLookState.pitch);
+
+  camera.lookAt(lookAt);
 }
 
 function onWindowResize() {
@@ -2148,7 +3004,9 @@ async function saveState() {
     camera: {
       x: camera.position.x,
       y: camera.position.y,
-      z: camera.position.z
+      z: camera.position.z,
+      yaw: cameraLookState.yaw,
+      pitch: cameraLookState.pitch
     }
   };
 
@@ -2164,13 +3022,21 @@ async function loadState() {
     const result = await window.electronAPI.loadState();
 
     if (result.success && result.state) {
-      // Load camera position if saved
+      // Load camera position and look direction if saved
       if (result.state.camera) {
         camera.position.set(
           result.state.camera.x,
           result.state.camera.y,
           result.state.camera.z
         );
+        // Load camera look direction
+        if (result.state.camera.yaw !== undefined) {
+          cameraLookState.yaw = result.state.camera.yaw;
+        }
+        if (result.state.camera.pitch !== undefined) {
+          cameraLookState.pitch = result.state.camera.pitch;
+        }
+        updateCameraLook();
       }
 
       // Load objects
@@ -2212,6 +3078,9 @@ async function loadState() {
 // ============================================================================
 function animate() {
   requestAnimationFrame(animate);
+
+  // Update physics
+  updatePhysics();
 
   // Update object positions (lift/drop animation)
   deskObjects.forEach(obj => {

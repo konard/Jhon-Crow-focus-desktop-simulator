@@ -564,6 +564,58 @@
     .preset-item {
       position: relative;
     }
+
+    /* Crosshair for pointer lock mode */
+    #crosshair {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 8px;
+      height: 8px;
+      background: rgba(255, 255, 255, 0.5);
+      border-radius: 50%;
+      pointer-events: none;
+      z-index: 50;
+      opacity: 0;
+      transition: opacity 0.2s ease;
+      box-shadow: 0 0 4px rgba(0, 0, 0, 0.5);
+    }
+
+    #crosshair.visible {
+      opacity: 1;
+    }
+
+    /* Pointer lock instruction overlay */
+    #pointer-lock-instructions {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(0, 0, 0, 0.85);
+      color: rgba(255, 255, 255, 0.9);
+      padding: 30px 50px;
+      border-radius: 16px;
+      text-align: center;
+      z-index: 150;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+
+    #pointer-lock-instructions.visible {
+      opacity: 1;
+    }
+
+    #pointer-lock-instructions h3 {
+      font-size: 18px;
+      margin-bottom: 10px;
+    }
+
+    #pointer-lock-instructions p {
+      font-size: 14px;
+      color: rgba(255, 255, 255, 0.7);
+    }
   </style>
 </head>
 <body>
@@ -621,8 +673,8 @@
           <div class="name">Pen Holder</div>
         </div>
         <div class="preset-item" data-preset="books">
-          <div class="icon">📚</div>
-          <div class="name">Books</div>
+          <div class="icon">📕</div>
+          <div class="name">Book</div>
         </div>
       </div>
     </div>
@@ -701,10 +753,19 @@
   </div>
 
   <div id="instructions">
-    Drag objects to move | Scroll on object to rotate | Shift+Scroll to resize | Scroll on desk to zoom | Right-click to customize | Double-click to examine (scroll to resize)
+    Click to lock mouse | Drag objects to move | Drag+ScrollDown to examine | ScrollUp to return | Scroll to rotate | Shift+Scroll to resize | Right-click to customize | Middle-click for quick actions
   </div>
 
   <div id="clock-display">00:00:00</div>
+
+  <!-- Crosshair for pointer lock mode -->
+  <div id="crosshair"></div>
+
+  <!-- Pointer lock instructions -->
+  <div id="pointer-lock-instructions">
+    <h3>Click to Lock Mouse</h3>
+    <p>Press ESC to unlock</p>
+  </div>
 
   <!-- Three.js loaded locally (must be loaded before renderer.js) -->
   <script src="./lib/three.min.js"></script>
