@@ -89,6 +89,16 @@ let examineState = {
   originalScale: null
 };
 
+// First-person camera look state
+let cameraLookState = {
+  isLooking: false,
+  sensitivity: 0.002,
+  yaw: 0,        // Horizontal rotation
+  pitch: -0.4,   // Vertical rotation (initial tilt down towards desk)
+  minPitch: -1.2,   // Looking down limit
+  maxPitch: 0.3     // Looking up limit
+};
+
 // ============================================================================
 // INITIALIZATION
 // ============================================================================
@@ -402,7 +412,7 @@ function createClock(options = {}) {
     accentColor: options.accentColor || '#1e293b'
   };
 
-  // Clock body
+  // Clock body (frame)
   const bodyGeometry = new THREE.CylinderGeometry(0.4, 0.4, 0.1, 32);
   const bodyMaterial = new THREE.MeshStandardMaterial({
     color: new THREE.Color(group.userData.mainColor),
@@ -414,7 +424,7 @@ function createClock(options = {}) {
   body.castShadow = true;
   group.add(body);
 
-  // Clock face
+  // Clock face (white background)
   const faceGeometry = new THREE.CircleGeometry(0.35, 32);
   const faceMaterial = new THREE.MeshStandardMaterial({
     color: 0xfafafa,
@@ -424,39 +434,79 @@ function createClock(options = {}) {
   face.position.z = 0.051;
   group.add(face);
 
-  // Hour hand
-  const hourGeometry = new THREE.BoxGeometry(0.03, 0.18, 0.02);
+  // Add hour markers (12 small dots around the dial)
+  const markerMaterial = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(group.userData.accentColor),
+    roughness: 0.3,
+    metalness: 0.5
+  });
+
+  for (let i = 0; i < 12; i++) {
+    const angle = (i / 12) * Math.PI * 2 - Math.PI / 2; // Start at 12 o'clock
+    const radius = 0.28;
+    const markerSize = (i % 3 === 0) ? 0.025 : 0.015; // Larger markers at 12, 3, 6, 9
+
+    const markerGeometry = new THREE.CircleGeometry(markerSize, 8);
+    const marker = new THREE.Mesh(markerGeometry, markerMaterial);
+    marker.position.set(
+      Math.cos(angle) * radius,
+      Math.sin(angle) * radius,
+      0.052
+    );
+    group.add(marker);
+  }
+
+  // Hand material
   const handMaterial = new THREE.MeshStandardMaterial({
     color: new THREE.Color(group.userData.accentColor),
     roughness: 0.3,
     metalness: 0.7
   });
+
+  // Hour hand - pivot group (rotates around center)
+  const hourPivot = new THREE.Group();
+  hourPivot.name = 'hourHand';
+  hourPivot.position.z = 0.06;
+
+  // Hour hand geometry (offset so one end is at pivot)
+  const hourGeometry = new THREE.BoxGeometry(0.035, 0.15, 0.02);
   const hourHand = new THREE.Mesh(hourGeometry, handMaterial);
-  hourHand.position.set(0, 0.09, 0.06);
-  hourHand.name = 'hourHand';
-  group.add(hourHand);
+  hourHand.position.y = 0.075; // Half the length, so it pivots from one end
+  hourPivot.add(hourHand);
+  group.add(hourPivot);
 
-  // Minute hand
-  const minuteGeometry = new THREE.BoxGeometry(0.02, 0.25, 0.02);
+  // Minute hand - pivot group
+  const minutePivot = new THREE.Group();
+  minutePivot.name = 'minuteHand';
+  minutePivot.position.z = 0.07;
+
+  // Minute hand geometry
+  const minuteGeometry = new THREE.BoxGeometry(0.025, 0.22, 0.02);
   const minuteHand = new THREE.Mesh(minuteGeometry, handMaterial);
-  minuteHand.position.set(0, 0.125, 0.07);
-  minuteHand.name = 'minuteHand';
-  group.add(minuteHand);
+  minuteHand.position.y = 0.11; // Half the length
+  minutePivot.add(minuteHand);
+  group.add(minutePivot);
 
-  // Second hand
-  const secondGeometry = new THREE.BoxGeometry(0.01, 0.28, 0.01);
+  // Second hand - pivot group
+  const secondPivot = new THREE.Group();
+  secondPivot.name = 'secondHand';
+  secondPivot.position.z = 0.08;
+
   const secondMaterial = new THREE.MeshStandardMaterial({
     color: 0xef4444,
     roughness: 0.3,
     metalness: 0.5
   });
-  const secondHand = new THREE.Mesh(secondGeometry, secondMaterial);
-  secondHand.position.set(0, 0.14, 0.08);
-  secondHand.name = 'secondHand';
-  group.add(secondHand);
 
-  // Center dot
-  const centerGeometry = new THREE.SphereGeometry(0.03, 16, 16);
+  // Second hand geometry
+  const secondGeometry = new THREE.BoxGeometry(0.012, 0.26, 0.01);
+  const secondHand = new THREE.Mesh(secondGeometry, secondMaterial);
+  secondHand.position.y = 0.13; // Half the length
+  secondPivot.add(secondHand);
+  group.add(secondPivot);
+
+  // Center dot (covers pivot point)
+  const centerGeometry = new THREE.SphereGeometry(0.035, 16, 16);
   const centerMaterial = new THREE.MeshStandardMaterial({
     color: new THREE.Color(group.userData.accentColor),
     roughness: 0.2,
@@ -507,7 +557,7 @@ function createLamp(options = {}) {
   base.castShadow = true;
   group.add(base);
 
-  // Arm
+  // Arm - more upright (reduced tilt angle)
   const armGeometry = new THREE.CylinderGeometry(0.03, 0.03, 0.8, 16);
   const armMaterial = new THREE.MeshStandardMaterial({
     color: new THREE.Color(group.userData.mainColor),
@@ -516,11 +566,11 @@ function createLamp(options = {}) {
   });
   const arm = new THREE.Mesh(armGeometry, armMaterial);
   arm.position.y = 0.4;
-  arm.rotation.z = Math.PI / 8;
+  arm.rotation.z = Math.PI / 24;  // Much less tilted than before (was PI/8)
   arm.castShadow = true;
   group.add(arm);
 
-  // Lamp head (cone shade)
+  // Lamp head (cone shade) - pointing more downward to shine on desk
   const headGeometry = new THREE.ConeGeometry(0.25, 0.3, 32, 1, true);
   const headMaterial = new THREE.MeshStandardMaterial({
     color: new THREE.Color(group.userData.mainColor),
@@ -529,27 +579,28 @@ function createLamp(options = {}) {
     side: THREE.DoubleSide
   });
   const head = new THREE.Mesh(headGeometry, headMaterial);
-  head.position.set(0.15, 0.75, 0);
-  head.rotation.z = -Math.PI / 4;
+  head.position.set(0.05, 0.82, 0);  // Adjusted position for more upright arm
+  head.rotation.z = -Math.PI / 12;   // Much less tilted (was PI/4), points more downward
   head.castShadow = true;
   group.add(head);
 
-  // Light bulb (emissive sphere)
+  // Light bulb (emissive sphere) - brighter
   const bulbGeometry = new THREE.SphereGeometry(0.08, 16, 16);
   const bulbMaterial = new THREE.MeshStandardMaterial({
     color: new THREE.Color(group.userData.accentColor),
     emissive: new THREE.Color(group.userData.accentColor),
-    emissiveIntensity: 0.8,
+    emissiveIntensity: 1.2,  // Increased from 0.8
     roughness: 0.2
   });
   const bulb = new THREE.Mesh(bulbGeometry, bulbMaterial);
-  bulb.position.set(0.15, 0.65, 0);
+  bulb.position.set(0.05, 0.72, 0);  // Adjusted for new head position
   bulb.name = 'bulb';
   group.add(bulb);
 
-  // Add point light
-  const light = new THREE.PointLight(new THREE.Color(group.userData.accentColor), 0.5, 3);
-  light.position.set(0.15, 0.65, 0);
+  // Add point light - brighter with larger range
+  const light = new THREE.PointLight(new THREE.Color(group.userData.accentColor), 1.2, 5);  // Increased intensity and range
+  light.position.set(0.05, 0.72, 0);  // Adjusted position
+  light.castShadow = true;  // Enable shadows from lamp
   light.name = 'lampLight';
   group.add(light);
 
@@ -840,31 +891,47 @@ function createBooks(options = {}) {
   const group = new THREE.Group();
   group.userData = {
     type: 'books',
-    name: 'Books',
+    name: 'Book',
     interactive: false,
     mainColor: options.mainColor || '#7c3aed',
     accentColor: options.accentColor || '#f59e0b'
   };
 
-  const bookColors = [
-    new THREE.Color(group.userData.mainColor),
-    new THREE.Color(group.userData.accentColor),
-    new THREE.Color('#ef4444')
-  ];
-
-  bookColors.forEach((color, i) => {
-    const bookGeometry = new THREE.BoxGeometry(0.25, 0.35 - i * 0.03, 0.05 + Math.random() * 0.02);
-    const bookMaterial = new THREE.MeshStandardMaterial({
-      color: color,
-      roughness: 0.7
-    });
-    const book = new THREE.Mesh(bookGeometry, bookMaterial);
-    book.position.y = 0.175 - i * 0.015;
-    book.rotation.z = Math.PI / 2;
-    book.position.z = i * 0.06;
-    book.castShadow = true;
-    group.add(book);
+  // Single book model
+  // Book cover
+  const coverMaterial = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(group.userData.mainColor),
+    roughness: 0.7
   });
+
+  const coverGeometry = new THREE.BoxGeometry(0.28, 0.04, 0.38);
+  const cover = new THREE.Mesh(coverGeometry, coverMaterial);
+  cover.position.y = 0.02;
+  cover.castShadow = true;
+  group.add(cover);
+
+  // Pages (white interior)
+  const pagesMaterial = new THREE.MeshStandardMaterial({
+    color: 0xf5f5f0,
+    roughness: 0.9
+  });
+
+  const pagesGeometry = new THREE.BoxGeometry(0.26, 0.035, 0.36);
+  const pages = new THREE.Mesh(pagesGeometry, pagesMaterial);
+  pages.position.y = 0.02;
+  group.add(pages);
+
+  // Spine detail
+  const spineMaterial = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(group.userData.accentColor),
+    roughness: 0.6
+  });
+
+  const spineGeometry = new THREE.BoxGeometry(0.02, 0.045, 0.38);
+  const spine = new THREE.Mesh(spineGeometry, spineMaterial);
+  spine.position.set(-0.13, 0.02, 0);
+  spine.castShadow = true;
+  group.add(spine);
 
   group.position.y = getDeskSurfaceY();
 
@@ -1237,25 +1304,26 @@ function updateClock() {
       const minuteHand = obj.getObjectByName('minuteHand');
       const secondHand = obj.getObjectByName('secondHand');
 
+      // Calculate angles for real time display
+      // Hands rotate clockwise, so we use negative angles
+      // 12 o'clock is at the top (positive Y), which is 0 radians for our setup
+
       if (hourHand) {
+        // Hour hand: full rotation every 12 hours, plus gradual movement based on minutes
         const hourAngle = -((now.getHours() % 12) / 12) * Math.PI * 2 - (now.getMinutes() / 60) * (Math.PI / 6);
         hourHand.rotation.z = hourAngle;
-        hourHand.position.y = Math.cos(hourAngle) * 0.09;
-        hourHand.position.x = Math.sin(hourAngle) * 0.09;
       }
 
       if (minuteHand) {
-        const minuteAngle = -(now.getMinutes() / 60) * Math.PI * 2;
+        // Minute hand: full rotation every 60 minutes, plus gradual movement based on seconds
+        const minuteAngle = -(now.getMinutes() / 60) * Math.PI * 2 - (now.getSeconds() / 60) * (Math.PI / 30);
         minuteHand.rotation.z = minuteAngle;
-        minuteHand.position.y = Math.cos(minuteAngle) * 0.125;
-        minuteHand.position.x = Math.sin(minuteAngle) * 0.125;
       }
 
       if (secondHand) {
+        // Second hand: full rotation every 60 seconds
         const secondAngle = -(now.getSeconds() / 60) * Math.PI * 2;
         secondHand.rotation.z = secondAngle;
-        secondHand.position.y = Math.cos(secondAngle) * 0.14;
-        secondHand.position.x = Math.sin(secondAngle) * 0.14;
       }
     }
   });
@@ -1424,6 +1492,14 @@ function setupEventListeners() {
 }
 
 function onMouseDown(event) {
+  // Middle mouse button for camera look
+  if (event.button === 1) {
+    event.preventDefault();
+    cameraLookState.isLooking = true;
+    document.body.style.cursor = 'move';
+    return;
+  }
+
   if (event.button !== 0) return; // Left click only
 
   updateMousePosition(event);
@@ -1459,6 +1535,25 @@ function onMouseDown(event) {
 }
 
 function onMouseMove(event) {
+  // Handle camera look (middle mouse button)
+  if (cameraLookState.isLooking) {
+    const deltaX = event.clientX - previousMousePosition.x;
+    const deltaY = event.clientY - previousMousePosition.y;
+
+    // Update yaw and pitch
+    cameraLookState.yaw -= deltaX * cameraLookState.sensitivity;
+    cameraLookState.pitch -= deltaY * cameraLookState.sensitivity;
+
+    // Clamp pitch to prevent flipping
+    cameraLookState.pitch = Math.max(cameraLookState.minPitch, Math.min(cameraLookState.maxPitch, cameraLookState.pitch));
+
+    // Update camera direction
+    updateCameraLook();
+
+    previousMousePosition = { x: event.clientX, y: event.clientY };
+    return;
+  }
+
   updateMousePosition(event);
 
   if (isDragging && selectedObject) {
@@ -1509,6 +1604,14 @@ function onMouseMove(event) {
 }
 
 function onMouseUp(event) {
+  // Stop camera look on middle mouse button release
+  if (event.button === 1 && cameraLookState.isLooking) {
+    cameraLookState.isLooking = false;
+    document.body.style.cursor = 'default';
+    saveState();
+    return;
+  }
+
   if (isDragging && selectedObject) {
     // Drop the object
     selectedObject.userData.isLifted = false;
@@ -2031,10 +2134,10 @@ function setupLampHandlers(object) {
 
     if (object.userData.isOn) {
       if (bulb) {
-        bulb.material.emissiveIntensity = 0.8;
+        bulb.material.emissiveIntensity = 1.2;  // Brighter lamp
       }
       if (light) {
-        light.intensity = 0.5;
+        light.intensity = 1.2;  // Brighter lamp
       }
       status.textContent = 'ON';
       toggleBtn.textContent = 'Turn Off';
@@ -2120,6 +2223,18 @@ function updateMousePosition(event) {
   mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
 }
 
+function updateCameraLook() {
+  // Calculate new camera direction based on yaw and pitch
+  const lookAt = new THREE.Vector3();
+
+  // Convert spherical to Cartesian coordinates
+  lookAt.x = camera.position.x + Math.sin(cameraLookState.yaw) * Math.cos(cameraLookState.pitch);
+  lookAt.y = camera.position.y + Math.sin(cameraLookState.pitch);
+  lookAt.z = camera.position.z + Math.cos(cameraLookState.yaw) * Math.cos(cameraLookState.pitch);
+
+  camera.lookAt(lookAt);
+}
+
 function onWindowResize() {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
@@ -2148,7 +2263,9 @@ async function saveState() {
     camera: {
       x: camera.position.x,
       y: camera.position.y,
-      z: camera.position.z
+      z: camera.position.z,
+      yaw: cameraLookState.yaw,
+      pitch: cameraLookState.pitch
     }
   };
 
@@ -2164,13 +2281,21 @@ async function loadState() {
     const result = await window.electronAPI.loadState();
 
     if (result.success && result.state) {
-      // Load camera position if saved
+      // Load camera position and look direction if saved
       if (result.state.camera) {
         camera.position.set(
           result.state.camera.x,
           result.state.camera.y,
           result.state.camera.z
         );
+        // Load camera look direction
+        if (result.state.camera.yaw !== undefined) {
+          cameraLookState.yaw = result.state.camera.yaw;
+        }
+        if (result.state.camera.pitch !== undefined) {
+          cameraLookState.pitch = result.state.camera.pitch;
+        }
+        updateCameraLook();
       }
 
       // Load objects
