@@ -89,6 +89,12 @@ let examineState = {
   originalScale: null
 };
 
+// Pointer lock state
+let pointerLockState = {
+  isLocked: false,
+  showInstructions: true  // Show instructions on first load
+};
+
 // ============================================================================
 // CAMERA CONTROL POINTS (Starting position and direction)
 // ============================================================================
@@ -682,10 +688,13 @@ function createLamp(options = {}) {
   // Rotate to point slightly forward and down (~7 degrees from vertical)
   headGroup.rotation.z = Math.PI / 25;  // ~7.2 degrees forward tilt
 
-  // Outer shade (dome shape)
-  const shadeGeometry = new THREE.SphereGeometry(0.15, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2);
+  // Outer shade (dome shape) - dome on top, open at bottom
+  // Use the BOTTOM hemisphere (phiStart=0, phiLength=2π, thetaStart=π/2, thetaLength=π/2)
+  // This creates a dome that curves UPWARD with the hollow part facing DOWN
+  const shadeGeometry = new THREE.SphereGeometry(0.15, 32, 16, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2);
   const shade = new THREE.Mesh(shadeGeometry, baseMaterial);
-  shade.rotation.x = Math.PI;  // Flip so open side faces down
+  // Position the shade so the rim is at y=0 and dome curves upward
+  shade.position.y = 0;
   shade.castShadow = true;
   headGroup.add(shade);
 
@@ -708,19 +717,18 @@ function createLamp(options = {}) {
   bulb.name = 'bulb';
   headGroup.add(bulb);
 
-  // SpotLight for focused beam (pointing at ~7 degrees forward, not at base)
-  // Light hits the desk area in front of the lamp, not directly on the base
+  // SpotLight for focused beam - brighter main light
   const spotLight = new THREE.SpotLight(
     new THREE.Color(group.userData.accentColor),
-    3.5,           // High intensity for visible beam
-    6,             // Distance the light reaches
-    Math.PI / 4,   // Wide cone angle (~45 degrees) for broad spotlight
-    0.4,           // Soft edge (penumbra)
-    1.5            // Decay
+    6.0,           // Increased intensity for brighter beam (was 3.5)
+    8,             // Increased distance (was 6)
+    Math.PI / 3.5, // Wider cone angle (~51 degrees) for broader spotlight
+    0.3,           // Slightly sharper edge for more defined beam
+    1.2            // Less decay for brighter far reach
   );
   spotLight.position.set(0, -0.08, 0);
-  // Target point is forward and down from lamp (on desk surface in front)
-  spotLight.target.position.set(0.8, -0.85, 0);
+  // Target point straight down to illuminate desk area
+  spotLight.target.position.set(0.3, -1.0, 0);
   spotLight.castShadow = true;
   spotLight.shadow.mapSize.width = 512;
   spotLight.shadow.mapSize.height = 512;
@@ -728,22 +736,22 @@ function createLamp(options = {}) {
   headGroup.add(spotLight);
   headGroup.add(spotLight.target);
 
-  // Point light for softer ambient spread (residual illumination)
+  // Point light for residual illumination of the entire desk
   const ambientLight = new THREE.PointLight(
     new THREE.Color(group.userData.accentColor),
-    0.6,    // Moderate intensity
-    6,      // Range to cover desk area
-    2       // Decay
+    1.2,    // Increased intensity (was 0.6) for better desk coverage
+    12,     // Increased range to cover entire desk (was 6)
+    1.5     // Less decay for wider spread
   );
   ambientLight.position.set(0, -0.05, 0);
   ambientLight.name = 'lampLight';
   headGroup.add(ambientLight);
 
-  // Hemisphere light for subtle ambient (residual glow on surroundings)
+  // Hemisphere light for ambient glow on the entire desk and surroundings
   const hemisphereLight = new THREE.HemisphereLight(
     new THREE.Color(group.userData.accentColor),
     0x000000,
-    0.2
+    0.4     // Increased from 0.2 for more ambient illumination
   );
   hemisphereLight.position.set(0, -0.05, 0);
   hemisphereLight.name = 'lampAmbient';
@@ -1872,7 +1880,7 @@ function setupEventListeners() {
   container.addEventListener('mousemove', onMouseMove, false);
   container.addEventListener('mouseup', onMouseUp, false);
   container.addEventListener('contextmenu', onRightClick, false);
-  container.addEventListener('dblclick', onDoubleClick, false);
+  // Double-click examine removed - use drag+scroll instead
   container.addEventListener('wheel', onMouseWheel, { passive: false });
 
   // Window resize
@@ -2021,6 +2029,73 @@ function setupEventListeners() {
   // Modal close button
   document.getElementById('close-modal').addEventListener('click', closeInteractionModal);
   document.getElementById('modal-overlay').addEventListener('click', closeInteractionModal);
+
+  // Pointer lock setup
+  setupPointerLock(container);
+}
+
+// ============================================================================
+// POINTER LOCK (FPS-style mouse capture)
+// ============================================================================
+function setupPointerLock(container) {
+  const crosshair = document.getElementById('crosshair');
+  const instructions = document.getElementById('pointer-lock-instructions');
+
+  // Show initial instructions
+  if (pointerLockState.showInstructions) {
+    instructions.classList.add('visible');
+  }
+
+  // Click to request pointer lock
+  container.addEventListener('click', (e) => {
+    // Don't lock if clicking on UI elements or in examine mode
+    if (e.target.closest('#menu') || e.target.closest('#customization-panel') ||
+        e.target.closest('#interaction-modal') || isDragging) {
+      return;
+    }
+
+    // Request pointer lock
+    if (!pointerLockState.isLocked) {
+      container.requestPointerLock = container.requestPointerLock ||
+                                     container.mozRequestPointerLock ||
+                                     container.webkitRequestPointerLock;
+      if (container.requestPointerLock) {
+        container.requestPointerLock();
+      }
+    }
+  });
+
+  // Pointer lock change handler
+  document.addEventListener('pointerlockchange', onPointerLockChange);
+  document.addEventListener('mozpointerlockchange', onPointerLockChange);
+  document.addEventListener('webkitpointerlockchange', onPointerLockChange);
+
+  function onPointerLockChange() {
+    const lockElement = document.pointerLockElement ||
+                        document.mozPointerLockElement ||
+                        document.webkitPointerLockElement;
+
+    if (lockElement === container) {
+      // Pointer is locked
+      pointerLockState.isLocked = true;
+      pointerLockState.showInstructions = false;
+      crosshair.classList.add('visible');
+      instructions.classList.remove('visible');
+    } else {
+      // Pointer is unlocked
+      pointerLockState.isLocked = false;
+      crosshair.classList.remove('visible');
+    }
+  }
+
+  // Pointer lock error handler
+  document.addEventListener('pointerlockerror', onPointerLockError);
+  document.addEventListener('mozpointerlockerror', onPointerLockError);
+  document.addEventListener('webkitpointerlockerror', onPointerLockError);
+
+  function onPointerLockError() {
+    console.warn('Pointer lock failed');
+  }
 }
 
 function onMouseDown(event) {
@@ -2086,15 +2161,23 @@ function onMouseDown(event) {
 }
 
 function onMouseMove(event) {
-  // Always update previous position first
-  const deltaX = event.clientX - previousMousePosition.x;
-  const deltaY = event.clientY - previousMousePosition.y;
+  // Use pointer lock movement data if locked, otherwise use delta from previous position
+  let deltaX, deltaY;
+  if (pointerLockState.isLocked) {
+    // Use movementX/Y for pointer lock (raw mouse movement)
+    deltaX = event.movementX || event.mozMovementX || event.webkitMovementX || 0;
+    deltaY = event.movementY || event.mozMovementY || event.webkitMovementY || 0;
+  } else {
+    // Fallback to calculating delta from previous position
+    deltaX = event.clientX - previousMousePosition.x;
+    deltaY = event.clientY - previousMousePosition.y;
+  }
 
-  // FPS-style camera look - always active unless dragging an object or in modal
+  // FPS-style camera look - active when pointer is locked and not dragging
   const modal = document.getElementById('interaction-modal');
   const isModalOpen = modal && modal.classList.contains('open');
 
-  if (cameraLookState.isLooking && !isDragging && !isModalOpen) {
+  if (pointerLockState.isLocked && cameraLookState.isLooking && !isDragging && !isModalOpen) {
     // Update yaw and pitch
     cameraLookState.yaw -= deltaX * cameraLookState.sensitivity;
     cameraLookState.pitch -= deltaY * cameraLookState.sensitivity;
@@ -2199,12 +2282,17 @@ function onMouseUp(event) {
 function onMouseWheel(event) {
   updateMousePosition(event);
 
-  // If in examine mode, allow rotation and scaling the examined object with scroll
-  // Uses same controls as normal mode: scroll = rotate, shift+scroll = resize
+  // If in examine mode: scroll UP exits examine mode, scroll DOWN with Shift scales
   if (examineState.active && examineState.object) {
     event.preventDefault();
 
     const object = examineState.object;
+
+    // Scroll UP (deltaY < 0) exits examine mode and returns object to its place
+    if (event.deltaY < 0 && !event.shiftKey) {
+      exitExamineMode();
+      return;
+    }
 
     if (event.shiftKey) {
       // Scale object (preserving proportions) with Shift+scroll
@@ -2225,9 +2313,9 @@ function onMouseWheel(event) {
         }
         saveState();
       }
-    } else {
-      // Rotate object around Y axis (perpendicular to desk) with scroll
-      const rotationDelta = event.deltaY > 0 ? 0.15 : -0.15;
+    } else if (event.deltaY > 0) {
+      // Scroll DOWN rotates object around Y axis
+      const rotationDelta = 0.15;
       object.rotation.y += rotationDelta;
       object.userData.rotationY = object.rotation.y;
       saveState();
@@ -2350,35 +2438,7 @@ function onRightClick(event) {
   }
 }
 
-function onDoubleClick(event) {
-  updateMousePosition(event);
-
-  // If already in examine mode, exit it
-  if (examineState.active) {
-    exitExamineMode();
-    return;
-  }
-
-  raycaster.setFromCamera(mouse, camera);
-  const intersects = raycaster.intersectObjects(deskObjects, true);
-
-  if (intersects.length > 0) {
-    let object = intersects[0].object;
-    while (object.parent && !deskObjects.includes(object)) {
-      object = object.parent;
-    }
-
-    if (deskObjects.includes(object)) {
-      // Enter examine mode - bring object closer to camera
-      enterExamineMode(object);
-
-      // Also open interaction modal if object is interactive
-      if (object.userData.interactive) {
-        openInteractionModal(object);
-      }
-    }
-  }
-}
+// Double-click examine removed - use drag+scroll down to enter, scroll up to exit
 
 function enterExamineMode(object) {
   // Store original state
@@ -2893,9 +2953,15 @@ function performQuickInteraction(object) {
 }
 
 function updateMousePosition(event) {
-  const rect = renderer.domElement.getBoundingClientRect();
-  mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-  mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+  if (pointerLockState.isLocked) {
+    // When pointer is locked, the cursor is effectively at the center of the screen
+    mouse.x = 0;
+    mouse.y = 0;
+  } else {
+    const rect = renderer.domElement.getBoundingClientRect();
+    mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+  }
 }
 
 function updateCameraLook() {
