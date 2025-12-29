@@ -99,6 +99,16 @@ let cameraLookState = {
   maxPitch: 0.3     // Looking up limit
 };
 
+// Physics state for objects
+const physicsState = {
+  enabled: true,
+  velocities: new Map(),         // Store velocity for each object (x, z)
+  angularVelocities: new Map(),  // Store angular velocity for each object
+  friction: 0.85,
+  bounceFactor: 0.4,
+  pushForce: 0.08
+};
+
 // ============================================================================
 // INITIALIZATION
 // ============================================================================
@@ -1231,6 +1241,9 @@ function removeObject(object) {
   if (index > -1) {
     deskObjects.splice(index, 1);
     scene.remove(object);
+    // Clean up physics data
+    physicsState.velocities.delete(object.userData.id);
+    physicsState.angularVelocities.delete(object.userData.id);
     saveState();
   }
 }
@@ -1284,6 +1297,173 @@ function updateObjectColor(object, colorType, colorValue) {
   }
 
   saveState();
+}
+
+// ============================================================================
+// PHYSICS SYSTEM
+// ============================================================================
+function getObjectBounds(object) {
+  // Calculate approximate bounding radius for collision detection
+  const box = new THREE.Box3().setFromObject(object);
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  // Use the largest horizontal dimension as the collision radius
+  return Math.max(size.x, size.z) / 2;
+}
+
+function initPhysicsForObject(object) {
+  if (!physicsState.velocities.has(object.userData.id)) {
+    physicsState.velocities.set(object.userData.id, { x: 0, z: 0 });
+    physicsState.angularVelocities.set(object.userData.id, 0);
+  }
+}
+
+function updatePhysics() {
+  if (!physicsState.enabled) return;
+
+  const deskHalfWidth = CONFIG.desk.width / 2 - 0.2;
+  const deskHalfDepth = CONFIG.desk.depth / 2 - 0.2;
+
+  // Update velocities and positions for all non-dragged objects
+  deskObjects.forEach(obj => {
+    // Skip if object is being dragged, examined, or is in examine mode
+    if (obj === selectedObject && isDragging) return;
+    if (obj.userData.isExamining || obj.userData.isReturning) return;
+    if (examineState.active && examineState.object === obj) return;
+
+    initPhysicsForObject(obj);
+
+    const vel = physicsState.velocities.get(obj.userData.id);
+    const angVel = physicsState.angularVelocities.get(obj.userData.id);
+
+    // Apply velocity
+    if (Math.abs(vel.x) > 0.001 || Math.abs(vel.z) > 0.001) {
+      obj.position.x += vel.x;
+      obj.position.z += vel.z;
+
+      // Apply friction
+      vel.x *= physicsState.friction;
+      vel.z *= physicsState.friction;
+
+      // Clamp to desk bounds with bounce
+      if (obj.position.x > deskHalfWidth) {
+        obj.position.x = deskHalfWidth;
+        vel.x = -vel.x * physicsState.bounceFactor;
+      } else if (obj.position.x < -deskHalfWidth) {
+        obj.position.x = -deskHalfWidth;
+        vel.x = -vel.x * physicsState.bounceFactor;
+      }
+
+      if (obj.position.z > deskHalfDepth) {
+        obj.position.z = deskHalfDepth;
+        vel.z = -vel.z * physicsState.bounceFactor;
+      } else if (obj.position.z < -deskHalfDepth) {
+        obj.position.z = -deskHalfDepth;
+        vel.z = -vel.z * physicsState.bounceFactor;
+      }
+    }
+
+    // Apply angular velocity (rotation)
+    if (Math.abs(angVel) > 0.001) {
+      obj.rotation.y += angVel;
+      physicsState.angularVelocities.set(obj.userData.id, angVel * physicsState.friction);
+    }
+  });
+
+  // Check collisions between dragged object and other objects
+  if (isDragging && selectedObject) {
+    const draggedRadius = getObjectBounds(selectedObject);
+
+    deskObjects.forEach(obj => {
+      if (obj === selectedObject) return;
+      if (obj.userData.isExamining || obj.userData.isReturning) return;
+
+      initPhysicsForObject(obj);
+
+      const otherRadius = getObjectBounds(obj);
+      const minDist = (draggedRadius + otherRadius) * 0.7;  // Slight overlap tolerance
+
+      const dx = obj.position.x - selectedObject.position.x;
+      const dz = obj.position.z - selectedObject.position.z;
+      const dist = Math.sqrt(dx * dx + dz * dz);
+
+      if (dist < minDist && dist > 0.01) {
+        // Collision detected! Push the other object away
+        const pushX = (dx / dist) * physicsState.pushForce;
+        const pushZ = (dz / dist) * physicsState.pushForce;
+
+        const vel = physicsState.velocities.get(obj.userData.id);
+        vel.x += pushX;
+        vel.z += pushZ;
+
+        // Add some spin based on collision angle
+        const crossProduct = dx * pushZ - dz * pushX;  // Pseudo cross product
+        const angVel = physicsState.angularVelocities.get(obj.userData.id);
+        physicsState.angularVelocities.set(obj.userData.id, angVel + crossProduct * 0.5);
+
+        // Separate objects to prevent overlap
+        const overlap = minDist - dist;
+        obj.position.x += (dx / dist) * overlap * 0.5;
+        obj.position.z += (dz / dist) * overlap * 0.5;
+      }
+    });
+  }
+
+  // Check collisions between all pairs of non-dragged objects (simpler physics)
+  for (let i = 0; i < deskObjects.length; i++) {
+    const objA = deskObjects[i];
+    if (objA === selectedObject && isDragging) continue;
+    if (objA.userData.isExamining || objA.userData.isReturning) continue;
+
+    const radiusA = getObjectBounds(objA);
+    const velA = physicsState.velocities.get(objA.userData.id);
+    if (!velA) continue;
+
+    for (let j = i + 1; j < deskObjects.length; j++) {
+      const objB = deskObjects[j];
+      if (objB === selectedObject && isDragging) continue;
+      if (objB.userData.isExamining || objB.userData.isReturning) continue;
+
+      const radiusB = getObjectBounds(objB);
+      const velB = physicsState.velocities.get(objB.userData.id);
+      if (!velB) continue;
+
+      const minDist = (radiusA + radiusB) * 0.7;
+
+      const dx = objB.position.x - objA.position.x;
+      const dz = objB.position.z - objA.position.z;
+      const dist = Math.sqrt(dx * dx + dz * dz);
+
+      if (dist < minDist && dist > 0.01) {
+        // Elastic collision between two objects
+        const nx = dx / dist;
+        const nz = dz / dist;
+
+        // Relative velocity
+        const dvx = velA.x - velB.x;
+        const dvz = velA.z - velB.z;
+
+        // Relative velocity along collision normal
+        const dvn = dvx * nx + dvz * nz;
+
+        // Only resolve if objects are moving towards each other
+        if (dvn > 0) {
+          // Simple elastic collision
+          velA.x -= dvn * nx * 0.5;
+          velA.z -= dvn * nz * 0.5;
+          velB.x += dvn * nx * 0.5;
+          velB.z += dvn * nz * 0.5;
+        }
+
+        // Separate objects
+        const overlap = minDist - dist;
+        objA.position.x -= (nx * overlap * 0.25);
+        objA.position.z -= (nz * overlap * 0.25);
+        objB.position.x += (nx * overlap * 0.25);
+        objB.position.z += (nz * overlap * 0.25);
+      }
+    }
+  }
 }
 
 // ============================================================================
@@ -2337,6 +2517,9 @@ async function loadState() {
 // ============================================================================
 function animate() {
   requestAnimationFrame(animate);
+
+  // Update physics
+  updatePhysics();
 
   // Update object positions (lift/drop animation)
   deskObjects.forEach(obj => {
