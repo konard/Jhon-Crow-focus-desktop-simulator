@@ -8,17 +8,19 @@
 // ============================================================================
 const CONFIG = {
   camera: {
-    fov: 45,
+    // Top-down view like looking at a PC desktop
+    fov: 50,
     near: 0.1,
     far: 1000,
-    position: { x: 8, y: 10, z: 8 },
+    position: { x: 0, y: 8, z: 0 },  // Straight above, looking down
     lookAt: { x: 0, y: 0, z: 0 }
   },
   desk: {
-    width: 6,
-    depth: 4,
-    height: 0.15,
-    legHeight: 2,
+    // Desk surface only (no legs), fills most of the view
+    width: 10,
+    depth: 7,
+    height: 0.1,
+    legHeight: 0,  // No legs - like a PC desktop surface
     color: 0x8b6914
   },
   physics: {
@@ -62,6 +64,15 @@ let pixelatedMaterial, normalMaterial;
 let fsQuad, fsCamera, fsGeometry;
 let renderResolution = new THREE.Vector2();
 
+// Interaction modal state
+let interactionObject = null;
+let timerState = {
+  active: false,
+  running: false,
+  remainingSeconds: 0,
+  intervalId: null
+};
+
 // ============================================================================
 // INITIALIZATION
 // ============================================================================
@@ -98,7 +109,7 @@ function init() {
   const planeMaterial = new THREE.MeshBasicMaterial({ visible: false });
   dragPlane = new THREE.Mesh(planeGeometry, planeMaterial);
   dragPlane.rotation.x = -Math.PI / 2;
-  dragPlane.position.y = CONFIG.desk.height + CONFIG.desk.legHeight;
+  dragPlane.position.y = CONFIG.desk.height;  // No legs, just surface
   scene.add(dragPlane);
 
   // Setup lighting
@@ -312,7 +323,7 @@ function setupLighting() {
 function createDesk() {
   const deskGroup = new THREE.Group();
 
-  // Desktop surface
+  // Desktop surface - flat like a PC desktop view
   const topGeometry = new THREE.BoxGeometry(CONFIG.desk.width, CONFIG.desk.height, CONFIG.desk.depth);
   const topMaterial = new THREE.MeshStandardMaterial({
     color: CONFIG.desk.color,
@@ -320,33 +331,12 @@ function createDesk() {
     metalness: 0.1
   });
   const deskTop = new THREE.Mesh(topGeometry, topMaterial);
-  deskTop.position.y = CONFIG.desk.legHeight + CONFIG.desk.height / 2;
+  deskTop.position.y = CONFIG.desk.height / 2;
   deskTop.castShadow = true;
   deskTop.receiveShadow = true;
   deskGroup.add(deskTop);
 
-  // Desk legs
-  const legGeometry = new THREE.BoxGeometry(0.15, CONFIG.desk.legHeight, 0.15);
-  const legMaterial = new THREE.MeshStandardMaterial({
-    color: 0x5c4a1f,
-    roughness: 0.8,
-    metalness: 0.1
-  });
-
-  const legPositions = [
-    { x: -CONFIG.desk.width / 2 + 0.2, z: -CONFIG.desk.depth / 2 + 0.2 },
-    { x: CONFIG.desk.width / 2 - 0.2, z: -CONFIG.desk.depth / 2 + 0.2 },
-    { x: -CONFIG.desk.width / 2 + 0.2, z: CONFIG.desk.depth / 2 - 0.2 },
-    { x: CONFIG.desk.width / 2 - 0.2, z: CONFIG.desk.depth / 2 - 0.2 }
-  ];
-
-  legPositions.forEach(pos => {
-    const leg = new THREE.Mesh(legGeometry, legMaterial);
-    leg.position.set(pos.x, CONFIG.desk.legHeight / 2, pos.z);
-    leg.castShadow = true;
-    leg.receiveShadow = true;
-    deskGroup.add(leg);
-  });
+  // No legs - this is a top-down view like a PC desktop
 
   desk = deskGroup;
   scene.add(desk);
@@ -1114,7 +1104,7 @@ function createHourglass(options = {}) {
 // HELPER FUNCTIONS
 // ============================================================================
 function getDeskSurfaceY() {
-  return CONFIG.desk.legHeight + CONFIG.desk.height;
+  return CONFIG.desk.height;  // No legs, just surface height
 }
 
 function addObjectToDesk(type, options = {}) {
@@ -1153,26 +1143,44 @@ function removeObject(object) {
 function updateObjectColor(object, colorType, colorValue) {
   if (!object) return;
 
+  const oldMainColor = object.userData.mainColor;
+  const oldAccentColor = object.userData.accentColor;
+
   object.userData[colorType] = colorValue;
 
-  // Update materials based on object type
-  object.traverse((child) => {
-    if (child.isMesh && child.material) {
-      // This is a simplified color update - specific objects may need custom logic
-      if (colorType === 'mainColor') {
-        // Update main body parts
-        if (!child.name.includes('screen') && !child.name.includes('bulb')) {
-          if (child.material.color) {
-            // Check if this looks like a main part
-            const currentHex = child.material.color.getHexString();
-            if (currentHex !== 'ffffff' && currentHex !== '000000') {
-              child.material.color.set(colorValue);
-            }
-          }
-        }
-      }
-    }
+  // Recreate the object with new colors to ensure proper color application
+  const type = object.userData.type;
+  const creator = PRESET_CREATORS[type];
+  if (!creator) return;
+
+  // Store position and state
+  const position = { x: object.position.x, y: object.position.y, z: object.position.z };
+  const rotation = { x: object.rotation.x, y: object.rotation.y, z: object.rotation.z };
+  const id = object.userData.id;
+  const originalY = object.userData.originalY;
+
+  // Create new object with updated colors
+  const newObject = creator({
+    mainColor: object.userData.mainColor,
+    accentColor: object.userData.accentColor
   });
+
+  // Restore position, rotation and other properties
+  newObject.position.set(position.x, position.y, position.z);
+  newObject.rotation.set(rotation.x, rotation.y, rotation.z);
+  newObject.userData.id = id;
+  newObject.userData.originalY = originalY;
+  newObject.userData.targetY = position.y;
+  newObject.userData.isLifted = false;
+
+  // Replace in scene and array
+  const index = deskObjects.indexOf(object);
+  if (index > -1) {
+    deskObjects[index] = newObject;
+    scene.remove(object);
+    scene.add(newObject);
+    selectedObject = newObject;
+  }
 
   saveState();
 }
@@ -1230,6 +1238,7 @@ function setupEventListeners() {
   container.addEventListener('mousemove', onMouseMove, false);
   container.addEventListener('mouseup', onMouseUp, false);
   container.addEventListener('contextmenu', onRightClick, false);
+  container.addEventListener('dblclick', onDoubleClick, false);
 
   // Window resize
   window.addEventListener('resize', onWindowResize, false);
@@ -1284,6 +1293,10 @@ function setupEventListeners() {
       document.getElementById('menu').classList.remove('open');
     }
   });
+
+  // Modal close button
+  document.getElementById('close-modal').addEventListener('click', closeInteractionModal);
+  document.getElementById('modal-overlay').addEventListener('click', closeInteractionModal);
 }
 
 function onMouseDown(event) {
@@ -1413,6 +1426,376 @@ function onRightClick(event) {
     document.getElementById('customization-panel').classList.remove('open');
     selectedObject = null;
   }
+}
+
+function onDoubleClick(event) {
+  updateMousePosition(event);
+
+  raycaster.setFromCamera(mouse, camera);
+  const intersects = raycaster.intersectObjects(deskObjects, true);
+
+  if (intersects.length > 0) {
+    let object = intersects[0].object;
+    while (object.parent && !deskObjects.includes(object)) {
+      object = object.parent;
+    }
+
+    if (deskObjects.includes(object) && object.userData.interactive) {
+      openInteractionModal(object);
+    }
+  }
+}
+
+// ============================================================================
+// OBJECT INTERACTION MODAL
+// ============================================================================
+function openInteractionModal(object) {
+  interactionObject = object;
+  const modal = document.getElementById('interaction-modal');
+  const overlay = document.getElementById('modal-overlay');
+  const content = document.getElementById('interaction-content');
+  const title = document.getElementById('modal-title');
+  const icon = document.getElementById('modal-icon');
+
+  // Set title and icon based on object type
+  const objectIcons = {
+    'clock': '🕐',
+    'lamp': '💡',
+    'laptop': '💻',
+    'globe': '🌍',
+    'hourglass': '⏳'
+  };
+
+  title.textContent = object.userData.name;
+  icon.textContent = objectIcons[object.userData.type] || '⚙️';
+
+  // Generate content based on object type
+  content.innerHTML = getInteractionContent(object);
+
+  // Setup interaction handlers
+  setupInteractionHandlers(object);
+
+  // Show modal
+  modal.classList.add('open');
+  overlay.classList.add('open');
+}
+
+function closeInteractionModal() {
+  const modal = document.getElementById('interaction-modal');
+  const overlay = document.getElementById('modal-overlay');
+
+  modal.classList.remove('open');
+  overlay.classList.remove('open');
+  interactionObject = null;
+}
+
+function getInteractionContent(object) {
+  switch (object.userData.type) {
+    case 'clock':
+      return `
+        <div class="timer-controls">
+          <div class="timer-display">
+            <div class="time" id="timer-display">00:00:00</div>
+          </div>
+          <div class="timer-input-group">
+            <input type="number" id="timer-hours" min="0" max="23" value="0" placeholder="HH">
+            <span>:</span>
+            <input type="number" id="timer-minutes" min="0" max="59" value="5" placeholder="MM">
+            <span>:</span>
+            <input type="number" id="timer-seconds" min="0" max="59" value="0" placeholder="SS">
+          </div>
+          <div class="timer-buttons">
+            <button class="timer-btn start" id="timer-start">Start</button>
+            <button class="timer-btn pause" id="timer-pause" style="display:none">Pause</button>
+            <button class="timer-btn reset" id="timer-reset">Reset</button>
+          </div>
+        </div>
+      `;
+
+    case 'lamp':
+      return `
+        <div class="timer-controls">
+          <div class="timer-display">
+            <div class="time" id="lamp-status">${object.userData.isOn ? 'ON' : 'OFF'}</div>
+          </div>
+          <div class="timer-buttons">
+            <button class="timer-btn ${object.userData.isOn ? 'pause' : 'start'}" id="lamp-toggle">
+              ${object.userData.isOn ? 'Turn Off' : 'Turn On'}
+            </button>
+          </div>
+        </div>
+      `;
+
+    case 'laptop':
+      return `
+        <div class="timer-controls">
+          <div class="timer-display">
+            <div class="time" style="font-size: 24px;">Laptop Screen</div>
+          </div>
+          <div class="timer-buttons">
+            <button class="timer-btn start" id="laptop-color">Change Screen Color</button>
+          </div>
+        </div>
+      `;
+
+    case 'globe':
+      return `
+        <div class="timer-controls">
+          <div class="timer-display">
+            <div class="time" style="font-size: 24px;">Rotation: ${object.userData.rotationSpeed > 0 ? 'ON' : 'OFF'}</div>
+          </div>
+          <div class="timer-buttons">
+            <button class="timer-btn ${object.userData.rotationSpeed > 0 ? 'pause' : 'start'}" id="globe-toggle">
+              ${object.userData.rotationSpeed > 0 ? 'Stop Rotation' : 'Start Rotation'}
+            </button>
+          </div>
+        </div>
+      `;
+
+    case 'hourglass':
+      return `
+        <div class="timer-controls">
+          <div class="timer-display">
+            <div class="time" style="font-size: 24px;">Hourglass</div>
+          </div>
+          <div class="timer-buttons">
+            <button class="timer-btn start" id="hourglass-flip">Flip Hourglass</button>
+          </div>
+        </div>
+      `;
+
+    default:
+      return `<p style="color: rgba(255,255,255,0.7);">No interactions available for this object.</p>`;
+  }
+}
+
+function setupInteractionHandlers(object) {
+  switch (object.userData.type) {
+    case 'clock':
+      setupTimerHandlers();
+      break;
+    case 'lamp':
+      setupLampHandlers(object);
+      break;
+    case 'laptop':
+      setupLaptopHandlers(object);
+      break;
+    case 'globe':
+      setupGlobeHandlers(object);
+      break;
+    case 'hourglass':
+      setupHourglassHandlers(object);
+      break;
+  }
+}
+
+function setupTimerHandlers() {
+  const startBtn = document.getElementById('timer-start');
+  const pauseBtn = document.getElementById('timer-pause');
+  const resetBtn = document.getElementById('timer-reset');
+  const display = document.getElementById('timer-display');
+
+  // Initialize display with current timer state
+  if (timerState.active) {
+    updateTimerDisplay();
+    if (timerState.running) {
+      startBtn.style.display = 'none';
+      pauseBtn.style.display = 'inline-block';
+      display.classList.add('running');
+    }
+  }
+
+  startBtn.addEventListener('click', () => {
+    const hours = parseInt(document.getElementById('timer-hours').value) || 0;
+    const minutes = parseInt(document.getElementById('timer-minutes').value) || 0;
+    const seconds = parseInt(document.getElementById('timer-seconds').value) || 0;
+
+    timerState.remainingSeconds = hours * 3600 + minutes * 60 + seconds;
+
+    if (timerState.remainingSeconds > 0) {
+      timerState.active = true;
+      timerState.running = true;
+      startBtn.style.display = 'none';
+      pauseBtn.style.display = 'inline-block';
+      display.classList.add('running');
+      display.classList.remove('paused');
+
+      timerState.intervalId = setInterval(() => {
+        if (timerState.remainingSeconds > 0) {
+          timerState.remainingSeconds--;
+          updateTimerDisplay();
+        } else {
+          // Timer finished - alert user
+          clearInterval(timerState.intervalId);
+          timerState.running = false;
+          timerState.active = false;
+          display.classList.remove('running');
+
+          // Play a notification sound or visual alert
+          playTimerAlert();
+        }
+      }, 1000);
+    }
+  });
+
+  pauseBtn.addEventListener('click', () => {
+    if (timerState.running) {
+      clearInterval(timerState.intervalId);
+      timerState.running = false;
+      startBtn.textContent = 'Resume';
+      startBtn.style.display = 'inline-block';
+      pauseBtn.style.display = 'none';
+      display.classList.remove('running');
+      display.classList.add('paused');
+    }
+  });
+
+  resetBtn.addEventListener('click', () => {
+    clearInterval(timerState.intervalId);
+    timerState.active = false;
+    timerState.running = false;
+    timerState.remainingSeconds = 0;
+    startBtn.textContent = 'Start';
+    startBtn.style.display = 'inline-block';
+    pauseBtn.style.display = 'none';
+    display.textContent = '00:00:00';
+    display.classList.remove('running', 'paused');
+  });
+}
+
+function updateTimerDisplay() {
+  const display = document.getElementById('timer-display');
+  if (display) {
+    const hours = Math.floor(timerState.remainingSeconds / 3600);
+    const minutes = Math.floor((timerState.remainingSeconds % 3600) / 60);
+    const seconds = timerState.remainingSeconds % 60;
+    display.textContent = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+  }
+}
+
+function playTimerAlert() {
+  // Visual alert - flash the background
+  const modal = document.getElementById('interaction-modal');
+  modal.style.animation = 'timerAlert 0.5s ease 3';
+  setTimeout(() => {
+    modal.style.animation = '';
+  }, 1500);
+
+  // Try to play a beep using Web Audio API
+  try {
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const oscillator = audioCtx.createOscillator();
+    const gainNode = audioCtx.createGain();
+
+    oscillator.connect(gainNode);
+    gainNode.connect(audioCtx.destination);
+
+    oscillator.frequency.value = 800;
+    oscillator.type = 'sine';
+    gainNode.gain.value = 0.3;
+
+    oscillator.start();
+    setTimeout(() => {
+      oscillator.stop();
+    }, 200);
+  } catch (e) {
+    console.log('Audio not available');
+  }
+}
+
+function setupLampHandlers(object) {
+  const toggleBtn = document.getElementById('lamp-toggle');
+  const status = document.getElementById('lamp-status');
+
+  toggleBtn.addEventListener('click', () => {
+    object.userData.isOn = !object.userData.isOn;
+
+    const bulb = object.getObjectByName('bulb');
+    const light = object.getObjectByName('lampLight');
+
+    if (object.userData.isOn) {
+      if (bulb) {
+        bulb.material.emissiveIntensity = 0.8;
+      }
+      if (light) {
+        light.intensity = 0.5;
+      }
+      status.textContent = 'ON';
+      toggleBtn.textContent = 'Turn Off';
+      toggleBtn.className = 'timer-btn pause';
+    } else {
+      if (bulb) {
+        bulb.material.emissiveIntensity = 0;
+      }
+      if (light) {
+        light.intensity = 0;
+      }
+      status.textContent = 'OFF';
+      toggleBtn.textContent = 'Turn On';
+      toggleBtn.className = 'timer-btn start';
+    }
+  });
+}
+
+function setupLaptopHandlers(object) {
+  const colorBtn = document.getElementById('laptop-color');
+  const screenColors = ['#60a5fa', '#22c55e', '#f59e0b', '#ec4899', '#8b5cf6', '#ef4444'];
+  let colorIndex = 0;
+
+  colorBtn.addEventListener('click', () => {
+    colorIndex = (colorIndex + 1) % screenColors.length;
+    const screen = object.getObjectByName('screen');
+    if (screen) {
+      screen.material.color.set(screenColors[colorIndex]);
+      screen.material.emissive.set(screenColors[colorIndex]);
+    }
+  });
+}
+
+function setupGlobeHandlers(object) {
+  const toggleBtn = document.getElementById('globe-toggle');
+
+  toggleBtn.addEventListener('click', () => {
+    if (object.userData.rotationSpeed > 0) {
+      object.userData.rotationSpeed = 0;
+      toggleBtn.textContent = 'Start Rotation';
+      toggleBtn.className = 'timer-btn start';
+    } else {
+      object.userData.rotationSpeed = 0.002;
+      toggleBtn.textContent = 'Stop Rotation';
+      toggleBtn.className = 'timer-btn pause';
+    }
+  });
+}
+
+function setupHourglassHandlers(object) {
+  const flipBtn = document.getElementById('hourglass-flip');
+
+  flipBtn.addEventListener('click', () => {
+    // Animate flip
+    const startRotation = object.rotation.z;
+    const endRotation = startRotation + Math.PI;
+    const duration = 500;
+    const startTime = Date.now();
+
+    function animateFlip() {
+      const elapsed = Date.now() - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+
+      // Ease in-out
+      const easeProgress = progress < 0.5
+        ? 2 * progress * progress
+        : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+
+      object.rotation.z = startRotation + (endRotation - startRotation) * easeProgress;
+
+      if (progress < 1) {
+        requestAnimationFrame(animateFlip);
+      }
+    }
+
+    animateFlip();
+  });
 }
 
 function updateMousePosition(event) {
