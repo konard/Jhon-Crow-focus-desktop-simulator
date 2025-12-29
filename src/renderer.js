@@ -93,12 +93,12 @@ let examineState = {
 let cameraLookState = {
   isLooking: true,   // Always enabled by default (FPS-style)
   sensitivity: 0.002,
-  yaw: 0,            // Horizontal rotation (looking straight ahead)
-  pitch: -0.57,      // Vertical rotation - matches original lookAt (0, 0, -1.5) from camera position
+  yaw: Math.PI,      // Horizontal rotation - facing the desk (negative z direction)
+  pitch: -0.57,      // Vertical rotation - looking down at desk surface
   minPitch: -1.0,    // Looking down limit (towards desk, not past it)
   maxPitch: 0.1,     // Looking up limit (slightly above horizontal)
-  minYaw: -0.8,      // Limit horizontal rotation to left (seated person can't turn head too far)
-  maxYaw: 0.8        // Limit horizontal rotation to right
+  minYaw: Math.PI - 0.8,  // Limit horizontal rotation to left (seated person can't turn head too far)
+  maxYaw: Math.PI + 0.8   // Limit horizontal rotation to right
 };
 
 // Physics state for objects
