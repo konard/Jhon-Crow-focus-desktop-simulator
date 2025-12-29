@@ -1521,27 +1521,37 @@ function onMouseUp(event) {
 function onMouseWheel(event) {
   updateMousePosition(event);
 
-  // If in examine mode, allow scaling the examined object with scroll
+  // If in examine mode, allow rotation and scaling the examined object with scroll
+  // Uses same controls as normal mode: scroll = rotate, shift+scroll = resize
   if (examineState.active && examineState.object) {
     event.preventDefault();
 
     const object = examineState.object;
-    // Scale object (preserving proportions) - in examine mode, scroll always scales
-    const scaleDelta = event.deltaY > 0 ? 0.95 : 1.05;
-    const minScale = 0.3;
-    const maxScale = 3.0;
 
-    const newScale = object.scale.x * scaleDelta;
-    if (newScale >= minScale && newScale <= maxScale) {
-      object.scale.set(newScale, newScale, newScale);
-      object.userData.scale = newScale;
-      // Update the examine scale target to match the new scale
-      // so the animation doesn't fight with the manual scale
-      object.userData.examineScaleTarget = newScale;
-      // Also update original scale so it persists when exiting examine mode
-      if (examineState.originalScale) {
-        examineState.originalScale.set(newScale, newScale, newScale);
+    if (event.shiftKey) {
+      // Scale object (preserving proportions) with Shift+scroll
+      const scaleDelta = event.deltaY > 0 ? 0.95 : 1.05;
+      const minScale = 0.3;
+      const maxScale = 3.0;
+
+      const newScale = object.scale.x * scaleDelta;
+      if (newScale >= minScale && newScale <= maxScale) {
+        object.scale.set(newScale, newScale, newScale);
+        object.userData.scale = newScale;
+        // Update the examine scale target to match the new scale
+        // so the animation doesn't fight with the manual scale
+        object.userData.examineScaleTarget = newScale;
+        // Also update original scale so it persists when exiting examine mode
+        if (examineState.originalScale) {
+          examineState.originalScale.set(newScale, newScale, newScale);
+        }
+        saveState();
       }
+    } else {
+      // Rotate object around Y axis (perpendicular to desk) with scroll
+      const rotationDelta = event.deltaY > 0 ? 0.15 : -0.15;
+      object.rotation.y += rotationDelta;
+      object.userData.rotationY = object.rotation.y;
       saveState();
     }
     return;
