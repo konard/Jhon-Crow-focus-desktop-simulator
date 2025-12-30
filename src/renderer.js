@@ -2259,6 +2259,12 @@ function addObjectToDesk(type, options = {}) {
     object.userData.scale = options.scale;
     // Adjust Y position to account for scale change
     adjustObjectYForScale(object, 1.0, options.scale);
+  } else if (type === 'magazine' && options.scale === undefined) {
+    // Magazines default to 5.0x scale (same as book max scale) for better readability
+    const defaultMagazineScale = 5.0;
+    object.scale.set(defaultMagazineScale, defaultMagazineScale, defaultMagazineScale);
+    object.userData.scale = defaultMagazineScale;
+    adjustObjectYForScale(object, 1.0, defaultMagazineScale);
   }
 
   deskObjects.push(object);
@@ -4401,8 +4407,13 @@ function onMouseWheel(event) {
       // Scale object (preserving proportions) with Shift+scroll
       const scaleDelta = event.deltaY > 0 ? 0.95 : 1.05;
       const minScale = 0.3;
-      // Books and magazines can be scaled larger for reading
-      const maxScale = (object.userData.type === 'books' || object.userData.type === 'magazine') ? 5.0 : 3.0;
+      // Books and magazines can be scaled larger for reading (magazines can go up to 10.0)
+      let maxScale = 3.0;
+      if (object.userData.type === 'magazine') {
+        maxScale = 10.0;
+      } else if (object.userData.type === 'books') {
+        maxScale = 5.0;
+      }
 
       const oldScale = object.scale.x;
       const newScale = oldScale * scaleDelta;
@@ -4468,8 +4479,13 @@ function onMouseWheel(event) {
         // Scale object (preserving proportions)
         const scaleDelta = event.deltaY > 0 ? 0.95 : 1.05;
         const minScale = 0.3;
-        // Books and magazines can be scaled larger for reading
-        const maxScale = (object.userData.type === 'books' || object.userData.type === 'magazine') ? 5.0 : 3.0;
+        // Books and magazines can be scaled larger for reading (magazines can go up to 10.0)
+        let maxScale = 3.0;
+        if (object.userData.type === 'magazine') {
+          maxScale = 10.0;
+        } else if (object.userData.type === 'books') {
+          maxScale = 5.0;
+        }
 
         const oldScale = object.scale.x;
         const newScale = oldScale * scaleDelta;
@@ -8992,7 +9008,6 @@ function applyMagazineCoverImageWithFit(object, imageDataUrl, fitMode) {
     }
 
     const texture = new THREE.CanvasTexture(canvas);
-    texture.flipY = false;
     texture.colorSpace = THREE.SRGBColorSpace;
     texture.needsUpdate = true;
 
