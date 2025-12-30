@@ -3117,17 +3117,18 @@ function calculateDragStackingY(draggedObject, posX, posZ) {
     }
   });
 
-  // If dragLayerOffset is positive (user scrolled up), stack on top of overlapping objects
-  // Otherwise, try to stay at desk level or below other objects
+  // If there are overlapping objects
   if (overlappingObjects.length > 0) {
+    // Find the highest object
+    const highestTop = overlappingObjects.reduce((max, o) => Math.max(max, o.topY), 0);
+
     if (dragLayerOffset > 0) {
-      // Stack on top - find the highest object and add dragLayerOffset
-      const highestTop = overlappingObjects.reduce((max, o) => Math.max(max, o.topY), 0);
+      // User scrolled up - definitely stack on top with extra height
       stackY = Math.max(stackY, highestTop + draggedBaseOffset + dragLayerOffset * 0.02);
     } else {
-      // When dragLayerOffset is 0 or negative, dragged object goes under other objects
-      // Just use desk level (objects above will visually overlap it)
-      stackY = baseY + draggedBaseOffset;
+      // Default behavior: stack on top of overlapping objects (more intuitive)
+      // Objects will naturally rest on top of whatever they're dragged over
+      stackY = Math.max(stackY, highestTop + draggedBaseOffset * objectScale);
     }
   }
 
@@ -3135,7 +3136,7 @@ function calculateDragStackingY(draggedObject, posX, posZ) {
 }
 
 // Calculate Y position for stacking - checks if the object is above another and returns appropriate Y
-// Takes into account dragLayerOffset to decide if object should stack on top
+// Now stacks automatically when dropped on top of another object, or manually with scroll up
 function calculateStackingY(droppedObject) {
   const droppedRadius = getObjectBounds(droppedObject);
   const droppedPhysics = getObjectPhysics(droppedObject);
@@ -3176,14 +3177,20 @@ function calculateStackingY(droppedObject) {
     }
   });
 
-  // If there are overlapping objects and user scrolled to stack on top
+  // If there are overlapping objects, stack on top automatically
+  // Stacking happens either when user scrolled up (dragLayerOffset > 0) OR when object is being lifted
   if (overlappingObjects.length > 0) {
-    if (wantsToStackOnTop) {
+    // Find the highest overlapping object
+    const highestTop = overlappingObjects.reduce((max, o) => Math.max(max, o.topY), 0);
+
+    // Check if the dropped object was above desk level (lifted/stacking)
+    const wasLifted = droppedObject.position.y > baseY + droppedBaseOffset * objectScale + 0.05;
+
+    if (wantsToStackOnTop || wasLifted) {
       // Stack on top of all overlapping objects
-      const highestTop = overlappingObjects.reduce((max, o) => Math.max(max, o.topY), 0);
-      stackY = Math.max(stackY, highestTop + droppedBaseOffset);
+      stackY = Math.max(stackY, highestTop + droppedBaseOffset * objectScale);
     }
-    // If not wanting to stack on top, just use desk level
+    // If not lifted and not scrolled, use desk level (slide under)
   }
 
   return stackY;
