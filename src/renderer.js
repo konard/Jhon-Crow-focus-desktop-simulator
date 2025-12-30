@@ -5497,6 +5497,14 @@ function openMarkdownEditor(laptop) {
         align-items: center;
         justify-content: center;
         animation: fadeIn 0.3s ease;
+        /* Custom laptop-style cursor using SVG data URL */
+        cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='20' viewBox='0 0 16 20'%3E%3Cpath fill='white' stroke='black' stroke-width='1' d='M1,1 L1,16 L4,13 L7,19 L9,18 L6,12 L10,12 Z'/%3E%3C/svg%3E") 1 1, auto;
+      }
+      #markdown-editor-overlay * {
+        cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='20' viewBox='0 0 16 20'%3E%3Cpath fill='white' stroke='black' stroke-width='1' d='M1,1 L1,16 L4,13 L7,19 L9,18 L6,12 L10,12 Z'/%3E%3C/svg%3E") 1 1, auto;
+      }
+      #markdown-editor-overlay textarea, #markdown-editor-overlay input {
+        cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='2' height='16' viewBox='0 0 2 16'%3E%3Crect fill='white' stroke='black' stroke-width='0.5' x='0' y='0' width='2' height='16'/%3E%3C/svg%3E") 1 8, text;
       }
       @keyframes fadeIn {
         from { opacity: 0; }
