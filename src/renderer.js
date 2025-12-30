@@ -106,7 +106,8 @@ let examineState = {
   object: null,
   originalPosition: null,
   originalRotation: null,
-  originalScale: null
+  originalScale: null,
+  examineDistance: 2.5  // Distance from camera to examined object
 };
 
 // Pointer lock state
@@ -929,7 +930,7 @@ function createCoffeeMug(options = {}) {
   mug.castShadow = true;
   group.add(mug);
 
-  // Handle - torus arc that sticks out from the mug side (vertical "C" shape)
+  // Handle - torus arc that sticks out from the mug side (vertical "D" shape)
   // TorusGeometry(radius, tube, radialSegments, tubularSegments, arc)
   // radius=0.05 makes a smaller arc, tube=0.015 is the thickness
   const handleGeometry = new THREE.TorusGeometry(0.05, 0.015, 8, 16, Math.PI);
@@ -939,15 +940,14 @@ function createCoffeeMug(options = {}) {
   });
   const handle = new THREE.Mesh(handleGeometry, handleMaterial);
   // The torus is flat in XY plane by default, arc opens upward (like a smile)
-  // We need to rotate it to make a vertical handle:
-  // 1. Rotate around Z axis by 90 degrees to make it open sideways (in XZ plane)
-  // 2. The handle should be a vertical "C" or "D" shape attached to the mug side
-  handle.rotation.z = Math.PI / 2;  // Rotate 90 degrees around Z - arc opens to the side
-  handle.rotation.y = Math.PI / 2;  // Rotate 90 degrees around Y - orient towards mug
+  // We need to rotate it to make a vertical handle shaped like "D" when viewed from front:
+  // 1. Rotate around X axis by 90 degrees to make it vertical (arc in YZ plane)
+  // 2. The handle should be a vertical "D" shape attached to the mug side
+  handle.rotation.x = Math.PI / 2;  // Rotate 90 degrees around X - make arc vertical
   // Position so both ends of the arc touch the mug side
   // Mug outer radius is ~0.12, handle arc radius is 0.05
-  // The handle center should be at mug edge (0.12) + some offset
-  handle.position.set(0.12, 0.1, 0); // Center at mug side, vertically centered on mug
+  // The handle center should be at mug edge (0.12) - positioned on Z axis side
+  handle.position.set(0, 0.1, 0.12); // Center at mug side (Z), vertically centered on mug
   handle.castShadow = true;
   group.add(handle);
 
@@ -994,7 +994,10 @@ function createLaptop(options = {}) {
     editorContent: '', // Markdown editor content
     editorFileName: 'notes.md',
     mainColor: options.mainColor || '#1e293b',
-    accentColor: options.accentColor || '#60a5fa'
+    accentColor: options.accentColor || '#60a5fa',
+    bootScreenDataUrl: null, // Custom boot screen image data URL
+    powerButtonColor: options.powerButtonColor || '#555555', // Power button color
+    powerLedColor: options.powerLedColor || '#00ff00' // Power LED on color
   };
 
   // Base/keyboard part
@@ -1051,7 +1054,7 @@ function createLaptop(options = {}) {
   // Power button (in top right corner of keyboard area)
   const powerBtnGeometry = new THREE.CylinderGeometry(0.015, 0.015, 0.005, 16);
   const powerBtnMaterial = new THREE.MeshStandardMaterial({
-    color: 0x555555,
+    color: new THREE.Color(group.userData.powerButtonColor),
     emissive: 0x000000,
     emissiveIntensity: 0,
     roughness: 0.3,
@@ -1294,15 +1297,68 @@ function createBooks(options = {}) {
   spine.castShadow = true;
   closedGroup.add(spine);
 
-  // Title on cover (simple text represented as a lighter rectangle)
-  const titleGeometry = new THREE.BoxGeometry(0.18, 0.001, 0.08);
-  const titleMaterial = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(group.userData.accentColor),
+  // Title on cover (rendered as texture with actual text)
+  const createTitleTexture = (title, width, height, fontSize, isSpine = false) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+
+    // Background matches accent color
+    const accentHex = group.userData.accentColor;
+    ctx.fillStyle = accentHex;
+    ctx.fillRect(0, 0, width, height);
+
+    // Text styling
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `bold ${fontSize}px Arial, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    if (isSpine) {
+      // Rotate text for spine (vertical)
+      ctx.save();
+      ctx.translate(width / 2, height / 2);
+      ctx.rotate(-Math.PI / 2);
+      ctx.fillText(title, 0, 0);
+      ctx.restore();
+    } else {
+      ctx.fillText(title, width / 2, height / 2);
+    }
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.needsUpdate = true;
+    return texture;
+  };
+
+  // Cover title
+  const coverTitleGeometry = new THREE.PlaneGeometry(0.18, 0.06);
+  const coverTitleTexture = createTitleTexture(group.userData.bookTitle, 256, 86, 24, false);
+  const coverTitleMaterial = new THREE.MeshStandardMaterial({
+    map: coverTitleTexture,
     roughness: 0.5
   });
-  const title = new THREE.Mesh(titleGeometry, titleMaterial);
-  title.position.set(0, 0.041, 0);
-  closedGroup.add(title);
+  const coverTitle = new THREE.Mesh(coverTitleGeometry, coverTitleMaterial);
+  coverTitle.rotation.x = -Math.PI / 2;
+  coverTitle.position.set(0.02, 0.041, 0);
+  coverTitle.name = 'coverTitle';
+  closedGroup.add(coverTitle);
+
+  // Spine title
+  const spineTitleGeometry = new THREE.PlaneGeometry(0.015, 0.32);
+  const spineTitleTexture = createTitleTexture(group.userData.bookTitle, 48, 256, 12, true);
+  const spineTitleMaterial = new THREE.MeshStandardMaterial({
+    map: spineTitleTexture,
+    roughness: 0.5
+  });
+  const spineTitle = new THREE.Mesh(spineTitleGeometry, spineTitleMaterial);
+  spineTitle.rotation.y = -Math.PI / 2;
+  spineTitle.position.set(-0.141, 0.02, 0);
+  spineTitle.name = 'spineTitle';
+  closedGroup.add(spineTitle);
+
+  // Store the createTitleTexture function for later updates
+  group.userData.createTitleTexture = createTitleTexture;
 
   group.add(closedGroup);
 
@@ -2339,6 +2395,28 @@ function setupEventListeners() {
       e.preventDefault();
       document.getElementById('menu').classList.toggle('open');
     }
+
+    // Arrow keys for book page navigation
+    if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !e.altKey && !e.ctrlKey) {
+      // Check if we're examining a book or have a book modal open
+      let bookObject = null;
+      if (examineState.active && examineState.object && examineState.object.userData.type === 'books') {
+        bookObject = examineState.object;
+      } else if (interactionObject && interactionObject.userData.type === 'books') {
+        bookObject = interactionObject;
+      }
+
+      if (bookObject && bookObject.userData.isOpen && bookObject.userData.totalPages > 0) {
+        e.preventDefault();
+        if (e.key === 'ArrowLeft' && bookObject.userData.currentPage > 0) {
+          // Previous page with animation
+          animatePageTurn(bookObject, -1);
+        } else if (e.key === 'ArrowRight' && bookObject.userData.currentPage < bookObject.userData.totalPages - 1) {
+          // Next page with animation
+          animatePageTurn(bookObject, 1);
+        }
+      }
+    }
   });
 
   // Window resize
@@ -2470,6 +2548,23 @@ function setupEventListeners() {
   document.querySelectorAll('#accent-colors .color-swatch').forEach(swatch => {
     swatch.addEventListener('click', () => {
       if (selectedObject) {
+        // Block accent color change for Photo Frame if a photo is loaded
+        if (selectedObject.userData.type === 'photo-frame' && selectedObject.userData.photoDataUrl) {
+          // Photo is loaded - show hint that photo must be removed first
+          const dynamicOptions = document.getElementById('object-specific-options');
+          if (dynamicOptions) {
+            // Flash a warning message
+            const existingWarning = dynamicOptions.querySelector('.accent-warning');
+            if (existingWarning) existingWarning.remove();
+            const warning = document.createElement('div');
+            warning.className = 'accent-warning';
+            warning.style.cssText = 'color: #fbbf24; font-size: 12px; margin-top: 10px; padding: 8px; background: rgba(251, 191, 36, 0.1); border-radius: 6px; text-align: center;';
+            warning.textContent = 'Remove photo first to change accent color';
+            dynamicOptions.insertBefore(warning, dynamicOptions.firstChild);
+            setTimeout(() => warning.remove(), 3000);
+          }
+          return; // Don't update color
+        }
         updateObjectColor(selectedObject, 'accentColor', swatch.dataset.color);
         document.querySelectorAll('#accent-colors .color-swatch').forEach(s => s.classList.remove('selected'));
         swatch.classList.add('selected');
@@ -2851,9 +2946,11 @@ function calculateDragStackingY(draggedObject, posX, posZ) {
   const draggedRadius = getObjectBounds(draggedObject);
   const baseY = getDeskSurfaceY();
   const draggedBaseOffset = OBJECT_PHYSICS[draggedObject.userData.type]?.baseOffset || 0;
+  // Account for scale when calculating base offset
+  const objectScale = draggedObject.userData.scale || draggedObject.scale.x || 1.0;
 
-  // Default Y position (on desk surface)
-  let stackY = baseY + draggedBaseOffset;
+  // Default Y position (on desk surface) - apply scale to baseOffset
+  let stackY = baseY + draggedBaseOffset * objectScale;
 
   // Collect all objects we're overlapping with and their heights
   const overlappingObjects = [];
@@ -2907,9 +3004,11 @@ function calculateStackingY(droppedObject) {
   const droppedPhysics = getObjectPhysics(droppedObject);
   const baseY = getDeskSurfaceY();
   const droppedBaseOffset = OBJECT_PHYSICS[droppedObject.userData.type]?.baseOffset || 0;
+  // Account for scale when calculating base offset
+  const objectScale = droppedObject.userData.scale || droppedObject.scale.x || 1.0;
 
-  // Default Y position (on desk surface)
-  let stackY = baseY + droppedBaseOffset;
+  // Default Y position (on desk surface) - apply scale to baseOffset
+  let stackY = baseY + droppedBaseOffset * objectScale;
 
   // If dragLayerOffset was used, the user explicitly wants to stack on top
   const wantsToStackOnTop = dragLayerOffset > 0;
@@ -3452,13 +3551,36 @@ function setupBookCustomizationHandlers(object) {
     const pdfInput = document.getElementById('book-pdf-edit');
     const clearBtn = document.getElementById('book-pdf-clear-edit');
 
+    // Helper to update book title textures
+    const updateBookTitleTextures = (newTitle) => {
+      if (object.userData.createTitleTexture) {
+        const closedGroup = object.getObjectByName('closedBook');
+        if (closedGroup) {
+          const coverTitle = closedGroup.getObjectByName('coverTitle');
+          const spineTitle = closedGroup.getObjectByName('spineTitle');
+          if (coverTitle) {
+            const newCoverTexture = object.userData.createTitleTexture(newTitle, 256, 86, 24, false);
+            coverTitle.material.map = newCoverTexture;
+            coverTitle.material.needsUpdate = true;
+          }
+          if (spineTitle) {
+            const newSpineTexture = object.userData.createTitleTexture(newTitle, 48, 256, 12, true);
+            spineTitle.material.map = newSpineTexture;
+            spineTitle.material.needsUpdate = true;
+          }
+        }
+      }
+    };
+
     if (titleInput) {
       titleInput.addEventListener('change', (e) => {
         object.userData.bookTitle = e.target.value;
+        updateBookTitleTextures(e.target.value);
         saveState();
       });
       titleInput.addEventListener('blur', (e) => {
         object.userData.bookTitle = e.target.value;
+        updateBookTitleTextures(e.target.value);
         saveState();
       });
     }
@@ -3566,9 +3688,11 @@ function enterExamineMode(object) {
   examineState.originalPosition = object.position.clone();
   examineState.originalRotation = object.rotation.clone();
   examineState.originalScale = object.scale.clone();
+  // Store the examine distance for keeping object centered
+  examineState.examineDistance = 2.5;
 
   // Calculate position close to camera
-  const examineDistance = 2.5;
+  const examineDistance = examineState.examineDistance;
   const direction = new THREE.Vector3();
   camera.getWorldDirection(direction);
 
@@ -3742,6 +3866,23 @@ function getInteractionContent(object) {
             ${object.userData.isOn && !object.userData.isBooting ? `
               <button class="timer-btn start" id="laptop-editor">Open Markdown Editor</button>
             ` : ''}
+          </div>
+          <div style="margin-top: 15px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 15px;">
+            <div style="color: rgba(255,255,255,0.7); font-size: 12px; margin-bottom: 8px;">Boot Screen Image</div>
+            <div style="display: flex; gap: 8px;">
+              <label class="timer-btn start" style="flex: 1; text-align: center; cursor: pointer;">
+                ${object.userData.bootScreenDataUrl ? 'Change' : 'Upload'}
+                <input type="file" id="laptop-boot-screen" accept="image/*" style="display: none;">
+              </label>
+              ${object.userData.bootScreenDataUrl ? `
+                <button class="timer-btn reset" id="laptop-boot-clear">Clear</button>
+              ` : ''}
+            </div>
+          </div>
+          <div style="margin-top: 10px;">
+            <div style="color: rgba(255,255,255,0.7); font-size: 12px; margin-bottom: 8px;">Power LED Color</div>
+            <input type="color" id="laptop-led-color" value="${object.userData.powerLedColor || '#00ff00'}"
+                   style="width: 40px; height: 30px; border: none; cursor: pointer;">
           </div>
           ${object.userData.isOn && !object.userData.isBooting ? `
             <div style="margin-top: 15px; color: rgba(255,255,255,0.5); font-size: 12px;">
@@ -4148,6 +4289,9 @@ function setupLampHandlers(object) {
 function setupLaptopHandlers(object) {
   const powerBtn = document.getElementById('laptop-power');
   const editorBtn = document.getElementById('laptop-editor');
+  const bootScreenInput = document.getElementById('laptop-boot-screen');
+  const bootClearBtn = document.getElementById('laptop-boot-clear');
+  const ledColorInput = document.getElementById('laptop-led-color');
 
   if (powerBtn) {
     powerBtn.addEventListener('click', () => {
@@ -4166,6 +4310,66 @@ function setupLaptopHandlers(object) {
   if (editorBtn) {
     editorBtn.addEventListener('click', () => {
       openMarkdownEditor(object);
+    });
+  }
+
+  if (bootScreenInput) {
+    bootScreenInput.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (file && file.type.startsWith('image/')) {
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          const imageUrl = event.target.result;
+          object.userData.bootScreenDataUrl = imageUrl;
+
+          // Create texture for boot screen
+          const textureLoader = new THREE.TextureLoader();
+          textureLoader.load(imageUrl, (texture) => {
+            object.userData.bootScreenTexture = texture;
+            saveState();
+            // Refresh modal to show updated button
+            if (interactionObject === object) {
+              const content = document.getElementById('interaction-content');
+              content.innerHTML = getInteractionContent(object);
+              setupInteractionHandlers(object);
+            }
+          });
+        };
+        reader.readAsDataURL(file);
+      }
+    });
+  }
+
+  if (bootClearBtn) {
+    bootClearBtn.addEventListener('click', () => {
+      if (object.userData.bootScreenTexture) {
+        object.userData.bootScreenTexture.dispose();
+        object.userData.bootScreenTexture = null;
+      }
+      object.userData.bootScreenDataUrl = null;
+      saveState();
+      // Refresh modal
+      if (interactionObject === object) {
+        const content = document.getElementById('interaction-content');
+        content.innerHTML = getInteractionContent(object);
+        setupInteractionHandlers(object);
+      }
+    });
+  }
+
+  if (ledColorInput) {
+    ledColorInput.addEventListener('change', (e) => {
+      object.userData.powerLedColor = e.target.value;
+      // Update LED color if laptop is on
+      if (object.userData.isOn) {
+        const powerLed = object.getObjectByName('powerLed');
+        if (powerLed) {
+          const ledColor = new THREE.Color(e.target.value);
+          powerLed.material.color.copy(ledColor);
+          powerLed.material.emissive.copy(ledColor);
+        }
+      }
+      saveState();
     });
   }
 }
@@ -4550,6 +4754,8 @@ function setupPhotoFrameHandlers(object) {
       const reader = new FileReader();
       reader.onload = (event) => {
         const imageUrl = event.target.result;
+        // Store data URL for persistence
+        object.userData.photoDataUrl = imageUrl;
 
         // Create texture from uploaded image
         const textureLoader = new THREE.TextureLoader();
@@ -4565,6 +4771,7 @@ function setupPhotoFrameHandlers(object) {
             // Store texture reference for cleanup
             object.userData.photoTexture = texture;
           }
+          saveState(); // Save after photo is loaded
         });
       };
       reader.readAsDataURL(file);
@@ -4579,11 +4786,14 @@ function setupPhotoFrameHandlers(object) {
         object.userData.photoTexture.dispose();
         object.userData.photoTexture = null;
       }
+      // Clear the data URL for persistence
+      object.userData.photoDataUrl = null;
 
       // Reset to default color
       photoSurface.material.map = null;
       photoSurface.material.color.set(new THREE.Color(object.userData.accentColor));
       photoSurface.material.needsUpdate = true;
+      saveState();
     }
   });
 }
@@ -4734,6 +4944,24 @@ function setupBookHandlers(object) {
   if (titleInput) {
     titleInput.addEventListener('change', (e) => {
       object.userData.bookTitle = e.target.value;
+      // Update title textures on cover and spine
+      if (object.userData.createTitleTexture) {
+        const closedGroup = object.getObjectByName('closedBook');
+        if (closedGroup) {
+          const coverTitle = closedGroup.getObjectByName('coverTitle');
+          const spineTitle = closedGroup.getObjectByName('spineTitle');
+          if (coverTitle) {
+            const newCoverTexture = object.userData.createTitleTexture(e.target.value, 256, 86, 24, false);
+            coverTitle.material.map = newCoverTexture;
+            coverTitle.material.needsUpdate = true;
+          }
+          if (spineTitle) {
+            const newSpineTexture = object.userData.createTitleTexture(e.target.value, 48, 256, 12, true);
+            spineTitle.material.map = newSpineTexture;
+            spineTitle.material.needsUpdate = true;
+          }
+        }
+      }
       saveState();
     });
   }
@@ -5163,6 +5391,78 @@ function toggleBookOpen(object) {
   }
 }
 
+// Page turning animation for book
+function animatePageTurn(book, direction) {
+  if (book.userData.isTurningPage) return; // Don't interrupt ongoing animation
+  book.userData.isTurningPage = true;
+
+  const openGroup = book.getObjectByName('openBook');
+  if (!openGroup) {
+    book.userData.isTurningPage = false;
+    return;
+  }
+
+  // Create a temporary page for animation
+  const pageGeometry = new THREE.PlaneGeometry(0.24, 0.34);
+  const pageMaterial = new THREE.MeshStandardMaterial({
+    color: 0xfff8f0,
+    side: THREE.DoubleSide,
+    roughness: 0.9
+  });
+  const turningPage = new THREE.Mesh(pageGeometry, pageMaterial);
+  turningPage.position.y = 0.028;
+
+  // Set pivot point at the spine (center of book)
+  const pivotGroup = new THREE.Group();
+  pivotGroup.position.set(0, 0, 0);
+  turningPage.position.x = direction > 0 ? 0.12 : -0.12; // Start from left or right
+  pivotGroup.add(turningPage);
+  openGroup.add(pivotGroup);
+
+  const startAngle = 0;
+  const endAngle = direction > 0 ? -Math.PI : Math.PI; // Flip to opposite side
+  const duration = 400;
+  const startTime = Date.now();
+
+  function animate() {
+    const elapsed = Date.now() - startTime;
+    const progress = Math.min(elapsed / duration, 1);
+
+    // Ease in-out curve
+    const easeProgress = progress < 0.5
+      ? 2 * progress * progress
+      : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+
+    // Rotate the page
+    pivotGroup.rotation.y = startAngle + (endAngle - startAngle) * easeProgress;
+
+    // Add a slight curve to the page during turn
+    const curveFactor = Math.sin(progress * Math.PI) * 0.1;
+    turningPage.rotation.x = curveFactor;
+
+    if (progress < 1) {
+      requestAnimationFrame(animate);
+    } else {
+      // Animation complete - update page and cleanup
+      book.userData.currentPage += direction;
+      updateBookPages(book);
+      openGroup.remove(pivotGroup);
+      book.userData.isTurningPage = false;
+
+      // Update modal if open
+      if (interactionObject === book) {
+        const content = document.getElementById('interaction-content');
+        if (content) {
+          content.innerHTML = getInteractionContent(book);
+          setupBookHandlers(book);
+        }
+      }
+    }
+  }
+
+  animate();
+}
+
 // ============================================================================
 // LAPTOP POWER TOGGLE AND BOOT ANIMATION
 // ============================================================================
@@ -5194,8 +5494,9 @@ function toggleLaptopPower(object) {
 
     // Power LED on
     if (powerLed) {
-      powerLed.material.color.set(0x00ff00);
-      powerLed.material.emissive.set(0x00ff00);
+      const ledColor = new THREE.Color(object.userData.powerLedColor || '#00ff00');
+      powerLed.material.color.copy(ledColor);
+      powerLed.material.emissive.copy(ledColor);
       powerLed.material.emissiveIntensity = 0.5;
     }
 
@@ -5217,13 +5518,25 @@ function toggleLaptopPower(object) {
           }
         }
       } else if (progress < 0.8) {
-        // Loading screen (Windows XP-like blue)
+        // Loading screen - use custom boot screen if available
         if (object.userData.screenState !== 'loading') {
           object.userData.screenState = 'loading';
           if (screen) {
-            screen.material.color.set(0x0052cc);
-            screen.material.emissive.set(0x0052cc);
-            screen.material.emissiveIntensity = 0.4;
+            if (object.userData.bootScreenDataUrl && object.userData.bootScreenTexture) {
+              // Use custom boot screen image
+              screen.material.map = object.userData.bootScreenTexture;
+              screen.material.color.set(0xffffff);
+              screen.material.emissive.set(0xffffff);
+              screen.material.emissiveIntensity = 0.2;
+              screen.material.needsUpdate = true;
+            } else {
+              // Default Windows XP-like blue
+              screen.material.map = null;
+              screen.material.color.set(0x0052cc);
+              screen.material.emissive.set(0x0052cc);
+              screen.material.emissiveIntensity = 0.4;
+              screen.material.needsUpdate = true;
+            }
           }
         }
       } else if (progress < 1) {
@@ -5272,6 +5585,22 @@ function updateCameraLook() {
   lookAt.z = camera.position.z + Math.cos(cameraLookState.yaw) * Math.cos(cameraLookState.pitch);
 
   camera.lookAt(lookAt);
+
+  // Keep examined object centered in front of camera when rotating
+  if (examineState.active && examineState.object) {
+    const examineDistance = examineState.examineDistance || 2.5;
+    const direction = new THREE.Vector3();
+    camera.getWorldDirection(direction);
+
+    // Update target position to stay in front of camera
+    const newTargetPosition = new THREE.Vector3(
+      camera.position.x + direction.x * examineDistance,
+      camera.position.y + direction.y * examineDistance + 0.3,
+      camera.position.z + direction.z * examineDistance
+    );
+
+    examineState.object.userData.examineTarget = newTargetPosition;
+  }
 }
 
 function onWindowResize() {
@@ -5324,6 +5653,15 @@ async function saveState() {
           break;
         case 'laptop':
           data.bootTime = obj.userData.bootTime;
+          if (obj.userData.bootScreenDataUrl) {
+            data.bootScreenDataUrl = obj.userData.bootScreenDataUrl;
+          }
+          if (obj.userData.powerLedColor) {
+            data.powerLedColor = obj.userData.powerLedColor;
+          }
+          if (obj.userData.powerButtonColor) {
+            data.powerButtonColor = obj.userData.powerButtonColor;
+          }
           break;
       }
 
@@ -5427,6 +5765,16 @@ async function loadState() {
                 break;
               case 'laptop':
                 if (objData.bootTime) obj.userData.bootTime = objData.bootTime;
+                if (objData.powerLedColor) obj.userData.powerLedColor = objData.powerLedColor;
+                if (objData.powerButtonColor) obj.userData.powerButtonColor = objData.powerButtonColor;
+                if (objData.bootScreenDataUrl) {
+                  obj.userData.bootScreenDataUrl = objData.bootScreenDataUrl;
+                  // Load boot screen texture from data URL
+                  const textureLoader = new THREE.TextureLoader();
+                  textureLoader.load(objData.bootScreenDataUrl, (texture) => {
+                    obj.userData.bootScreenTexture = texture;
+                  });
+                }
                 break;
             }
           }
@@ -5540,19 +5888,44 @@ function animate() {
           obj.userData.lastTickTime = now;
           obj.userData.pendulumDirection *= -1;
 
-          // Play tick sound at each swing endpoint (optional - simple click)
+          // Play strike/click sound at each swing endpoint
           if (obj.userData.tickSound) {
             try {
               const audioCtx = getSharedAudioContext();
+              const currentTime = audioCtx.currentTime;
+
+              // Create a more percussive "strike" sound
+              // Use a short noise burst followed by quick decay for mechanical click
               const osc = audioCtx.createOscillator();
+              const osc2 = audioCtx.createOscillator();
               const gain = audioCtx.createGain();
-              osc.connect(gain);
+              const filter = audioCtx.createBiquadFilter();
+
+              // Connect oscillators through filter
+              osc.connect(filter);
+              osc2.connect(filter);
+              filter.connect(gain);
               gain.connect(audioCtx.destination);
-              osc.frequency.value = 1000;
-              osc.type = 'square';
-              gain.gain.value = 0.1;
-              osc.start();
-              osc.stop(audioCtx.currentTime + 0.02);
+
+              // High frequency strike with harmonics
+              osc.frequency.value = 2400;
+              osc.type = 'sine';
+              osc2.frequency.value = 800;
+              osc2.type = 'triangle';
+
+              // Filter for wood-like strike
+              filter.type = 'highpass';
+              filter.frequency.value = 400;
+              filter.Q.value = 0.5;
+
+              // Sharp attack, quick decay envelope for percussive sound
+              gain.gain.setValueAtTime(0.15, currentTime);
+              gain.gain.exponentialRampToValueAtTime(0.01, currentTime + 0.05);
+
+              osc.start(currentTime);
+              osc2.start(currentTime);
+              osc.stop(currentTime + 0.06);
+              osc2.stop(currentTime + 0.06);
             } catch (e) {}
           }
         }
