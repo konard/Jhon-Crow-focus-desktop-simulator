@@ -251,7 +251,11 @@ const physicsState = {
   tiltForce: 0.08,               // Reduced tilt force (was 0.15) - objects harder to tip
   tiltRecovery: 0.08,            // Increased recovery (was 0.05) - objects return upright faster
   maxTilt: Math.PI / 3,          // Maximum tilt before falling over (~60 degrees)
-  tipOverThreshold: Math.PI / 4  // Angle at which object tips over completely (~45 degrees)
+  tipOverThreshold: Math.PI / 4, // Angle at which object tips over completely (~45 degrees)
+  // Performance optimization: only run full physics when objects are moving
+  lastPhysicsTime: 0,
+  physicsInterval: 32,           // Run physics every 32ms (~30fps) instead of every frame
+  hasActivePhysics: false        // Track if any object is moving
 };
 
 // Object weight/stability configurations (affects how easily they tip)
@@ -1453,8 +1457,11 @@ function createBooks(options = {}) {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
 
-    // Word wrap for long titles
-    const maxWidth = width - 20; // Padding on sides
+    // Word wrap for long titles with padding
+    const paddingX = 30; // Horizontal padding on each side
+    const paddingY = 15; // Vertical padding top/bottom
+    const maxWidth = width - paddingX * 2;
+    const maxHeight = height - paddingY * 2;
     const words = title.split(' ');
     const lines = [];
     let currentLine = '';
@@ -1471,10 +1478,12 @@ function createBooks(options = {}) {
     }
     if (currentLine) lines.push(currentLine);
 
-    // Draw multiline title (centered vertically)
+    // Draw multiline title (centered vertically within padded area)
     const lineHeight = fontSize * 1.2;
     const totalHeight = lines.length * lineHeight;
-    const startY = (height - totalHeight) / 2 + lineHeight / 2;
+    // Center within the padded area
+    const availableHeight = maxHeight;
+    const startY = paddingY + (availableHeight - totalHeight) / 2 + lineHeight / 2;
 
     lines.forEach((line, i) => {
       ctx.fillText(line, width / 2, startY + i * lineHeight);
@@ -2048,6 +2057,27 @@ function removeObject(object) {
   }
 }
 
+// Clear all objects from the desk
+function clearAllObjects() {
+  // Remove all objects from scene and physics
+  while (deskObjects.length > 0) {
+    const obj = deskObjects.pop();
+    scene.remove(obj);
+    // Clean up physics data
+    physicsState.velocities.delete(obj.userData.id);
+    physicsState.angularVelocities.delete(obj.userData.id);
+    physicsState.tiltState.delete(obj.userData.id);
+    physicsState.tiltVelocities.delete(obj.userData.id);
+  }
+
+  // Close any open panels/modals
+  selectedObject = null;
+  document.getElementById('customization-panel').classList.remove('open');
+  closeInteractionModal();
+
+  saveState();
+}
+
 // Reset an object that has fallen over back to upright position
 function resetFallenObject(object) {
   if (!object.userData.isFallen) return;
@@ -2278,11 +2308,76 @@ function getObjectPhysics(object) {
   return OBJECT_PHYSICS[type] || { weight: 1.0, stability: 0.5, height: 0.3 };
 }
 
+// Lightweight drag collision check (runs every frame during drag for responsiveness)
+function updateDragCollisions() {
+  if (!isDragging || !selectedObject) return;
+
+  const draggedRadius = getObjectBounds(selectedObject);
+  const draggedPhysics = getObjectPhysics(selectedObject);
+
+  deskObjects.forEach(obj => {
+    if (obj === selectedObject) return;
+    if (obj.userData.isExamining || obj.userData.isReturning) return;
+    if (obj.userData.isFallen) return;
+
+    initPhysicsForObject(obj);
+
+    const otherRadius = getObjectBounds(obj);
+    const otherPhysics = getObjectPhysics(obj);
+    const minDist = (draggedRadius + otherRadius) * 0.7;
+
+    const dx = obj.position.x - selectedObject.position.x;
+    const dz = obj.position.z - selectedObject.position.z;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+
+    if (dist < minDist && dist > 0.01) {
+      // Collision detected! Push the other object
+      const normalX = dx / dist;
+      const normalZ = dz / dist;
+
+      const dragSpeed = Math.sqrt(
+        physicsState.dragVelocity.x * physicsState.dragVelocity.x +
+        physicsState.dragVelocity.z * physicsState.dragVelocity.z
+      );
+
+      const speedMultiplier = Math.max(0, Math.min(1, (dragSpeed - physicsState.minPushSpeed) / 0.1));
+      const weightRatio = draggedPhysics.weight / otherPhysics.weight;
+      const pushMultiplier = Math.min(weightRatio * 1.5, 3.0) * speedMultiplier;
+
+      const pushX = normalX * physicsState.pushForce * pushMultiplier;
+      const pushZ = normalZ * physicsState.pushForce * pushMultiplier;
+
+      const vel = physicsState.velocities.get(obj.userData.id);
+      vel.x += pushX;
+      vel.z += pushZ;
+
+      // Separate objects to prevent overlap
+      const overlap = minDist - dist;
+      obj.position.x += normalX * overlap * 0.5;
+      obj.position.z += normalZ * overlap * 0.5;
+    }
+  });
+}
+
 function updatePhysics() {
   if (!physicsState.enabled) return;
 
+  // Performance optimization: throttle physics updates
+  const now = Date.now();
+  if (now - physicsState.lastPhysicsTime < physicsState.physicsInterval) {
+    // Still update dragging collision detection at full rate for responsiveness
+    if (isDragging && selectedObject) {
+      updateDragCollisions();
+    }
+    return;
+  }
+  physicsState.lastPhysicsTime = now;
+
   const deskHalfWidth = CONFIG.desk.width / 2 - 0.2;
   const deskHalfDepth = CONFIG.desk.depth / 2 - 0.2;
+
+  // Track if any physics is active this frame
+  let hasActivePhysics = false;
 
   // Update velocities, positions, and tilting for all non-dragged objects
   deskObjects.forEach(obj => {
@@ -2816,6 +2911,14 @@ function setupEventListeners() {
       removeObject(selectedObject);
       selectedObject = null;
       document.getElementById('customization-panel').classList.remove('open');
+    }
+  });
+
+  // Clear desk button - removes all objects from desk
+  document.getElementById('clear-desk-btn').addEventListener('click', () => {
+    if (confirm('Are you sure you want to remove all objects from the desk?')) {
+      clearAllObjects();
+      document.getElementById('menu').classList.remove('open');
     }
   });
 
@@ -5764,6 +5867,13 @@ function openMarkdownEditor(laptop) {
   sourceTextarea.addEventListener('input', updatePreview);
   updatePreview();
 
+  // Focus the textarea immediately so user can start typing
+  setTimeout(() => {
+    sourceTextarea.focus();
+    // Move cursor to end of content
+    sourceTextarea.setSelectionRange(sourceTextarea.value.length, sourceTextarea.value.length);
+  }, 100);
+
   saveBtn.addEventListener('click', () => {
     laptop.userData.editorContent = sourceTextarea.value;
     laptop.userData.editorFileName = filenameInput.value || 'notes.md';
@@ -6349,9 +6459,9 @@ async function updateBookPagesWithPDF(book) {
     return;
   }
 
-  // Higher resolution for sharper PDF text
-  const canvasWidth = 2048;
-  const canvasHeight = 2896;
+  // Optimized resolution for PDF text (balanced performance vs quality)
+  const canvasWidth = 1024;
+  const canvasHeight = 1448;
 
   // Render left page (current page)
   const leftPageNum = book.userData.currentPage * 2 + 1; // 1-indexed
@@ -6441,12 +6551,11 @@ function updateBookPages(book) {
   const leftPage = openGroup.getObjectByName('leftPageSurface');
   const rightPage = openGroup.getObjectByName('rightPageSurface');
 
-  // Very high resolution canvas for crisp, readable text
-  // Using 2048x2896 for maximum sharpness (4x the original resolution)
-  const canvasWidth = 2048;
-  const canvasHeight = 2896;
-  const margin = 160;
-  const lineHeight = 112;
+  // Optimized resolution for placeholder text (balanced performance vs quality)
+  const canvasWidth = 1024;
+  const canvasHeight = 1448;
+  const margin = 80;
+  const lineHeight = 56;
 
   // Check if PDF is loading - show animated ellipsis
   const isLoading = book.userData.isLoadingPdf;
@@ -6468,21 +6577,21 @@ function updateBookPages(book) {
     ctx.fillStyle = '#333';
     const pageNum = book.userData.currentPage * 2;
 
-    // Page number header - scaled for 4x resolution
-    ctx.font = 'bold 112px Georgia, serif';
+    // Page number header - scaled for 2x resolution
+    ctx.font = 'bold 56px Georgia, serif';
     ctx.textAlign = 'center';
-    ctx.fillText(`Page ${pageNum + 1}`, canvas.width / 2, 240);
+    ctx.fillText(`Page ${pageNum + 1}`, canvas.width / 2, 120);
 
     // Divider line
     ctx.strokeStyle = '#ccc';
-    ctx.lineWidth = 4;
+    ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.moveTo(margin, 320);
-    ctx.lineTo(canvas.width - margin, 320);
+    ctx.moveTo(margin, 160);
+    ctx.lineTo(canvas.width - margin, 160);
     ctx.stroke();
 
-    // Content area - larger, clearer font for 4x resolution
-    ctx.font = '96px Georgia, serif';
+    // Content area - clear font for 2x resolution
+    ctx.font = '48px Georgia, serif';
     ctx.textAlign = 'left';
 
     const pdfFileName = book.userData.pdfPath
@@ -6495,8 +6604,8 @@ function updateBookPages(book) {
       // Draw animated gradient loading indicator
       const time = Date.now() / 1000;
       const gradientWidth = canvasWidth - margin * 2;
-      const gradientHeight = 120;
-      const gradientY = 480;
+      const gradientHeight = 60;
+      const gradientY = 240;
 
       // Create animated gradient that sweeps left to right
       const offset = (Math.sin(time * 2) + 1) / 2; // 0 to 1 oscillation
@@ -6508,8 +6617,8 @@ function updateBookPages(book) {
 
       // Animated shimmer gradient
       const shimmerGradient = ctx.createLinearGradient(
-        margin + shimmerPos - 200, gradientY,
-        margin + shimmerPos + 200, gradientY
+        margin + shimmerPos - 100, gradientY,
+        margin + shimmerPos + 100, gradientY
       );
       shimmerGradient.addColorStop(0, 'rgba(200, 200, 220, 0)');
       shimmerGradient.addColorStop(0.3, 'rgba(180, 180, 220, 0.6)');
@@ -6521,7 +6630,7 @@ function updateBookPages(book) {
 
       // Border around loading bar
       ctx.strokeStyle = '#bbb';
-      ctx.lineWidth = 4;
+      ctx.lineWidth = 2;
       ctx.strokeRect(margin, gradientY, gradientWidth, gradientHeight);
 
       // Get animated ellipsis based on time
@@ -6533,11 +6642,11 @@ function updateBookPages(book) {
       ].filter(line => line !== '');
 
       // Draw loading text above gradient
-      ctx.font = '96px Georgia, serif';
+      ctx.font = '48px Georgia, serif';
       ctx.textAlign = 'center';
       ctx.fillStyle = '#333';
       contentLines.forEach((line, i) => {
-        ctx.fillText(line, canvasWidth / 2, 380 + i * lineHeight);
+        ctx.fillText(line, canvasWidth / 2, 190 + i * lineHeight);
       });
 
       // Skip normal content drawing since we drew custom loading
@@ -6570,14 +6679,14 @@ function updateBookPages(book) {
     }
 
     contentLines.forEach((line, i) => {
-      ctx.fillText(line, margin, 480 + i * lineHeight);
+      ctx.fillText(line, margin, 240 + i * lineHeight);
     });
 
     // Page footer
-    ctx.font = '72px Georgia, serif';
+    ctx.font = '36px Georgia, serif';
     ctx.textAlign = 'center';
     ctx.fillStyle = '#888';
-    ctx.fillText(book.userData.bookTitle || 'Untitled', canvas.width / 2, canvas.height - 120);
+    ctx.fillText(book.userData.bookTitle || 'Untitled', canvas.width / 2, canvas.height - 60);
 
     const texture = new THREE.CanvasTexture(canvas);
     texture.anisotropy = 16; // Better quality at angles
@@ -6602,21 +6711,21 @@ function updateBookPages(book) {
     ctx.fillStyle = '#333';
     const pageNum = book.userData.currentPage * 2 + 1;
 
-    // Page number header - scaled for 4x resolution
-    ctx.font = 'bold 112px Georgia, serif';
+    // Page number header - scaled for 2x resolution
+    ctx.font = 'bold 56px Georgia, serif';
     ctx.textAlign = 'center';
-    ctx.fillText(`Page ${pageNum + 1}`, canvas.width / 2, 240);
+    ctx.fillText(`Page ${pageNum + 1}`, canvas.width / 2, 120);
 
     // Divider line
     ctx.strokeStyle = '#ccc';
-    ctx.lineWidth = 4;
+    ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.moveTo(margin, 320);
-    ctx.lineTo(canvas.width - margin, 320);
+    ctx.moveTo(margin, 160);
+    ctx.lineTo(canvas.width - margin, 160);
     ctx.stroke();
 
-    // Content area - larger, clearer font for 4x resolution
-    ctx.font = '96px Georgia, serif';
+    // Content area - clear font for 2x resolution
+    ctx.font = '48px Georgia, serif';
     ctx.textAlign = 'left';
 
     const totalPages = book.userData.totalPages || 10;
@@ -6636,14 +6745,14 @@ function updateBookPages(book) {
     ];
 
     contentLines.forEach((line, i) => {
-      ctx.fillText(line, margin, 480 + i * lineHeight);
+      ctx.fillText(line, margin, 240 + i * lineHeight);
     });
 
     // Page footer
-    ctx.font = '72px Georgia, serif';
+    ctx.font = '36px Georgia, serif';
     ctx.textAlign = 'center';
     ctx.fillStyle = '#888';
-    ctx.fillText(`${pageNum + 1} / ${totalPages * 2}`, canvas.width / 2, canvas.height - 120);
+    ctx.fillText(`${pageNum + 1} / ${totalPages * 2}`, canvas.width / 2, canvas.height - 60);
 
     const texture = new THREE.CanvasTexture(canvas);
     texture.anisotropy = 16; // Better quality at angles
@@ -6959,12 +7068,32 @@ function toggleBookOpen(object) {
     object.userData.isOpen = true;
     if (closedGroup) closedGroup.visible = false;
     if (openGroup) openGroup.visible = true;
+
+    // Initialize currentPage to 0 if not set, and update the page content
+    if (object.userData.currentPage === undefined) {
+      object.userData.currentPage = 0;
+    }
+    // Update pages to show content (this will render PDF if loaded or show placeholder)
+    updateBookPages(object);
   }
 }
 
 // Page turning animation for book
 function animatePageTurn(book, direction) {
   if (book.userData.isTurningPage) return; // Don't interrupt ongoing animation
+
+  // Prevent flipping beyond first or last page
+  const currentPage = book.userData.currentPage || 0;
+  const totalPages = book.userData.totalPages || 10;
+  const maxPage = Math.ceil(totalPages / 2) - 1; // Max spread index (0-indexed)
+
+  if (direction < 0 && currentPage <= 0) {
+    return; // Can't flip before first page
+  }
+  if (direction > 0 && currentPage >= maxPage) {
+    return; // Can't flip beyond last page
+  }
+
   book.userData.isTurningPage = true;
 
   const openGroup = book.getObjectByName('openBook');
@@ -7047,14 +7176,14 @@ function animatePageTurn(book, direction) {
     const nextPage2 = (book.userData.currentPage + direction) * 2 + 2;
     const pdfDoc = book.userData.pdfDocument;
 
-    // Pre-render in background
+    // Pre-render in background (using optimized resolution)
     if (nextPage1 > 0 && nextPage1 <= pdfDoc.numPages && !book.userData.renderedPages[nextPage1]) {
-      renderPDFPageToCanvas(pdfDoc, nextPage1, 2048, 2896).then(canvas => {
+      renderPDFPageToCanvas(pdfDoc, nextPage1, 1024, 1448).then(canvas => {
         if (canvas) book.userData.renderedPages[nextPage1] = canvas;
       });
     }
     if (nextPage2 > 0 && nextPage2 <= pdfDoc.numPages && !book.userData.renderedPages[nextPage2]) {
-      renderPDFPageToCanvas(pdfDoc, nextPage2, 2048, 2896).then(canvas => {
+      renderPDFPageToCanvas(pdfDoc, nextPage2, 1024, 1448).then(canvas => {
         if (canvas) book.userData.renderedPages[nextPage2] = canvas;
       });
     }
@@ -7143,6 +7272,21 @@ function exitLaptopZoomMode(object) {
   if (!object.userData.isZoomedIn) return;
 
   object.userData.isZoomedIn = false;
+
+  // Close any open markdown editor overlay when exiting laptop mode
+  const editorOverlay = document.getElementById('markdown-editor-overlay');
+  if (editorOverlay) {
+    // Save content before removing
+    const sourceTextarea = document.getElementById('md-source');
+    const filenameInput = document.getElementById('md-filename');
+    if (sourceTextarea) {
+      object.userData.editorContent = sourceTextarea.value;
+    }
+    if (filenameInput) {
+      object.userData.editorFileName = filenameInput.value || 'notes.md';
+    }
+    editorOverlay.remove();
+  }
 
   // Save cursor state for visual persistence on screen
   object.userData.lastCursorX = laptopCursorState.x;
