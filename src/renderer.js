@@ -1852,6 +1852,7 @@ function createMetronome(options = {}) {
     interactive: false, // Settings only in edit mode (RMB), middle-click just toggles
     isRunning: false,
     bpm: 120,
+    volume: options.volume !== undefined ? options.volume : 0.5, // Volume 0-1
     tickSound: true, // Tick sound ON by default (strike sound)
     tickSoundType: 'strike', // 'strike' (default) or 'beep'
     pendulumAngle: 0,
@@ -3866,10 +3867,16 @@ function updateCustomizationPanel(object) {
       break;
 
     case 'metronome':
+      const volumePercent = Math.round((object.userData.volume || 0.5) * 100);
       dynamicOptions.innerHTML = `
         <div class="customization-group" style="margin-top: 20px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.1);">
           <label>BPM: <span id="bpm-display">${object.userData.bpm}</span></label>
           <input type="range" id="metronome-bpm-edit" min="10" max="220" value="${object.userData.bpm}"
+                 style="width: 100%; margin-top: 8px; accent-color: #4f46e5;">
+        </div>
+        <div class="customization-group" style="margin-top: 15px;">
+          <label>Volume: <span id="volume-display">${volumePercent}%</span></label>
+          <input type="range" id="metronome-volume-edit" min="0" max="100" value="${volumePercent}"
                  style="width: 100%; margin-top: 8px; accent-color: #4f46e5;">
         </div>
         <div class="customization-group" style="margin-top: 15px;">
@@ -4148,6 +4155,20 @@ function setupMetronomeCustomizationHandlers(object) {
 
       // Add scroll-based adjustment for BPM slider
       addScrollToSlider(bpmSlider);
+    }
+
+    // Volume slider
+    const volumeSlider = document.getElementById('metronome-volume-edit');
+    const volumeDisplay = document.getElementById('volume-display');
+    if (volumeSlider) {
+      volumeSlider.addEventListener('input', (e) => {
+        object.userData.volume = parseInt(e.target.value) / 100;
+        volumeDisplay.textContent = e.target.value + '%';
+        saveState();
+      });
+
+      // Add scroll-based adjustment for volume slider
+      addScrollToSlider(volumeSlider);
     }
 
     const tickCheckbox = document.getElementById('tick-sound');
@@ -7489,6 +7510,7 @@ async function saveState() {
           break;
         case 'metronome':
           data.bpm = obj.userData.bpm;
+          data.volume = obj.userData.volume;
           data.tickSound = obj.userData.tickSound;
           data.tickSoundType = obj.userData.tickSoundType;
           break;
@@ -7652,6 +7674,7 @@ async function loadState() {
                 break;
               case 'metronome':
                 if (objData.bpm) obj.userData.bpm = objData.bpm;
+                if (objData.volume !== undefined) obj.userData.volume = objData.volume;
                 if (objData.tickSound !== undefined) obj.userData.tickSound = objData.tickSound;
                 if (objData.tickSoundType) obj.userData.tickSoundType = objData.tickSoundType;
                 break;
@@ -7878,6 +7901,7 @@ function animate() {
             try {
               const audioCtx = getSharedAudioContext();
               const currentTime = audioCtx.currentTime;
+              const volume = obj.userData.volume !== undefined ? obj.userData.volume : 0.5;
 
               if (obj.userData.tickSoundType === 'beep') {
                 // Simple beep sound
@@ -7887,7 +7911,7 @@ function animate() {
                 gain.connect(audioCtx.destination);
                 osc.frequency.value = 880; // A5 note
                 osc.type = 'sine';
-                gain.gain.setValueAtTime(0.1, currentTime);
+                gain.gain.setValueAtTime(0.2 * volume, currentTime);
                 gain.gain.exponentialRampToValueAtTime(0.01, currentTime + 0.08);
                 osc.start(currentTime);
                 osc.stop(currentTime + 0.1);
@@ -7917,8 +7941,9 @@ function animate() {
                 filter.Q.value = 2;
 
                 // Very sharp attack, quick exponential decay for percussive "tick"
-                gain.gain.setValueAtTime(0.25, currentTime);
-                gain.gain.exponentialRampToValueAtTime(0.08, currentTime + 0.015);
+                // Volume affects the peak gain
+                gain.gain.setValueAtTime(0.5 * volume, currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.16 * volume, currentTime + 0.015);
                 gain.gain.exponentialRampToValueAtTime(0.01, currentTime + 0.04);
 
                 osc.start(currentTime);
