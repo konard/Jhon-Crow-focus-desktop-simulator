@@ -161,6 +161,12 @@ let laptopCursorState = {
   targetLaptop: null
 };
 
+// Laptop start menu state
+let laptopStartMenuState = {
+  isOpen: false,
+  targetLaptop: null
+};
+
 // ============================================================================
 // UTILITY FUNCTIONS
 // ============================================================================
@@ -1001,45 +1007,28 @@ function createCoffeeMug(options = {}) {
   rim.position.y = 0.2;
   group.add(rim);
 
-  // Handle - torus arc forming a "D" shape attached to the mug side
-  // TorusGeometry(radius, tube, radialSegments, tubularSegments, arc)
-  // Handle arc radius=0.05, tube thickness=0.015, semicircle arc (PI)
+  // Handle - D-shaped arc attached vertically to the mug side
+  // TorusGeometry creates a half-ring (arc = PI)
+  // Default orientation: arc in XY plane, endpoints at (±r, 0, 0), peak at (0, r, 0)
+  //
+  // For a proper D-handle viewed from the side:
+  // - Endpoints attach to mug at top and bottom (vertically separated)
+  // - Arc bulges outward from mug body (in +X direction when mug at origin)
+  //
+  // To achieve this:
+  // 1. rotation.z = PI/2 rotates the arc so endpoints are vertical at (0, ±r, 0)
+  //    and peak moves to (r, 0, 0) extending outward
+  // 2. Position handle at mug's outer edge
   const handleGeometry = new THREE.TorusGeometry(0.05, 0.015, 8, 16, Math.PI);
   const handleMaterial = new THREE.MeshStandardMaterial({
     color: new THREE.Color(group.userData.mainColor),
     roughness: 0.4
   });
   const handle = new THREE.Mesh(handleGeometry, handleMaterial);
-  // TorusGeometry creates a half-ring in XY plane by default:
-  // - Endpoints at (-radius, 0, 0) and (+radius, 0, 0)
-  // - Arc bulges upward to (0, +radius, 0)
-  //
-  // We need a vertical "D" handle on the side of the mug:
-  // - Both attachment points on the mug body at different heights
-  // - Arc extending outward horizontally
-  //
-  // Solution: rotate so arc is in XZ plane (vertical in Y, extending in X)
-  // rotation.x = PI/2 tilts the arc so it's vertical
-  // Then rotation.z adjusts orientation
-  //
-  // After rotation.x = -PI/2:
-  // - Endpoints at (-radius, 0, 0) and (+radius, 0, 0) - horizontal
-  // - Arc bulges downward in -Z
-  //
-  // After rotation.z = PI/2 on that:
-  // - Endpoints become (0, -radius, 0) and (0, +radius, 0) - VERTICAL
-  // - Arc still extends in -Z direction? No...
-  //
-  // Let's try a different approach: position the torus outside the mug with proper rotation
-  // Default torus arc in XY plane: endpoints at (+-0.05, 0, 0), peak at (0, 0.05, 0)
-  // Rotate X by PI/2 to make it extend in Z direction instead of Y
-  // Then endpoints at (+-0.05, 0, 0), peak at (0, 0, 0.05)
-  // Rotate Y by PI/2 so endpoints become vertical at (0, +-0.05, 0), arc extends in +X
-  handle.rotation.set(Math.PI / 2, Math.PI / 2, 0);
-  // Now: endpoints at (0, -0.05, 0) and (0, +0.05, 0), arc peak at (0.05, 0, 0)
-  // Position so endpoints touch the mug body at radius 0.12
-  // Place handle center at mug surface so arc extends outward
-  handle.position.set(0.12, 0.1, 0);
+  // Rotate around Z axis to make endpoints vertical
+  handle.rotation.set(0, 0, Math.PI / 2);
+  // Position at mug edge (radius ~0.11), vertically centered on mug (y=0.1)
+  handle.position.set(0.11, 0.1, 0);
   handle.castShadow = true;
   group.add(handle);
 
@@ -1103,7 +1092,9 @@ function createLaptop(options = {}) {
     mainColor: options.mainColor || '#1e293b',
     accentColor: options.accentColor || '#60a5fa',
     bootScreenDataUrl: null, // Custom boot screen image data URL
-    powerButtonColor: options.powerButtonColor || '#555555', // Power button color
+    powerButtonColor: options.powerButtonColor || '#ff0000', // Power button color
+    powerButtonGlow: options.powerButtonGlow !== undefined ? options.powerButtonGlow : true, // Whether button glows
+    powerButtonBrightness: options.powerButtonBrightness !== undefined ? options.powerButtonBrightness : 50, // Glow brightness 0-100
     powerLedColor: options.powerLedColor || '#00ff00' // Power LED on color
   };
 
@@ -1161,19 +1152,20 @@ function createLaptop(options = {}) {
   // Power button (in top right corner of keyboard area)
   // Keyboard is centered at Z=0.05, extends from X=-0.3 to X=0.3
   // Top edge of keyboard is at Z = 0.05 - 0.175 = -0.125
-  // Make it a visible tall red cylinder for easy identification
-  const powerBtnGeometry = new THREE.CylinderGeometry(0.02, 0.02, 0.04, 16);
+  // Power button - shorter cylinder for better proportions
+  const powerBtnGeometry = new THREE.CylinderGeometry(0.015, 0.015, 0.02, 16);
+  const buttonColor = new THREE.Color(group.userData.powerButtonColor);
   const powerBtnMaterial = new THREE.MeshStandardMaterial({
-    color: 0xff0000, // Bright red color for high visibility
-    emissive: 0x440000,
-    emissiveIntensity: 0.5,
+    color: buttonColor,
+    emissive: group.userData.powerButtonGlow ? buttonColor : 0x000000,
+    emissiveIntensity: group.userData.powerButtonGlow ? group.userData.powerButtonBrightness / 100 : 0,
     roughness: 0.2,
     metalness: 0.6
   });
   const powerButton = new THREE.Mesh(powerBtnGeometry, powerBtnMaterial);
   // Position in top-right corner of keyboard area, standing upright
   // X: near right edge (0.27), Y: on keyboard surface + half height, Z: near top of keyboard
-  powerButton.position.set(0.27, 0.032 + 0.02, -0.08);
+  powerButton.position.set(0.27, 0.032 + 0.01, -0.08);
   powerButton.name = 'powerButton';
   group.add(powerButton);
 
@@ -1430,6 +1422,7 @@ function createBooks(options = {}) {
 
   // Title on cover (rendered as texture with actual text)
   // Font size increased from 24 to 32 for better readability
+  // Now supports multiline titles for long book names
   const createTitleTexture = (title, width, height, fontSize) => {
     const canvas = document.createElement('canvas');
     canvas.width = width;
@@ -1447,8 +1440,32 @@ function createBooks(options = {}) {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
 
-    // Draw title text (centered)
-    ctx.fillText(title, width / 2, height / 2);
+    // Word wrap for long titles
+    const maxWidth = width - 20; // Padding on sides
+    const words = title.split(' ');
+    const lines = [];
+    let currentLine = '';
+
+    for (const word of words) {
+      const testLine = currentLine ? currentLine + ' ' + word : word;
+      const metrics = ctx.measureText(testLine);
+      if (metrics.width > maxWidth && currentLine) {
+        lines.push(currentLine);
+        currentLine = word;
+      } else {
+        currentLine = testLine;
+      }
+    }
+    if (currentLine) lines.push(currentLine);
+
+    // Draw multiline title (centered vertically)
+    const lineHeight = fontSize * 1.2;
+    const totalHeight = lines.length * lineHeight;
+    const startY = (height - totalHeight) / 2 + lineHeight / 2;
+
+    lines.forEach((line, i) => {
+      ctx.fillText(line, width / 2, startY + i * lineHeight);
+    });
 
     const texture = new THREE.CanvasTexture(canvas);
     texture.needsUpdate = true;
@@ -3047,6 +3064,56 @@ function onMouseDown(event) {
           }
 
           if (clickX !== undefined) {
+            // Convert to canvas coordinates for easier comparison
+            const canvasX = laptopCursorState.visible ? laptopCursorState.x : clickX * 512;
+            const canvasY = laptopCursorState.visible ? laptopCursorState.y : (1 - clickY) * 384;
+
+            // Check Start button click (single click)
+            const startBtnX = 5;
+            const startBtnY = 384 - 24;
+            const startBtnW = 60;
+            const startBtnH = 20;
+
+            if (canvasX >= startBtnX && canvasX <= startBtnX + startBtnW &&
+                canvasY >= startBtnY && canvasY <= startBtnY + startBtnH) {
+              // Toggle start menu
+              if (laptopStartMenuState.isOpen && laptopStartMenuState.targetLaptop === object) {
+                laptopStartMenuState.isOpen = false;
+                laptopStartMenuState.targetLaptop = null;
+              } else {
+                laptopStartMenuState.isOpen = true;
+                laptopStartMenuState.targetLaptop = object;
+              }
+              updateLaptopDesktopWithCursor(object);
+              return;
+            }
+
+            // Check shutdown button click if start menu is open
+            if (laptopStartMenuState.isOpen && laptopStartMenuState.targetLaptop === object) {
+              const menuX = 5;
+              const menuY = 384 - 28 - 100;
+              const menuW = 150;
+              const menuH = 100;
+              const shutdownY = menuY + menuH - 30;
+
+              if (canvasX >= menuX + 10 && canvasX <= menuX + menuW - 10 &&
+                  canvasY >= shutdownY && canvasY <= shutdownY + 24) {
+                // Shutdown the laptop
+                laptopStartMenuState.isOpen = false;
+                laptopStartMenuState.targetLaptop = null;
+                toggleLaptopPower(object);
+                return;
+              }
+
+              // Click outside menu closes it
+              if (canvasX < menuX || canvasX > menuX + menuW ||
+                  canvasY < menuY || canvasY > menuY + menuH) {
+                laptopStartMenuState.isOpen = false;
+                laptopStartMenuState.targetLaptop = null;
+                updateLaptopDesktopWithCursor(object);
+              }
+            }
+
             // Obsidian icon position
             const iconX = 60 / 512;
             const iconY = 1 - (60 / 384);
@@ -3131,7 +3198,7 @@ function onMouseMove(event) {
 
   // Handle laptop cursor movement when in zoom mode with laptop on
   if (inLaptopZoomMode && zoomedLaptop && zoomedLaptop.userData.isOn && !zoomedLaptop.userData.isBooting && pointerLockState.isLocked) {
-    // Move cursor on laptop screen instead of camera
+    // Move cursor on laptop screen
     laptopCursorState.visible = true;
     laptopCursorState.targetLaptop = zoomedLaptop;
 
@@ -3147,9 +3214,7 @@ function onMouseMove(event) {
     // Update the desktop texture to show cursor
     updateLaptopDesktopWithCursor(zoomedLaptop);
 
-    // Don't move camera in laptop cursor mode
-    previousMousePosition = { x: event.clientX, y: event.clientY };
-    return;
+    // Also allow camera rotation to follow cursor movement (see below)
   } else if (!inLaptopZoomMode && laptopCursorState.visible) {
     // Exited laptop zoom mode, hide cursor
     laptopCursorState.visible = false;
@@ -3157,6 +3222,7 @@ function onMouseMove(event) {
   }
 
   // Allow camera look normally, or in laptop zoom mode even with modal open
+  // In laptop zoom mode, camera follows mouse movement to allow viewing entire screen
   if (pointerLockState.isLocked && cameraLookState.isLooking && (!isModalOpen || inLaptopZoomMode)) {
     // Update yaw and pitch
     cameraLookState.yaw -= deltaX * cameraLookState.sensitivity;
@@ -3636,7 +3702,8 @@ function onMouseWheel(event) {
       // Scale object (preserving proportions) with Shift+scroll
       const scaleDelta = event.deltaY > 0 ? 0.95 : 1.05;
       const minScale = 0.3;
-      const maxScale = 3.0;
+      // Books can be scaled larger for reading
+      const maxScale = object.userData.type === 'books' ? 5.0 : 3.0;
 
       const oldScale = object.scale.x;
       const newScale = oldScale * scaleDelta;
@@ -3702,7 +3769,8 @@ function onMouseWheel(event) {
         // Scale object (preserving proportions)
         const scaleDelta = event.deltaY > 0 ? 0.95 : 1.05;
         const minScale = 0.3;
-        const maxScale = 3.0;
+        // Books can be scaled larger for reading
+        const maxScale = object.userData.type === 'books' ? 5.0 : 3.0;
 
         const oldScale = object.scale.x;
         const newScale = oldScale * scaleDelta;
@@ -3999,6 +4067,27 @@ function updateCustomizationPanel(object) {
     case 'laptop':
       dynamicOptions.innerHTML = `
         <div class="customization-group" style="margin-top: 20px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.1);">
+          <label>Power Button</label>
+          <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 8px;">
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <label style="color: rgba(255,255,255,0.7); font-size: 12px;">Color:</label>
+              <input type="color" id="laptop-power-btn-color" value="${object.userData.powerButtonColor || '#ff0000'}"
+                     style="width: 40px; height: 24px; border: none; cursor: pointer; border-radius: 4px;">
+            </div>
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <label style="color: rgba(255,255,255,0.7); font-size: 12px;">Glow:</label>
+              <input type="checkbox" id="laptop-power-btn-glow" ${object.userData.powerButtonGlow ? 'checked' : ''}
+                     style="width: 18px; height: 18px; cursor: pointer;">
+            </div>
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <label style="color: rgba(255,255,255,0.7); font-size: 12px;">Brightness:</label>
+              <input type="range" id="laptop-power-btn-brightness" min="0" max="100" value="${object.userData.powerButtonBrightness || 50}"
+                     style="flex: 1; cursor: pointer;">
+              <span id="laptop-power-btn-brightness-val" style="color: rgba(255,255,255,0.7); font-size: 12px;">${object.userData.powerButtonBrightness || 50}%</span>
+            </div>
+          </div>
+        </div>
+        <div class="customization-group" style="margin-top: 15px;">
           <label>Power LED Color</label>
           <div style="display: flex; align-items: center; gap: 10px; margin-top: 8px;">
             <input type="color" id="laptop-led-color-edit" value="${object.userData.powerLedColor || '#00ff00'}"
@@ -4221,12 +4310,64 @@ function setupMetronomeCustomizationHandlers(object) {
 
 function setupLaptopCustomizationHandlers(object) {
   setTimeout(() => {
+    const powerBtnColor = document.getElementById('laptop-power-btn-color');
+    const powerBtnGlow = document.getElementById('laptop-power-btn-glow');
+    const powerBtnBrightness = document.getElementById('laptop-power-btn-brightness');
+    const powerBtnBrightnessVal = document.getElementById('laptop-power-btn-brightness-val');
     const ledColorInput = document.getElementById('laptop-led-color-edit');
     const ledColorDisplay = document.getElementById('laptop-led-color-display');
     const wallpaperInput = document.getElementById('laptop-wallpaper-edit');
     const wallpaperClear = document.getElementById('laptop-wallpaper-clear');
     const bootScreenInput = document.getElementById('laptop-boot-screen-edit');
     const bootScreenClear = document.getElementById('laptop-boot-screen-clear');
+
+    // Helper to update power button material
+    const updatePowerButton = () => {
+      const powerButton = object.getObjectByName('powerButton');
+      if (powerButton) {
+        const btnColor = new THREE.Color(object.userData.powerButtonColor);
+        powerButton.material.color.copy(btnColor);
+        if (object.userData.powerButtonGlow) {
+          powerButton.material.emissive.copy(btnColor);
+          powerButton.material.emissiveIntensity = object.userData.powerButtonBrightness / 100;
+        } else {
+          powerButton.material.emissive.setHex(0x000000);
+          powerButton.material.emissiveIntensity = 0;
+        }
+      }
+    };
+
+    if (powerBtnColor) {
+      powerBtnColor.addEventListener('input', (e) => {
+        object.userData.powerButtonColor = e.target.value;
+        updatePowerButton();
+        saveState();
+      });
+    }
+
+    if (powerBtnGlow) {
+      powerBtnGlow.addEventListener('change', (e) => {
+        object.userData.powerButtonGlow = e.target.checked;
+        updatePowerButton();
+        saveState();
+      });
+    }
+
+    if (powerBtnBrightness) {
+      powerBtnBrightness.addEventListener('input', (e) => {
+        object.userData.powerButtonBrightness = parseInt(e.target.value);
+        if (powerBtnBrightnessVal) powerBtnBrightnessVal.textContent = e.target.value + '%';
+        updatePowerButton();
+        saveState();
+      });
+      // Add scroll support
+      addScrollToSlider(powerBtnBrightness, (val) => {
+        object.userData.powerButtonBrightness = parseInt(val);
+        if (powerBtnBrightnessVal) powerBtnBrightnessVal.textContent = val + '%';
+        updatePowerButton();
+        saveState();
+      });
+    }
 
     if (ledColorInput) {
       ledColorInput.addEventListener('input', (e) => {
@@ -4256,10 +4397,16 @@ function setupLaptopCustomizationHandlers(object) {
           reader.onload = (event) => {
             const imageUrl = event.target.result;
             object.userData.wallpaperDataUrl = imageUrl;
-            // Update the desktop texture if laptop is on
-            if (object.userData.isOn && object.userData.screenState === 'desktop') {
-              updateLaptopDesktop(object);
-            }
+            // Preload the wallpaper image for cursor mode
+            const img = new Image();
+            img.onload = () => {
+              object.userData.wallpaperImage = img;
+              // Update the desktop texture if laptop is on
+              if (object.userData.isOn && object.userData.screenState === 'desktop') {
+                updateLaptopDesktop(object);
+              }
+            };
+            img.src = imageUrl;
             saveState();
             // Refresh the panel to update button text
             showCustomizationPanel(object);
@@ -4272,6 +4419,7 @@ function setupLaptopCustomizationHandlers(object) {
     if (wallpaperClear) {
       wallpaperClear.addEventListener('click', () => {
         object.userData.wallpaperDataUrl = null;
+        object.userData.wallpaperImage = null;
         // Update the desktop texture if laptop is on
         if (object.userData.isOn && object.userData.screenState === 'desktop') {
           updateLaptopDesktop(object);
@@ -6071,8 +6219,9 @@ async function updateBookPagesWithPDF(book) {
     return;
   }
 
-  const canvasWidth = 1024;
-  const canvasHeight = 1448;
+  // Higher resolution for sharper PDF text
+  const canvasWidth = 2048;
+  const canvasHeight = 2896;
 
   // Render left page (current page)
   const leftPageNum = book.userData.currentPage * 2 + 1; // 1-indexed
@@ -6154,12 +6303,12 @@ function updateBookPages(book) {
   const leftPage = openGroup.getObjectByName('leftPageSurface');
   const rightPage = openGroup.getObjectByName('rightPageSurface');
 
-  // High resolution canvas for crisp, readable text
-  // Using 1024x1448 for sharper rendering (2x the previous resolution)
-  const canvasWidth = 1024;
-  const canvasHeight = 1448;
-  const margin = 80;
-  const lineHeight = 56;
+  // Very high resolution canvas for crisp, readable text
+  // Using 2048x2896 for maximum sharpness (4x the original resolution)
+  const canvasWidth = 2048;
+  const canvasHeight = 2896;
+  const margin = 160;
+  const lineHeight = 112;
 
   // Create page texture for left page
   if (leftPage && book.userData.totalPages > 0) {
@@ -6178,21 +6327,21 @@ function updateBookPages(book) {
     ctx.fillStyle = '#333';
     const pageNum = book.userData.currentPage * 2;
 
-    // Page number header - doubled font size for 2x resolution
-    ctx.font = 'bold 56px Georgia, serif';
+    // Page number header - scaled for 4x resolution
+    ctx.font = 'bold 112px Georgia, serif';
     ctx.textAlign = 'center';
-    ctx.fillText(`Page ${pageNum + 1}`, canvas.width / 2, 120);
+    ctx.fillText(`Page ${pageNum + 1}`, canvas.width / 2, 240);
 
     // Divider line
     ctx.strokeStyle = '#ccc';
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 4;
     ctx.beginPath();
-    ctx.moveTo(margin, 160);
-    ctx.lineTo(canvas.width - margin, 160);
+    ctx.moveTo(margin, 320);
+    ctx.lineTo(canvas.width - margin, 320);
     ctx.stroke();
 
-    // Content area - larger, clearer font
-    ctx.font = '48px Georgia, serif';
+    // Content area - larger, clearer font for 4x resolution
+    ctx.font = '96px Georgia, serif';
     ctx.textAlign = 'left';
 
     const pdfFileName = book.userData.pdfPath
@@ -6202,14 +6351,14 @@ function updateBookPages(book) {
     const contentLines = pdfFileName ? [
       `📄 ${pdfFileName}`,
       '',
-      'Loading PDF...',
+      'PDF file needs to be',
+      're-selected after reload.',
       '',
-      'If text remains, try:',
-      '1. Reload the page',
-      '2. Re-select the PDF file',
+      'Right-click the book and',
+      'choose the PDF file again',
+      'to display content.',
       '',
       `Pages ${pageNum + 1}-${pageNum + 2}`,
-      '',
       '← / → to turn pages'
     ] : [
       'No PDF loaded',
@@ -6223,14 +6372,14 @@ function updateBookPages(book) {
     ];
 
     contentLines.forEach((line, i) => {
-      ctx.fillText(line, margin, 240 + i * lineHeight);
+      ctx.fillText(line, margin, 480 + i * lineHeight);
     });
 
     // Page footer
-    ctx.font = '36px Georgia, serif';
+    ctx.font = '72px Georgia, serif';
     ctx.textAlign = 'center';
     ctx.fillStyle = '#888';
-    ctx.fillText(book.userData.bookTitle || 'Untitled', canvas.width / 2, canvas.height - 60);
+    ctx.fillText(book.userData.bookTitle || 'Untitled', canvas.width / 2, canvas.height - 120);
 
     const texture = new THREE.CanvasTexture(canvas);
     texture.anisotropy = 16; // Better quality at angles
@@ -6255,21 +6404,21 @@ function updateBookPages(book) {
     ctx.fillStyle = '#333';
     const pageNum = book.userData.currentPage * 2 + 1;
 
-    // Page number header - doubled font size for 2x resolution
-    ctx.font = 'bold 56px Georgia, serif';
+    // Page number header - scaled for 4x resolution
+    ctx.font = 'bold 112px Georgia, serif';
     ctx.textAlign = 'center';
-    ctx.fillText(`Page ${pageNum + 1}`, canvas.width / 2, 120);
+    ctx.fillText(`Page ${pageNum + 1}`, canvas.width / 2, 240);
 
     // Divider line
     ctx.strokeStyle = '#ccc';
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 4;
     ctx.beginPath();
-    ctx.moveTo(margin, 160);
-    ctx.lineTo(canvas.width - margin, 160);
+    ctx.moveTo(margin, 320);
+    ctx.lineTo(canvas.width - margin, 320);
     ctx.stroke();
 
-    // Content area - larger, clearer font
-    ctx.font = '48px Georgia, serif';
+    // Content area - larger, clearer font for 4x resolution
+    ctx.font = '96px Georgia, serif';
     ctx.textAlign = 'left';
 
     const totalPages = book.userData.totalPages || 10;
@@ -6289,14 +6438,14 @@ function updateBookPages(book) {
     ];
 
     contentLines.forEach((line, i) => {
-      ctx.fillText(line, margin, 240 + i * lineHeight);
+      ctx.fillText(line, margin, 480 + i * lineHeight);
     });
 
     // Page footer
-    ctx.font = '36px Georgia, serif';
+    ctx.font = '72px Georgia, serif';
     ctx.textAlign = 'center';
     ctx.fillStyle = '#888';
-    ctx.fillText(`${pageNum + 1} / ${totalPages * 2}`, canvas.width / 2, canvas.height - 60);
+    ctx.fillText(`${pageNum + 1} / ${totalPages * 2}`, canvas.width / 2, canvas.height - 120);
 
     const texture = new THREE.CanvasTexture(canvas);
     texture.anisotropy = 16; // Better quality at angles
@@ -6857,8 +7006,13 @@ function enterBookReadingMode(book) {
     camera.position.lerpVectors(startPos, targetCameraPos, eased);
 
     // Point camera down at book
+    // Camera is above and behind the book, needs to look down
+    // Negative pitch = looking down, positive = looking up
     const lookAtY = bookWorldPos.y + 0.03;
-    const targetPitch = Math.atan2(camera.position.y - lookAtY, camera.position.z - bookWorldPos.z);
+    const verticalDist = camera.position.y - lookAtY; // Height above book
+    const horizontalDist = Math.abs(camera.position.z - bookWorldPos.z); // Distance from book
+    // Calculate the downward angle (should be negative for looking down)
+    const targetPitch = -Math.atan2(verticalDist, horizontalDist);
     cameraLookState.pitch = bookReadingState.originalCameraPitch + (targetPitch - bookReadingState.originalCameraPitch) * eased;
     updateCameraLook();
 
@@ -7123,8 +7277,24 @@ function updateLaptopDesktopWithCursor(laptop) {
   const ctx = canvas.getContext('2d');
 
   // Check if there's a custom wallpaper
-  if (laptop.userData.wallpaperDataUrl && laptop.userData.wallpaperImage) {
-    ctx.drawImage(laptop.userData.wallpaperImage, 0, 0, canvas.width, canvas.height);
+  if (laptop.userData.wallpaperDataUrl) {
+    // If wallpaperImage not loaded yet, load it now
+    if (!laptop.userData.wallpaperImage) {
+      const img = new Image();
+      img.onload = () => {
+        laptop.userData.wallpaperImage = img;
+        updateLaptopDesktopWithCursor(laptop); // Re-run with loaded image
+      };
+      img.src = laptop.userData.wallpaperDataUrl;
+      // For now, draw default background
+      const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+      gradient.addColorStop(0, '#005a5a');
+      gradient.addColorStop(1, '#003838');
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    } else {
+      ctx.drawImage(laptop.userData.wallpaperImage, 0, 0, canvas.width, canvas.height);
+    }
   } else {
     // Default: Dark teal gradient background (Windows-style)
     const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
@@ -7263,6 +7433,90 @@ function updateLaptopDesktopWithCursor(laptop) {
   // Taskbar
   ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
   ctx.fillRect(0, canvas.height - 28, canvas.width, 28);
+
+  // Start button
+  const startBtnX = 5;
+  const startBtnY = canvas.height - 24;
+  const startBtnW = 60;
+  const startBtnH = 20;
+
+  // Check if cursor is over start button
+  const cursorOverStart = laptopCursorState.x >= startBtnX &&
+                          laptopCursorState.x <= startBtnX + startBtnW &&
+                          laptopCursorState.y >= startBtnY &&
+                          laptopCursorState.y <= startBtnY + startBtnH;
+
+  // Start button background
+  const startGradient = ctx.createLinearGradient(startBtnX, startBtnY, startBtnX, startBtnY + startBtnH);
+  if (cursorOverStart || (laptopStartMenuState.isOpen && laptopStartMenuState.targetLaptop === laptop)) {
+    startGradient.addColorStop(0, '#4a90d9');
+    startGradient.addColorStop(1, '#2563eb');
+  } else {
+    startGradient.addColorStop(0, '#3b82f6');
+    startGradient.addColorStop(1, '#1d4ed8');
+  }
+  ctx.fillStyle = startGradient;
+  ctx.fillRect(startBtnX, startBtnY, startBtnW, startBtnH);
+  ctx.strokeStyle = '#60a5fa';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(startBtnX, startBtnY, startBtnW, startBtnH);
+
+  // Start button text
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 11px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('Start', startBtnX + startBtnW / 2, startBtnY + 14);
+
+  // Draw Start Menu if open
+  if (laptopStartMenuState.isOpen && laptopStartMenuState.targetLaptop === laptop) {
+    const menuX = 5;
+    const menuY = canvas.height - 28 - 100;
+    const menuW = 150;
+    const menuH = 100;
+
+    // Menu background
+    ctx.fillStyle = 'rgba(30, 30, 50, 0.95)';
+    ctx.fillRect(menuX, menuY, menuW, menuH);
+    ctx.strokeStyle = '#60a5fa';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(menuX, menuY, menuW, menuH);
+
+    // Menu header
+    ctx.fillStyle = '#3b82f6';
+    ctx.fillRect(menuX, menuY, menuW, 24);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 11px Arial';
+    ctx.textAlign = 'left';
+    ctx.fillText('Focus Desktop', menuX + 8, menuY + 16);
+
+    // Shutdown button
+    const shutdownY = menuY + menuH - 30;
+    const cursorOverShutdown = laptopCursorState.x >= menuX + 10 &&
+                               laptopCursorState.x <= menuX + menuW - 10 &&
+                               laptopCursorState.y >= shutdownY &&
+                               laptopCursorState.y <= shutdownY + 24;
+
+    ctx.fillStyle = cursorOverShutdown ? 'rgba(239, 68, 68, 0.8)' : 'rgba(239, 68, 68, 0.5)';
+    ctx.fillRect(menuX + 10, shutdownY, menuW - 20, 24);
+    ctx.strokeStyle = cursorOverShutdown ? '#f87171' : '#ef4444';
+    ctx.strokeRect(menuX + 10, shutdownY, menuW - 20, 24);
+
+    // Power icon
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(menuX + 26, shutdownY + 12, 7, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(menuX + 26, shutdownY + 5);
+    ctx.lineTo(menuX + 26, shutdownY + 12);
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.lineWidth = 1;
+
+    ctx.font = '11px Arial';
+    ctx.textAlign = 'left';
+    ctx.fillText('Shut Down', menuX + 42, shutdownY + 16);
+  }
 
   const now = new Date();
   const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -7525,6 +7779,12 @@ async function saveState() {
           if (obj.userData.powerButtonColor) {
             data.powerButtonColor = obj.userData.powerButtonColor;
           }
+          if (obj.userData.powerButtonGlow !== undefined) {
+            data.powerButtonGlow = obj.userData.powerButtonGlow;
+          }
+          if (obj.userData.powerButtonBrightness !== undefined) {
+            data.powerButtonBrightness = obj.userData.powerButtonBrightness;
+          }
           // Save markdown editor content
           if (obj.userData.editorContent) {
             data.editorContent = obj.userData.editorContent;
@@ -7682,6 +7942,21 @@ async function loadState() {
                 if (objData.bootTime) obj.userData.bootTime = objData.bootTime;
                 if (objData.powerLedColor) obj.userData.powerLedColor = objData.powerLedColor;
                 if (objData.powerButtonColor) obj.userData.powerButtonColor = objData.powerButtonColor;
+                if (objData.powerButtonGlow !== undefined) obj.userData.powerButtonGlow = objData.powerButtonGlow;
+                if (objData.powerButtonBrightness !== undefined) obj.userData.powerButtonBrightness = objData.powerButtonBrightness;
+                // Update power button material with restored settings
+                const powerButton = obj.getObjectByName('powerButton');
+                if (powerButton) {
+                  const btnColor = new THREE.Color(obj.userData.powerButtonColor);
+                  powerButton.material.color.copy(btnColor);
+                  if (obj.userData.powerButtonGlow) {
+                    powerButton.material.emissive.copy(btnColor);
+                    powerButton.material.emissiveIntensity = obj.userData.powerButtonBrightness / 100;
+                  } else {
+                    powerButton.material.emissive.setHex(0x000000);
+                    powerButton.material.emissiveIntensity = 0;
+                  }
+                }
                 if (objData.bootScreenDataUrl) {
                   obj.userData.bootScreenDataUrl = objData.bootScreenDataUrl;
                   // Load boot screen texture from data URL
@@ -7696,15 +7971,16 @@ async function loadState() {
                 // Restore wallpaper and update desktop texture
                 if (objData.wallpaperDataUrl) {
                   obj.userData.wallpaperDataUrl = objData.wallpaperDataUrl;
-                  // Update desktop texture with wallpaper
-                  const screen = obj.getObjectByName('screen');
-                  if (screen && obj.userData.createDesktopTexture) {
-                    obj.userData.createDesktopTexture().then(texture => {
-                      screen.material.map = texture;
-                      screen.material.needsUpdate = true;
-                      obj.userData.desktopTexture = texture;
-                    });
-                  }
+                  // Preload the wallpaper image for cursor mode
+                  const wallpaperImg = new Image();
+                  wallpaperImg.onload = () => {
+                    obj.userData.wallpaperImage = wallpaperImg;
+                    // Update desktop texture with wallpaper
+                    if (obj.userData.isOn && obj.userData.screenState === 'desktop') {
+                      updateLaptopDesktop(obj);
+                    }
+                  };
+                  wallpaperImg.src = objData.wallpaperDataUrl;
                 }
                 break;
               case 'pen':
@@ -7812,53 +8088,7 @@ function animate() {
       }
     }
 
-    // Pen sway animation when being dragged
-    // The penBody sub-group rotates to create sway, keeping the cap anchored
-    if (obj.userData.type === 'pen') {
-      const penBody = obj.getObjectByName('penBody');
-      if (isDragging && selectedObject === obj && penBody) {
-        // Initialize sway state if not exists
-        if (obj.userData.swayPhase === undefined) {
-          obj.userData.swayPhase = 0;
-          obj.userData.swayVelocityX = 0;
-          obj.userData.swayVelocityZ = 0;
-        }
-
-        // Calculate sway based on movement velocity
-        const now = Date.now();
-        if (obj.userData.lastSwayUpdate) {
-          const dt = (now - obj.userData.lastSwayUpdate) / 1000;
-          // Add some natural oscillation
-          obj.userData.swayPhase += dt * 8;
-
-          // Apply pendulum-like sway motion to the pen body
-          // This rotates around the cap position, making the tip swing
-          const swayAmount = Math.sin(obj.userData.swayPhase) * 0.2;
-          const secondarySwayAmount = Math.cos(obj.userData.swayPhase * 0.7) * 0.1;
-
-          // Target rotation for the pen body (relative to the group)
-          const targetRotX = swayAmount;
-          const targetRotZ = secondarySwayAmount;
-
-          // Smoothly interpolate to target
-          penBody.rotation.x += (targetRotX - penBody.rotation.x) * 0.15;
-          penBody.rotation.z += (targetRotZ - penBody.rotation.z) * 0.15;
-        }
-        obj.userData.lastSwayUpdate = now;
-      } else if (penBody) {
-        // When not dragging, gradually return pen body to neutral position
-        if (Math.abs(penBody.rotation.x) > 0.001 || Math.abs(penBody.rotation.z) > 0.001) {
-          penBody.rotation.x *= 0.9;
-          penBody.rotation.z *= 0.9;
-        } else {
-          penBody.rotation.x = 0;
-          penBody.rotation.z = 0;
-        }
-        // Reset sway state
-        obj.userData.swayPhase = undefined;
-        obj.userData.lastSwayUpdate = undefined;
-      }
-    }
+    // Pen animation removed - only procedural physics from collisions
 
     // Rotate globe
     if (obj.userData.type === 'globe') {
