@@ -152,6 +152,14 @@ let laptopDoubleClickState = {
   doubleClickThreshold: 300 // ms
 };
 
+// Laptop cursor state for zoom mode
+let laptopCursorState = {
+  x: 256, // Center of 512px canvas
+  y: 192, // Center of 384px canvas
+  visible: false,
+  targetLaptop: null
+};
+
 // ============================================================================
 // CAMERA CONTROL POINTS (Starting position and direction)
 // ============================================================================
@@ -1119,7 +1127,9 @@ function createLaptop(options = {}) {
   group.add(keyboard);
 
   // Power button (in top right corner of keyboard area)
-  const powerBtnGeometry = new THREE.CylinderGeometry(0.015, 0.015, 0.005, 16);
+  // Keyboard is centered at Z=0.05, extends from X=-0.3 to X=0.3
+  // Top edge of keyboard is at Z = 0.05 - 0.175 = -0.125
+  const powerBtnGeometry = new THREE.CylinderGeometry(0.012, 0.012, 0.005, 16);
   const powerBtnMaterial = new THREE.MeshStandardMaterial({
     color: new THREE.Color(group.userData.powerButtonColor),
     emissive: 0x000000,
@@ -1129,12 +1139,13 @@ function createLaptop(options = {}) {
   });
   const powerButton = new THREE.Mesh(powerBtnGeometry, powerBtnMaterial);
   powerButton.rotation.x = -Math.PI / 2;
-  powerButton.position.set(0.35, 0.032, -0.18);
+  // Position in top-right corner of keyboard area
+  powerButton.position.set(0.27, 0.032, -0.10);
   powerButton.name = 'powerButton';
   group.add(powerButton);
 
-  // Power LED indicator
-  const ledGeometry = new THREE.CircleGeometry(0.005, 8);
+  // Power LED indicator (next to power button)
+  const ledGeometry = new THREE.CircleGeometry(0.004, 8);
   const ledMaterial = new THREE.MeshStandardMaterial({
     color: 0x222222,
     emissive: 0x000000,
@@ -1142,7 +1153,8 @@ function createLaptop(options = {}) {
   });
   const powerLed = new THREE.Mesh(ledGeometry, ledMaterial);
   powerLed.rotation.x = -Math.PI / 2;
-  powerLed.position.set(0.35, 0.033, -0.15);
+  // Position LED just below the power button
+  powerLed.position.set(0.27, 0.033, -0.075);
   powerLed.name = 'powerLed';
   group.add(powerLed);
 
@@ -2057,6 +2069,7 @@ function updateObjectColor(object, colorType, colorValue) {
       typeSpecificData.powerButtonColor = object.userData.powerButtonColor;
       typeSpecificData.editorContent = object.userData.editorContent;
       typeSpecificData.editorFileName = object.userData.editorFileName;
+      typeSpecificData.wallpaperDataUrl = object.userData.wallpaperDataUrl;
       break;
     case 'pen':
       typeSpecificData.penColor = object.userData.penColor;
@@ -2130,6 +2143,19 @@ function updateObjectColor(object, colorType, colorValue) {
         newObject.userData.photoTexture = texture;
       }
     });
+  }
+
+  // For laptop, restore the desktop texture with wallpaper if present
+  if (type === 'laptop' && typeSpecificData.wallpaperDataUrl) {
+    // Update the desktop texture with wallpaper
+    const screen = newObject.getObjectByName('screen');
+    if (screen && newObject.userData.createDesktopTexture) {
+      newObject.userData.createDesktopTexture().then(texture => {
+        screen.material.map = texture;
+        screen.material.needsUpdate = true;
+        newObject.userData.desktopTexture = texture;
+      });
+    }
   }
 
   // Replace in scene and array
@@ -2950,33 +2976,41 @@ function onMouseDown(event) {
     }
 
     if (deskObjects.includes(object)) {
-      // Check for double-click on laptop screen when zoomed in
+      // Check for click on laptop screen when zoomed in with cursor mode
       if (object.userData.type === 'laptop' && object.userData.isZoomedIn && object.userData.isOn && !object.userData.isBooting) {
         const clickedMesh = intersects[0].object;
         if (clickedMesh.name === 'screen') {
           const now = Date.now();
           const timeDiff = now - laptopDoubleClickState.lastClickTime;
 
-          if (timeDiff < laptopDoubleClickState.doubleClickThreshold) {
-            // Double-click detected - check if clicking on Obsidian icon area
-            // Get UV coordinates of click on screen
+          // Use cursor position if cursor mode is active, otherwise use UV
+          let clickX, clickY;
+          if (laptopCursorState.visible && laptopCursorState.targetLaptop === object) {
+            // Cursor mode - use cursor position directly (already in canvas coordinates)
+            clickX = laptopCursorState.x / 512;
+            clickY = 1 - (laptopCursorState.y / 384); // Flip Y
+          } else {
+            // Fallback to UV coordinates
             const uv = intersects[0].uv;
             if (uv) {
-              // Obsidian icon is at top-left (approximately x: 0.1-0.25, y: 0.75-0.95)
-              const iconX = 60 / 512; // Icon center X
-              const iconY = 1 - (60 / 384); // Icon center Y (flipped)
-              const iconRadius = 40 / 512; // Icon clickable radius
+              clickX = uv.x;
+              clickY = uv.y;
+            }
+          }
 
-              const clickX = uv.x;
-              const clickY = uv.y;
+          if (clickX !== undefined) {
+            // Obsidian icon position
+            const iconX = 60 / 512;
+            const iconY = 1 - (60 / 384);
+            const iconRadius = 40 / 512;
 
-              // Check if click is near the icon
-              const dx = clickX - iconX;
-              const dy = clickY - iconY;
-              const dist = Math.sqrt(dx * dx + dy * dy);
+            const dx = clickX - iconX;
+            const dy = clickY - iconY;
+            const dist = Math.sqrt(dx * dx + dy * dy);
 
+            if (timeDiff < laptopDoubleClickState.doubleClickThreshold) {
+              // Double-click detected - open editor if on icon
               if (dist < iconRadius * 2) {
-                // Clicked on Obsidian icon - open markdown editor
                 openMarkdownEditor(object);
                 laptopDoubleClickState.lastClickTime = 0;
                 return;
@@ -3038,11 +3072,40 @@ function onMouseMove(event) {
 
   // Check if any laptop is in zoom mode (allow camera rotation in laptop zoom mode)
   let inLaptopZoomMode = false;
+  let zoomedLaptop = null;
   for (const obj of deskObjects) {
     if (obj.userData.type === 'laptop' && obj.userData.isZoomedIn) {
       inLaptopZoomMode = true;
+      zoomedLaptop = obj;
       break;
     }
+  }
+
+  // Handle laptop cursor movement when in zoom mode with laptop on
+  if (inLaptopZoomMode && zoomedLaptop && zoomedLaptop.userData.isOn && !zoomedLaptop.userData.isBooting && pointerLockState.isLocked) {
+    // Move cursor on laptop screen instead of camera
+    laptopCursorState.visible = true;
+    laptopCursorState.targetLaptop = zoomedLaptop;
+
+    // Update cursor position (sensitivity adjusted for screen size)
+    const cursorSensitivity = 0.8;
+    laptopCursorState.x += deltaX * cursorSensitivity;
+    laptopCursorState.y += deltaY * cursorSensitivity;
+
+    // Clamp cursor to screen bounds (512x384 canvas)
+    laptopCursorState.x = Math.max(0, Math.min(512, laptopCursorState.x));
+    laptopCursorState.y = Math.max(0, Math.min(384, laptopCursorState.y));
+
+    // Update the desktop texture to show cursor
+    updateLaptopDesktopWithCursor(zoomedLaptop);
+
+    // Don't move camera in laptop cursor mode
+    previousMousePosition = { x: event.clientX, y: event.clientY };
+    return;
+  } else if (!inLaptopZoomMode && laptopCursorState.visible) {
+    // Exited laptop zoom mode, hide cursor
+    laptopCursorState.visible = false;
+    laptopCursorState.targetLaptop = null;
   }
 
   // Allow camera look normally, or in laptop zoom mode even with modal open
@@ -3887,6 +3950,20 @@ function updateCustomizationPanel(object) {
           </div>
         </div>
         <div class="customization-group" style="margin-top: 15px;">
+          <label>Desktop Wallpaper</label>
+          <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 8px;">
+            <label style="display: inline-block; padding: 10px 15px; background: rgba(79, 70, 229, 0.3); border: 1px solid rgba(79, 70, 229, 0.5); border-radius: 8px; color: #fff; cursor: pointer; text-align: center;">
+              ${object.userData.wallpaperDataUrl ? 'Change Wallpaper' : 'Upload Wallpaper'}
+              <input type="file" id="laptop-wallpaper-edit" accept="image/*" style="display: none;">
+            </label>
+            ${object.userData.wallpaperDataUrl ? `
+              <button id="laptop-wallpaper-clear" style="padding: 10px 15px; background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 8px; color: #ef4444; cursor: pointer;">
+                Clear Wallpaper
+              </button>
+            ` : ''}
+          </div>
+        </div>
+        <div class="customization-group" style="margin-top: 15px;">
           <label>Boot Screen Image</label>
           <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 8px;">
             <label style="display: inline-block; padding: 10px 15px; background: rgba(79, 70, 229, 0.3); border: 1px solid rgba(79, 70, 229, 0.5); border-radius: 8px; color: #fff; cursor: pointer; text-align: center;">
@@ -4075,6 +4152,8 @@ function setupLaptopCustomizationHandlers(object) {
   setTimeout(() => {
     const ledColorInput = document.getElementById('laptop-led-color-edit');
     const ledColorDisplay = document.getElementById('laptop-led-color-display');
+    const wallpaperInput = document.getElementById('laptop-wallpaper-edit');
+    const wallpaperClear = document.getElementById('laptop-wallpaper-clear');
     const bootScreenInput = document.getElementById('laptop-boot-screen-edit');
     const bootScreenClear = document.getElementById('laptop-boot-screen-clear');
 
@@ -4094,6 +4173,41 @@ function setupLaptopCustomizationHandlers(object) {
           }
         }
         saveState();
+      });
+    }
+
+    // Wallpaper upload handler
+    if (wallpaperInput) {
+      wallpaperInput.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (file && file.type.startsWith('image/')) {
+          const reader = new FileReader();
+          reader.onload = (event) => {
+            const imageUrl = event.target.result;
+            object.userData.wallpaperDataUrl = imageUrl;
+            // Update the desktop texture if laptop is on
+            if (object.userData.isOn && object.userData.screenState === 'desktop') {
+              updateLaptopDesktop(object);
+            }
+            saveState();
+            // Refresh the panel to update button text
+            showCustomizationPanel(object);
+          };
+          reader.readAsDataURL(file);
+        }
+      });
+    }
+
+    if (wallpaperClear) {
+      wallpaperClear.addEventListener('click', () => {
+        object.userData.wallpaperDataUrl = null;
+        // Update the desktop texture if laptop is on
+        if (object.userData.isOn && object.userData.screenState === 'desktop') {
+          updateLaptopDesktop(object);
+        }
+        saveState();
+        // Refresh the panel to update button text
+        showCustomizationPanel(object);
       });
     }
 
@@ -4525,6 +4639,16 @@ function closeInteractionModal() {
   modal.classList.remove('open');
   overlay.classList.remove('open');
   interactionObject = null;
+
+  // Re-acquire pointer lock so camera control works immediately
+  const container = document.getElementById('game-container');
+  if (container && !document.pointerLockElement) {
+    try {
+      container.requestPointerLock();
+    } catch (e) {
+      // Pointer lock might fail if user hasn't interacted yet
+    }
+  }
 }
 
 function getInteractionContent(object) {
@@ -6352,6 +6476,12 @@ function enterLaptopZoomMode(object) {
 
   object.userData.isZoomedIn = true;
 
+  // Initialize cursor state for laptop screen interaction
+  laptopCursorState.x = 256; // Center of screen
+  laptopCursorState.y = 192;
+  laptopCursorState.visible = object.userData.isOn && !object.userData.isBooting;
+  laptopCursorState.targetLaptop = object;
+
   // Get screen position in world coordinates
   const screenGroup = object.getObjectByName('screenGroup');
   if (!screenGroup) return;
@@ -6394,15 +6524,17 @@ function enterLaptopZoomMode(object) {
 
   animateZoom();
 
-  // Open interaction modal or editor after zoom
+  // When entering laptop zoom mode:
+  // - If laptop is off: just zoom in, user can click power button to turn on
+  // - If laptop is on with saved editor content: open the editor directly
+  // - Otherwise: just zoom in, user sees the desktop and can interact
   setTimeout(() => {
-    // If laptop has saved content and is on desktop, go directly to editor
     if (object.userData.isOn && object.userData.screenState === 'desktop' &&
         object.userData.editorContent && object.userData.editorContent.trim().length > 0) {
+      // Has saved editor content, go directly to editor
       openMarkdownEditor(object);
-    } else {
-      openInteractionModal(object);
     }
+    // No dialog opened - user can see the screen and interact directly
   }, 550);
 }
 
@@ -6410,6 +6542,15 @@ function exitLaptopZoomMode(object) {
   if (!object.userData.isZoomedIn) return;
 
   object.userData.isZoomedIn = false;
+
+  // Reset cursor state
+  laptopCursorState.visible = false;
+  laptopCursorState.targetLaptop = null;
+
+  // Restore desktop texture without cursor
+  if (object.userData.isOn && object.userData.screenState === 'desktop') {
+    updateLaptopDesktop(object);
+  }
 
   // Animate camera back to original position
   if (object.userData.originalCameraPos) {
@@ -6542,12 +6683,30 @@ function createLaptopDesktopTexture(laptop, hasNote = false) {
   canvas.height = 384;
   const ctx = canvas.getContext('2d');
 
-  // Dark teal gradient background (Windows-style)
-  const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
-  gradient.addColorStop(0, '#005a5a');
-  gradient.addColorStop(1, '#003838');
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  // Check if there's a custom wallpaper
+  if (laptop.userData.wallpaperDataUrl) {
+    // Draw custom wallpaper
+    const img = new Image();
+    img.src = laptop.userData.wallpaperDataUrl;
+    // Note: This is synchronous draw, may need to handle async loading
+    try {
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    } catch (e) {
+      // Fallback to default gradient if image fails
+      const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+      gradient.addColorStop(0, '#005a5a');
+      gradient.addColorStop(1, '#003838');
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+  } else {
+    // Default: Dark teal gradient background (Windows-style)
+    const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+    gradient.addColorStop(0, '#005a5a');
+    gradient.addColorStop(1, '#003838');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
 
   // Draw Obsidian icon (purple/violet gemstone shape)
   const iconX = 60;
@@ -6592,40 +6751,94 @@ function createLaptopDesktopTexture(laptop, hasNote = false) {
   ctx.textAlign = 'center';
   ctx.fillText('Obsidian', iconX, iconY + iconSize / 2 + 16);
 
-  // If there's a saved note, show a small preview in bottom right
+  // If there's a saved note, show an open editor window
   if (hasNote && laptop.userData.editorContent) {
-    const noteWidth = 160;
-    const noteHeight = 100;
-    const noteX = canvas.width - noteWidth - 20;
-    const noteY = canvas.height - noteHeight - 40;
+    // Large window covering most of the screen (like a real open app)
+    const winWidth = 380;
+    const winHeight = 260;
+    const winX = (canvas.width - winWidth) / 2;
+    const winY = 30;
 
-    // Note background
-    ctx.fillStyle = 'rgba(30, 30, 46, 0.95)';
-    ctx.fillRect(noteX, noteY, noteWidth, noteHeight);
+    // Window shadow
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+    ctx.fillRect(winX + 4, winY + 4, winWidth, winHeight);
 
-    // Note border
-    ctx.strokeStyle = 'rgba(139, 92, 246, 0.5)';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(noteX, noteY, noteWidth, noteHeight);
+    // Window background (dark editor theme)
+    ctx.fillStyle = '#1e1e2e';
+    ctx.fillRect(winX, winY, winWidth, winHeight);
 
-    // Note title bar
-    ctx.fillStyle = 'rgba(139, 92, 246, 0.3)';
-    ctx.fillRect(noteX, noteY, noteWidth, 20);
+    // Window border
+    ctx.strokeStyle = '#45475a';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(winX, winY, winWidth, winHeight);
 
-    // Note icon and filename
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 10px Arial';
+    // Title bar
+    const titleBarHeight = 26;
+    const titleGradient = ctx.createLinearGradient(winX, winY, winX, winY + titleBarHeight);
+    titleGradient.addColorStop(0, '#313244');
+    titleGradient.addColorStop(1, '#1e1e2e');
+    ctx.fillStyle = titleGradient;
+    ctx.fillRect(winX, winY, winWidth, titleBarHeight);
+
+    // Title bar bottom border
+    ctx.strokeStyle = '#45475a';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(winX, winY + titleBarHeight);
+    ctx.lineTo(winX + winWidth, winY + titleBarHeight);
+    ctx.stroke();
+
+    // Window title (Obsidian icon + filename)
+    ctx.fillStyle = '#cdd6f4';
+    ctx.font = 'bold 11px Arial';
     ctx.textAlign = 'left';
-    ctx.fillText(laptop.userData.editorFileName || 'notes.md', noteX + 8, noteY + 14);
+    ctx.fillText('◆ ' + (laptop.userData.editorFileName || 'notes.md'), winX + 10, winY + 17);
 
-    // Preview of note content (first few lines)
-    ctx.font = '9px Arial';
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
-    const lines = laptop.userData.editorContent.split('\n').slice(0, 5);
+    // Window control buttons (right side of title bar)
+    const btnY = winY + 7;
+    const btnSize = 12;
+    // Close button
+    ctx.fillStyle = '#f38ba8';
+    ctx.beginPath();
+    ctx.arc(winX + winWidth - 14, btnY + btnSize/2, btnSize/2, 0, Math.PI * 2);
+    ctx.fill();
+    // Maximize button
+    ctx.fillStyle = '#a6e3a1';
+    ctx.beginPath();
+    ctx.arc(winX + winWidth - 32, btnY + btnSize/2, btnSize/2, 0, Math.PI * 2);
+    ctx.fill();
+    // Minimize button
+    ctx.fillStyle = '#f9e2af';
+    ctx.beginPath();
+    ctx.arc(winX + winWidth - 50, btnY + btnSize/2, btnSize/2, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Editor content area
+    const contentY = winY + titleBarHeight + 8;
+    const contentX = winX + 12;
+    ctx.font = '10px Consolas, monospace';
+    ctx.fillStyle = '#cdd6f4';
+    ctx.textAlign = 'left';
+
+    // Show editor content (more lines visible)
+    const lines = laptop.userData.editorContent.split('\n').slice(0, 16);
     lines.forEach((line, i) => {
-      const truncated = line.length > 22 ? line.substring(0, 22) + '...' : line;
-      ctx.fillText(truncated, noteX + 6, noteY + 34 + i * 12);
+      // Render checkboxes specially
+      let displayLine = line;
+      if (line.includes('- [ ]')) {
+        displayLine = line.replace('- [ ]', '☐');
+      } else if (line.includes('- [x]') || line.includes('- [X]')) {
+        displayLine = line.replace(/- \[[xX]\]/, '☑');
+      }
+      const truncated = displayLine.length > 48 ? displayLine.substring(0, 48) + '...' : displayLine;
+      ctx.fillText(truncated, contentX, contentY + i * 13);
     });
+
+    // Scroll bar on right side
+    ctx.fillStyle = '#45475a';
+    ctx.fillRect(winX + winWidth - 8, winY + titleBarHeight + 4, 6, winHeight - titleBarHeight - 8);
+    ctx.fillStyle = '#585b70';
+    ctx.fillRect(winX + winWidth - 8, winY + titleBarHeight + 8, 6, 40);
   }
 
   // Taskbar at bottom
@@ -6660,6 +6873,216 @@ function updateLaptopDesktop(laptop) {
   screen.material.needsUpdate = true;
 
   // Store reference for icon click detection
+  laptop.userData.desktopTexture = texture;
+}
+
+// Update laptop desktop with cursor overlay (for zoom mode interaction)
+function updateLaptopDesktopWithCursor(laptop) {
+  const screen = laptop.getObjectByName('screen');
+  if (!screen) return;
+
+  const hasNote = laptop.userData.editorContent && laptop.userData.editorContent.trim().length > 0;
+
+  // Create base desktop texture content
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 384;
+  const ctx = canvas.getContext('2d');
+
+  // Check if there's a custom wallpaper
+  if (laptop.userData.wallpaperDataUrl && laptop.userData.wallpaperImage) {
+    ctx.drawImage(laptop.userData.wallpaperImage, 0, 0, canvas.width, canvas.height);
+  } else {
+    // Default: Dark teal gradient background (Windows-style)
+    const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+    gradient.addColorStop(0, '#005a5a');
+    gradient.addColorStop(1, '#003838');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
+
+  // Draw Obsidian icon
+  const iconX = 60;
+  const iconY = 60;
+  const iconSize = 48;
+
+  // Check if cursor is over icon for hover effect
+  const cursorOverIcon = Math.abs(laptopCursorState.x - iconX) < iconSize / 2 + 10 &&
+                         Math.abs(laptopCursorState.y - iconY) < iconSize / 2 + 20;
+
+  // Icon background (highlight if hovered)
+  ctx.beginPath();
+  ctx.arc(iconX, iconY, iconSize / 2 + 4, 0, Math.PI * 2);
+  ctx.fillStyle = cursorOverIcon ? 'rgba(100, 100, 255, 0.4)' : 'rgba(0, 0, 0, 0.3)';
+  ctx.fill();
+
+  // Icon selection highlight
+  if (cursorOverIcon) {
+    ctx.strokeStyle = 'rgba(150, 150, 255, 0.8)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+
+  // Obsidian gem shape
+  ctx.beginPath();
+  ctx.moveTo(iconX, iconY - iconSize / 2);
+  ctx.lineTo(iconX + iconSize / 2, iconY);
+  ctx.lineTo(iconX, iconY + iconSize / 2);
+  ctx.lineTo(iconX - iconSize / 2, iconY);
+  ctx.closePath();
+
+  const gemGradient = ctx.createLinearGradient(iconX - iconSize / 2, iconY - iconSize / 2, iconX + iconSize / 2, iconY + iconSize / 2);
+  gemGradient.addColorStop(0, '#9b59b6');
+  gemGradient.addColorStop(0.5, '#8b5cf6');
+  gemGradient.addColorStop(1, '#6366f1');
+  ctx.fillStyle = gemGradient;
+  ctx.fill();
+
+  // Gem highlight
+  ctx.beginPath();
+  ctx.moveTo(iconX, iconY - iconSize / 2);
+  ctx.lineTo(iconX + iconSize / 4, iconY - iconSize / 8);
+  ctx.lineTo(iconX, iconY);
+  ctx.lineTo(iconX - iconSize / 4, iconY - iconSize / 8);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+  ctx.fill();
+
+  // Icon label
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 11px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('Obsidian', iconX, iconY + iconSize / 2 + 16);
+
+  // Draw editor window if note exists
+  if (hasNote && laptop.userData.editorContent) {
+    const winWidth = 380;
+    const winHeight = 260;
+    const winX = (canvas.width - winWidth) / 2;
+    const winY = 30;
+
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+    ctx.fillRect(winX + 4, winY + 4, winWidth, winHeight);
+    ctx.fillStyle = '#1e1e2e';
+    ctx.fillRect(winX, winY, winWidth, winHeight);
+    ctx.strokeStyle = '#45475a';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(winX, winY, winWidth, winHeight);
+
+    // Title bar
+    const titleBarHeight = 26;
+    const titleGradient = ctx.createLinearGradient(winX, winY, winX, winY + titleBarHeight);
+    titleGradient.addColorStop(0, '#313244');
+    titleGradient.addColorStop(1, '#1e1e2e');
+    ctx.fillStyle = titleGradient;
+    ctx.fillRect(winX, winY, winWidth, titleBarHeight);
+
+    ctx.strokeStyle = '#45475a';
+    ctx.beginPath();
+    ctx.moveTo(winX, winY + titleBarHeight);
+    ctx.lineTo(winX + winWidth, winY + titleBarHeight);
+    ctx.stroke();
+
+    ctx.fillStyle = '#cdd6f4';
+    ctx.font = 'bold 11px Arial';
+    ctx.textAlign = 'left';
+    ctx.fillText('◆ ' + (laptop.userData.editorFileName || 'notes.md'), winX + 10, winY + 17);
+
+    // Window control buttons
+    const btnY = winY + 7;
+    const btnSize = 12;
+    ctx.fillStyle = '#f38ba8';
+    ctx.beginPath();
+    ctx.arc(winX + winWidth - 14, btnY + btnSize/2, btnSize/2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#a6e3a1';
+    ctx.beginPath();
+    ctx.arc(winX + winWidth - 32, btnY + btnSize/2, btnSize/2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#f9e2af';
+    ctx.beginPath();
+    ctx.arc(winX + winWidth - 50, btnY + btnSize/2, btnSize/2, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Content
+    const contentY = winY + titleBarHeight + 8;
+    const contentX = winX + 12;
+    ctx.font = '10px Consolas, monospace';
+    ctx.fillStyle = '#cdd6f4';
+    ctx.textAlign = 'left';
+
+    const lines = laptop.userData.editorContent.split('\n').slice(0, 16);
+    lines.forEach((line, i) => {
+      let displayLine = line;
+      if (line.includes('- [ ]')) displayLine = line.replace('- [ ]', '☐');
+      else if (line.includes('- [x]') || line.includes('- [X]')) displayLine = line.replace(/- \[[xX]\]/, '☑');
+      const truncated = displayLine.length > 48 ? displayLine.substring(0, 48) + '...' : displayLine;
+      ctx.fillText(truncated, contentX, contentY + i * 13);
+    });
+
+    // Scrollbar
+    ctx.fillStyle = '#45475a';
+    ctx.fillRect(winX + winWidth - 8, winY + titleBarHeight + 4, 6, winHeight - titleBarHeight - 8);
+    ctx.fillStyle = '#585b70';
+    ctx.fillRect(winX + winWidth - 8, winY + titleBarHeight + 8, 6, 40);
+  }
+
+  // Taskbar
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+  ctx.fillRect(0, canvas.height - 28, canvas.width, 28);
+
+  const now = new Date();
+  const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '11px Arial';
+  ctx.textAlign = 'right';
+  ctx.fillText(timeStr, canvas.width - 10, canvas.height - 10);
+
+  // Draw cursor
+  if (laptopCursorState.visible) {
+    const cx = laptopCursorState.x;
+    const cy = laptopCursorState.y;
+
+    // Arrow cursor shape
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx, cy + 16);
+    ctx.lineTo(cx + 4, cy + 12);
+    ctx.lineTo(cx + 7, cy + 19);
+    ctx.lineTo(cx + 10, cy + 18);
+    ctx.lineTo(cx + 7, cy + 11);
+    ctx.lineTo(cx + 12, cy + 11);
+    ctx.closePath();
+
+    // Cursor shadow
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+    ctx.save();
+    ctx.translate(1, 1);
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx, cy + 16);
+    ctx.lineTo(cx + 4, cy + 12);
+    ctx.lineTo(cx + 7, cy + 19);
+    ctx.lineTo(cx + 10, cy + 18);
+    ctx.lineTo(cx + 7, cy + 11);
+    ctx.lineTo(cx + 12, cy + 11);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+
+    // Cursor body
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.needsUpdate = true;
+
+  screen.material.map = texture;
+  screen.material.needsUpdate = true;
   laptop.userData.desktopTexture = texture;
 }
 
@@ -6752,6 +7175,14 @@ function toggleLaptopPower(object) {
         object.userData.screenState = 'desktop';
         // Final desktop update to ensure texture is applied
         updateLaptopDesktop(object);
+        // Enable cursor if laptop is in zoom mode
+        if (object.userData.isZoomedIn) {
+          laptopCursorState.visible = true;
+          laptopCursorState.targetLaptop = object;
+          laptopCursorState.x = 256;
+          laptopCursorState.y = 192;
+          updateLaptopDesktopWithCursor(object);
+        }
       }
     }
 
@@ -6866,6 +7297,10 @@ async function saveState() {
           }
           if (obj.userData.editorFileName) {
             data.editorFileName = obj.userData.editorFileName;
+          }
+          // Save wallpaper
+          if (obj.userData.wallpaperDataUrl) {
+            data.wallpaperDataUrl = obj.userData.wallpaperDataUrl;
           }
           break;
         case 'pen':
@@ -7009,6 +7444,19 @@ async function loadState() {
                 // Restore markdown editor content
                 if (objData.editorContent) obj.userData.editorContent = objData.editorContent;
                 if (objData.editorFileName) obj.userData.editorFileName = objData.editorFileName;
+                // Restore wallpaper and update desktop texture
+                if (objData.wallpaperDataUrl) {
+                  obj.userData.wallpaperDataUrl = objData.wallpaperDataUrl;
+                  // Update desktop texture with wallpaper
+                  const screen = obj.getObjectByName('screen');
+                  if (screen && obj.userData.createDesktopTexture) {
+                    obj.userData.createDesktopTexture().then(texture => {
+                      screen.material.map = texture;
+                      screen.material.needsUpdate = true;
+                      obj.userData.desktopTexture = texture;
+                    });
+                  }
+                }
                 break;
               case 'pen':
                 if (objData.penColor) obj.userData.penColor = objData.penColor;
