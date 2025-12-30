@@ -7812,11 +7812,32 @@ function enterLaptopZoomMode(object) {
   // No need to exit pointer lock or show system cursor
 
   // If editor was open when we left, re-open it
-  if (object.userData.editorWasOpen && object.userData.isOn && !object.userData.isBooting) {
-    // Small delay to let the zoom animation start
-    setTimeout(() => {
-      openMarkdownEditor(object);
-    }, 100);
+  if (object.userData.editorWasOpen) {
+    if (object.userData.isOn && !object.userData.isBooting) {
+      // Laptop is on and ready - open editor immediately
+      setTimeout(() => {
+        openMarkdownEditor(object);
+      }, 100);
+    } else if (!object.userData.isOn) {
+      // Laptop is off - turn it on instantly (no boot animation) and open editor
+      instantLaptopPowerOn(object);
+      // Update cursor visibility since laptop is now on
+      laptopCursorState.visible = true;
+      setTimeout(() => {
+        openMarkdownEditor(object);
+      }, 100);
+    } else if (object.userData.isBooting) {
+      // Laptop is booting - wait for boot to complete then open editor
+      const checkBootComplete = () => {
+        if (!object.userData.isBooting) {
+          laptopCursorState.visible = true;
+          openMarkdownEditor(object);
+        } else {
+          setTimeout(checkBootComplete, 100);
+        }
+      };
+      setTimeout(checkBootComplete, 100);
+    }
   }
 
   // Get screen position in world coordinates
@@ -8963,6 +8984,38 @@ function drawStartMenu(ctx, canvas, laptop) {
   ctx.font = 'bold 11px Arial';
   ctx.textAlign = 'center';
   ctx.fillText('Turn Off Computer', menuX + sidebarW + (menuW - sidebarW) / 2, menuY + menuH - 10);
+}
+
+// Instantly turn on laptop without boot animation (used when returning to laptop zoom mode with editor open)
+function instantLaptopPowerOn(object) {
+  if (object.userData.isOn) return; // Already on
+
+  const screen = object.getObjectByName('screen');
+  const powerLed = object.getObjectByName('powerLed');
+
+  // Set state to on immediately
+  object.userData.isOn = true;
+  object.userData.isBooting = false;
+  object.userData.screenState = 'desktop';
+
+  // Power LED on
+  if (powerLed) {
+    const ledColor = new THREE.Color(object.userData.powerLedColor || '#00ff00');
+    powerLed.material.color.copy(ledColor);
+    powerLed.material.emissive.copy(ledColor);
+    powerLed.material.emissiveIntensity = 0.5;
+  }
+
+  // Update screen to desktop
+  updateLaptopDesktop(object);
+
+  // Enable cursor if in zoom mode
+  if (object.userData.isZoomedIn) {
+    laptopCursorState.visible = true;
+    laptopCursorState.targetLaptop = object;
+    laptopCursorState.x = object.userData.lastCursorX !== undefined ? object.userData.lastCursorX : 256;
+    laptopCursorState.y = object.userData.lastCursorY !== undefined ? object.userData.lastCursorY : 192;
+  }
 }
 
 function toggleLaptopPower(object) {
