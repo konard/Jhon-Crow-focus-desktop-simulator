@@ -1398,6 +1398,7 @@ function createBooks(options = {}) {
     pdfPath: null, // Path to PDF file
     currentPage: 0, // Current page index
     totalPages: 0, // Total number of pages
+    pdfResolution: options.pdfResolution || 768, // PDF rendering resolution (width in pixels)
     mainColor: options.mainColor || '#7c3aed',
     accentColor: options.accentColor || '#f59e0b'
   };
@@ -1462,25 +1463,32 @@ function createBooks(options = {}) {
     ctx.textBaseline = 'middle';
 
     // Word wrap for long titles with padding
+    // Also supports explicit line breaks entered by user
     const paddingX = 30; // Horizontal padding on each side
     const paddingY = 15; // Vertical padding top/bottom
     const maxWidth = width - paddingX * 2;
     const maxHeight = height - paddingY * 2;
-    const words = title.split(' ');
-    const lines = [];
-    let currentLine = '';
 
-    for (const word of words) {
-      const testLine = currentLine ? currentLine + ' ' + word : word;
-      const metrics = ctx.measureText(testLine);
-      if (metrics.width > maxWidth && currentLine) {
-        lines.push(currentLine);
-        currentLine = word;
-      } else {
-        currentLine = testLine;
+    // First split by explicit newlines, then word-wrap each line
+    const paragraphs = title.split('\n');
+    const lines = [];
+
+    for (const paragraph of paragraphs) {
+      const words = paragraph.split(' ');
+      let currentLine = '';
+
+      for (const word of words) {
+        const testLine = currentLine ? currentLine + ' ' + word : word;
+        const metrics = ctx.measureText(testLine);
+        if (metrics.width > maxWidth && currentLine) {
+          lines.push(currentLine);
+          currentLine = word;
+        } else {
+          currentLine = testLine;
+        }
       }
+      if (currentLine) lines.push(currentLine);
     }
-    if (currentLine) lines.push(currentLine);
 
     // Draw multiline title (centered vertically within padded area)
     const lineHeight = fontSize * 1.2;
@@ -4141,11 +4149,20 @@ function handleRightClick(event) {
       updateCustomizationPanel(object);
     }
   } else {
+    // RMB on empty space - open left sidebar menu
     document.getElementById('customization-panel').classList.remove('open');
     selectedObject = null;
     // Clear dynamic options
     const dynamicOptions = document.getElementById('object-specific-options');
     if (dynamicOptions) dynamicOptions.innerHTML = '';
+
+    // Open left sidebar menu
+    const menu = document.getElementById('menu');
+    menu.classList.add('open');
+    // Exit pointer lock when opening menu so cursor is visible
+    if (document.pointerLockElement) {
+      document.exitPointerLock();
+    }
   }
 }
 
@@ -4252,9 +4269,8 @@ function updateCustomizationPanel(object) {
       dynamicOptions.innerHTML = `
         <div class="customization-group" style="margin-top: 20px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.1);">
           <label>Book Title</label>
-          <input type="text" id="book-title-edit" value="${object.userData.bookTitle || ''}"
-                 placeholder="Enter book title"
-                 style="width: 100%; padding: 10px; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; color: #fff; margin-top: 8px;">
+          <textarea id="book-title-edit" placeholder="Enter book title"
+                 style="width: 100%; min-height: 40px; padding: 10px; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; color: #fff; margin-top: 8px; resize: vertical; font-family: inherit; font-size: inherit;">${object.userData.bookTitle || ''}</textarea>
         </div>
         <div class="customization-group" style="margin-top: 15px;">
           <label>Title Color</label>
@@ -4286,6 +4302,15 @@ function updateCustomizationPanel(object) {
                 Clear PDF
               </button>
             ` : ''}
+          </div>
+        </div>
+        <div class="customization-group" style="margin-top: 15px;">
+          <label>PDF Resolution: <span id="pdf-resolution-display">${object.userData.pdfResolution || 768}px</span></label>
+          <input type="range" id="book-pdf-resolution" min="384" max="1536" step="128" value="${object.userData.pdfResolution || 768}"
+                 style="width: 100%; margin-top: 8px; accent-color: #4f46e5;">
+          <div style="display: flex; justify-content: space-between; color: rgba(255,255,255,0.4); font-size: 10px; margin-top: 4px;">
+            <span>Fast</span>
+            <span>Quality</span>
           </div>
         </div>
       `;
@@ -4907,6 +4932,30 @@ function setupBookCustomizationHandlers(object) {
         saveState();
         // Update the customization panel
         updateCustomizationPanel(object);
+      });
+    }
+
+    // PDF resolution slider
+    const resolutionSlider = document.getElementById('book-pdf-resolution');
+    const resolutionDisplay = document.getElementById('pdf-resolution-display');
+    if (resolutionSlider) {
+      resolutionSlider.addEventListener('input', (e) => {
+        const newRes = parseInt(e.target.value);
+        object.userData.pdfResolution = newRes;
+        if (resolutionDisplay) {
+          resolutionDisplay.textContent = `${newRes}px`;
+        }
+      });
+      resolutionSlider.addEventListener('change', (e) => {
+        const newRes = parseInt(e.target.value);
+        object.userData.pdfResolution = newRes;
+        // Clear cached rendered pages so they re-render at new resolution
+        object.userData.renderedPages = {};
+        // Re-render current pages if book is open
+        if (object.userData.isOpen && object.userData.pdfDocument) {
+          updateBookPagesWithPDF(object);
+        }
+        saveState();
       });
     }
   }, 0);
@@ -5704,6 +5753,11 @@ function openMarkdownEditor(laptop) {
   closeInteractionModal();
   exitExamineMode();
 
+  // Exit pointer lock to show cursor for editor interaction
+  if (document.pointerLockElement) {
+    document.exitPointerLock();
+  }
+
   // Create markdown editor overlay
   const editorOverlay = document.createElement('div');
   editorOverlay.id = 'markdown-editor-overlay';
@@ -5977,6 +6031,8 @@ function openMarkdownEditor(laptop) {
   function saveAndClose(exitLaptopMode = false) {
     laptop.userData.editorContent = sourceTextarea.value;
     laptop.userData.editorFileName = filenameInput.value || 'notes.md';
+    // Clear the "was open" flag since user explicitly closed the editor
+    laptop.userData.editorWasOpen = false;
     editorOverlay.remove();
     // Update laptop desktop to show note preview if content exists
     if (laptop.userData.screenState === 'desktop') {
@@ -6470,6 +6526,7 @@ async function loadPDFFromDataUrl(book, dataUrl) {
 
   try {
     book.userData.isLoadingPdf = true;
+    book.userData.loadingProgress = 0;
 
     // Convert base64 data URL to array buffer
     const base64 = dataUrl.split(',')[1];
@@ -6481,6 +6538,18 @@ async function loadPDFFromDataUrl(book, dataUrl) {
     }
 
     const loadingTask = pdfjsLib.getDocument({ data: bytes });
+
+    // Track loading progress
+    loadingTask.onProgress = (progressData) => {
+      if (progressData.total > 0) {
+        book.userData.loadingProgress = Math.round((progressData.loaded / progressData.total) * 100);
+        // Update page display to show progress
+        if (book.userData.isOpen) {
+          updateBookPages(book);
+        }
+      }
+    };
+
     const pdfDoc = await loadingTask.promise;
     console.log(`PDF restored from saved state: ${pdfDoc.numPages} pages`);
 
@@ -6490,6 +6559,7 @@ async function loadPDFFromDataUrl(book, dataUrl) {
     book.userData.currentPage = book.userData.currentPage || 0;
     book.userData.renderedPages = {}; // Cache for rendered page canvases
     book.userData.isLoadingPdf = false; // Clear loading flag
+    book.userData.loadingProgress = 100; // Mark as complete
     book.userData.pdfDataUrl = dataUrl; // Keep the data URL
 
     // Update pages if book is open
@@ -6499,6 +6569,7 @@ async function loadPDFFromDataUrl(book, dataUrl) {
   } catch (error) {
     console.error('Error loading PDF from data URL:', error);
     book.userData.isLoadingPdf = false;
+    book.userData.loadingProgress = 0;
   }
 }
 
@@ -6561,10 +6632,10 @@ async function updateBookPagesWithPDF(book) {
     return;
   }
 
-  // Optimized resolution for PDF text (balanced performance vs quality)
-  // Reduced from 1024x1448 to 768x1086 for better performance
-  const canvasWidth = 768;
-  const canvasHeight = 1086;
+  // PDF rendering resolution (user-configurable via edit menu)
+  // Default 768x1086, can be increased for better quality or decreased for performance
+  const canvasWidth = book.userData.pdfResolution || 768;
+  const canvasHeight = Math.round(canvasWidth * 1.414); // A4 aspect ratio
 
   // Render left page (current page)
   const leftPageNum = book.userData.currentPage * 2 + 1; // 1-indexed
@@ -6654,12 +6725,11 @@ function updateBookPages(book) {
   const leftPage = openGroup.getObjectByName('leftPageSurface');
   const rightPage = openGroup.getObjectByName('rightPageSurface');
 
-  // Optimized resolution for placeholder text (balanced performance vs quality)
-  // Reduced from 1024x1448 to 768x1086 for better performance
-  const canvasWidth = 768;
-  const canvasHeight = 1086;
-  const margin = 60;
-  const lineHeight = 42;
+  // PDF rendering resolution (user-configurable via edit menu)
+  const canvasWidth = book.userData.pdfResolution || 768;
+  const canvasHeight = Math.round(canvasWidth * 1.414); // A4 aspect ratio
+  const margin = Math.round(60 * canvasWidth / 768);
+  const lineHeight = Math.round(42 * canvasWidth / 768);
 
   // Check if PDF is loading - show animated ellipsis
   const isLoading = book.userData.isLoadingPdf;
@@ -6739,9 +6809,10 @@ function updateBookPages(book) {
 
       // Get animated ellipsis based on time
       const dots = '.'.repeat((Math.floor(Date.now() / 500) % 3) + 1);
+      const progress = book.userData.loadingProgress || 0;
       contentLines = [
         'Loading PDF' + dots,
-        '',
+        progress > 0 ? `${progress}%` : '',
         pdfFileName ? `📄 ${pdfFileName}` : ''
       ].filter(line => line !== '');
 
@@ -6752,6 +6823,13 @@ function updateBookPages(book) {
       contentLines.forEach((line, i) => {
         ctx.fillText(line, canvasWidth / 2, 190 + i * lineHeight);
       });
+
+      // Draw progress bar fill if progress is available
+      if (progress > 0) {
+        const progressWidth = (gradientWidth * progress) / 100;
+        ctx.fillStyle = 'rgba(79, 70, 229, 0.6)'; // Purple progress fill
+        ctx.fillRect(margin, gradientY, progressWidth, gradientHeight);
+      }
 
       // Skip normal content drawing since we drew custom loading
       contentLines = [];
@@ -7177,8 +7255,18 @@ function toggleBookOpen(object) {
     if (object.userData.currentPage === undefined) {
       object.userData.currentPage = 0;
     }
-    // Update pages to show content (this will render PDF if loaded or show placeholder)
-    updateBookPages(object);
+
+    // If book has a saved PDF data URL but PDF not loaded yet, start loading
+    if (object.userData.pdfDataUrl && !object.userData.pdfDocument && !object.userData.isLoadingPdf) {
+      // Set loading flag and show loading indicator
+      object.userData.isLoadingPdf = true;
+      updateBookPages(object); // This will show loading indicator
+      // Start async PDF loading
+      loadPDFFromDataUrl(object, object.userData.pdfDataUrl);
+    } else {
+      // Update pages to show content (this will render PDF if loaded or show placeholder)
+      updateBookPages(object);
+    }
   }
 }
 
@@ -7280,14 +7368,16 @@ function animatePageTurn(book, direction) {
     const nextPage2 = (book.userData.currentPage + direction) * 2 + 2;
     const pdfDoc = book.userData.pdfDocument;
 
-    // Pre-render in background (using optimized resolution 768x1086)
+    // Pre-render in background using book's configured resolution
+    const resWidth = book.userData.pdfResolution || 768;
+    const resHeight = Math.round(resWidth * 1.414);
     if (nextPage1 > 0 && nextPage1 <= pdfDoc.numPages && !book.userData.renderedPages[nextPage1]) {
-      renderPDFPageToCanvas(pdfDoc, nextPage1, 768, 1086).then(canvas => {
+      renderPDFPageToCanvas(pdfDoc, nextPage1, resWidth, resHeight).then(canvas => {
         if (canvas) book.userData.renderedPages[nextPage1] = canvas;
       });
     }
     if (nextPage2 > 0 && nextPage2 <= pdfDoc.numPages && !book.userData.renderedPages[nextPage2]) {
-      renderPDFPageToCanvas(pdfDoc, nextPage2, 768, 1086).then(canvas => {
+      renderPDFPageToCanvas(pdfDoc, nextPage2, resWidth, resHeight).then(canvas => {
         if (canvas) book.userData.renderedPages[nextPage2] = canvas;
       });
     }
@@ -7311,16 +7401,21 @@ function enterLaptopZoomMode(object) {
   object.userData.isZoomedIn = true;
 
   // Initialize cursor state for laptop screen interaction
-  laptopCursorState.x = 256; // Center of screen
-  laptopCursorState.y = 192;
+  // Restore last cursor position if available, otherwise center
+  laptopCursorState.x = object.userData.lastCursorX !== undefined ? object.userData.lastCursorX : 256;
+  laptopCursorState.y = object.userData.lastCursorY !== undefined ? object.userData.lastCursorY : 192;
   laptopCursorState.visible = object.userData.isOn && !object.userData.isBooting;
   laptopCursorState.targetLaptop = object;
 
-  // If laptop is on, exit pointer lock to show system cursor for screen interaction
-  if (object.userData.isOn && !object.userData.isBooting) {
-    if (document.pointerLockElement) {
-      document.exitPointerLock();
-    }
+  // Keep pointer lock active - laptop cursor is controlled via mouse movement
+  // No need to exit pointer lock or show system cursor
+
+  // If editor was open when we left, re-open it
+  if (object.userData.editorWasOpen && object.userData.isOn && !object.userData.isBooting) {
+    // Small delay to let the zoom animation start
+    setTimeout(() => {
+      openMarkdownEditor(object);
+    }, 100);
   }
 
   // Get screen position in world coordinates
@@ -7388,6 +7483,8 @@ function exitLaptopZoomMode(object) {
     if (filenameInput) {
       object.userData.editorFileName = filenameInput.value || 'notes.md';
     }
+    // Mark that editor was open so it can be restored on re-entry
+    object.userData.editorWasOpen = true;
     editorOverlay.remove();
   }
 
@@ -8644,6 +8741,7 @@ async function saveState() {
           data.bookTitle = obj.userData.bookTitle;
           data.titleColor = obj.userData.titleColor;
           data.pdfPath = obj.userData.pdfPath;
+          data.pdfResolution = obj.userData.pdfResolution;
           // Save PDF data URL for persistence across reloads
           if (obj.userData.pdfDataUrl) {
             data.pdfDataUrl = obj.userData.pdfDataUrl;
@@ -8791,6 +8889,7 @@ async function loadState() {
                 if (objData.bookTitle) obj.userData.bookTitle = objData.bookTitle;
                 if (objData.titleColor) obj.userData.titleColor = objData.titleColor;
                 if (objData.pdfPath) obj.userData.pdfPath = objData.pdfPath;
+                if (objData.pdfResolution) obj.userData.pdfResolution = objData.pdfResolution;
                 if (objData.currentPage !== undefined) obj.userData.currentPage = objData.currentPage;
                 // Regenerate title texture with saved title (uses userData.titleColor internally)
                 if (objData.bookTitle && obj.userData.createTitleTexture) {
@@ -8808,6 +8907,8 @@ async function loadState() {
                 // Restore PDF from data URL if available
                 if (objData.pdfDataUrl) {
                   obj.userData.pdfDataUrl = objData.pdfDataUrl;
+                  // Set loading flag so UI shows loading indicator while PDF loads
+                  obj.userData.isLoadingPdf = true;
                   loadPDFFromDataUrl(obj, objData.pdfDataUrl);
                 }
                 break;
