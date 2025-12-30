@@ -3382,6 +3382,32 @@ function createSteamEffect() {
   return steamGroup;
 }
 
+// Create liquid pour effect (droplets falling from tilted mug)
+function createPourEffect(drinkType = 'coffee') {
+  const pourGroup = new THREE.Group();
+  const drinkColor = DRINK_COLORS[drinkType] ? DRINK_COLORS[drinkType].color : 0x3d2914;
+
+  // Create multiple droplets
+  for (let i = 0; i < 5; i++) {
+    const dropGeometry = new THREE.SphereGeometry(0.015, 6, 6);
+    const dropMaterial = new THREE.MeshStandardMaterial({
+      color: drinkColor,
+      transparent: true,
+      opacity: 0.8,
+      roughness: 0.3
+    });
+    const drop = new THREE.Mesh(dropGeometry, dropMaterial);
+    drop.position.set(
+      0.08 + (Math.random() - 0.5) * 0.02, // Offset to the side (where mug edge would be)
+      0.15 - i * 0.08, // Staggered heights
+      (Math.random() - 0.5) * 0.02
+    );
+    pourGroup.add(drop);
+  }
+
+  return pourGroup;
+}
+
 // Double-click examine removed - use drag+scroll down to enter, scroll up to exit
 
 function enterExamineMode(object) {
@@ -5376,35 +5402,82 @@ function animate() {
       }
     }
 
-    // Animate steam for hot mug
-    if (obj.userData.type === 'coffee' && obj.userData.isHot && obj.userData.liquidLevel > 0.1) {
-      // Create steam if not exists
-      let steam = obj.getObjectByName('steam');
-      if (!steam) {
-        steam = createSteamEffect();
-        steam.name = 'steam';
-        obj.add(steam);
-      }
-      steam.visible = true;
+    // Animate mug: steam and liquid pouring when tilted
+    if (obj.userData.type === 'coffee') {
+      // Check if mug is tilted enough to pour liquid
+      const tiltAngle = Math.sqrt(obj.rotation.x * obj.rotation.x + obj.rotation.z * obj.rotation.z);
+      const pourThreshold = 0.4; // About 23 degrees
 
-      // Animate steam wisps floating up
-      steam.children.forEach((wisp, i) => {
-        wisp.position.y += 0.002;
-        wisp.material.opacity -= 0.002;
+      if (tiltAngle > pourThreshold && obj.userData.liquidLevel > 0.05 && !obj.userData.isSipping) {
+        // Calculate pour rate based on tilt angle
+        const pourRate = Math.min(0.005, (tiltAngle - pourThreshold) * 0.02);
+        obj.userData.liquidLevel = Math.max(0, obj.userData.liquidLevel - pourRate);
 
-        // Reset when wisp floats too high or fades out
-        if (wisp.position.y > 0.4 || wisp.material.opacity <= 0) {
-          wisp.position.set(
-            (Math.random() - 0.5) * 0.05,
-            0.22,
-            (Math.random() - 0.5) * 0.05
-          );
-          wisp.material.opacity = 0.3;
+        // Update liquid visual
+        const liquid = obj.getObjectByName('liquid');
+        if (liquid) {
+          if (obj.userData.liquidLevel < 0.05) {
+            liquid.visible = false;
+          } else {
+            liquid.scale.y = Math.max(0.1, obj.userData.liquidLevel);
+            liquid.position.y = 0.06 + obj.userData.liquidLevel * 0.08;
+          }
         }
-      });
-    } else if (obj.userData.type === 'coffee') {
-      const steam = obj.getObjectByName('steam');
-      if (steam) steam.visible = false;
+
+        // Create or update pour effect
+        let pourEffect = obj.getObjectByName('pourEffect');
+        if (!pourEffect && obj.userData.liquidLevel > 0.05) {
+          pourEffect = createPourEffect(obj.userData.drinkType || 'coffee');
+          pourEffect.name = 'pourEffect';
+          obj.add(pourEffect);
+        }
+        if (pourEffect) {
+          pourEffect.visible = true;
+          // Animate pour droplets
+          pourEffect.children.forEach((drop, i) => {
+            drop.position.y -= 0.03;
+            drop.material.opacity -= 0.02;
+            if (drop.position.y < -0.5 || drop.material.opacity <= 0) {
+              drop.position.y = 0.15;
+              drop.material.opacity = 0.8;
+            }
+          });
+        }
+      } else {
+        // Hide pour effect when not tilted
+        const pourEffect = obj.getObjectByName('pourEffect');
+        if (pourEffect) pourEffect.visible = false;
+      }
+
+      // Steam effect for hot mug
+      if (obj.userData.isHot && obj.userData.liquidLevel > 0.1 && tiltAngle < pourThreshold) {
+        let steam = obj.getObjectByName('steam');
+        if (!steam) {
+          steam = createSteamEffect();
+          steam.name = 'steam';
+          obj.add(steam);
+        }
+        steam.visible = true;
+
+        // Animate steam wisps floating up
+        steam.children.forEach((wisp, i) => {
+          wisp.position.y += 0.002;
+          wisp.material.opacity -= 0.002;
+
+          // Reset when wisp floats too high or fades out
+          if (wisp.position.y > 0.4 || wisp.material.opacity <= 0) {
+            wisp.position.set(
+              (Math.random() - 0.5) * 0.05,
+              0.22,
+              (Math.random() - 0.5) * 0.05
+            );
+            wisp.material.opacity = 0.3;
+          }
+        });
+      } else {
+        const steam = obj.getObjectByName('steam');
+        if (steam) steam.visible = false;
+      }
     }
   });
 
