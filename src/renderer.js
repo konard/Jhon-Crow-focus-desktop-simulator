@@ -2157,6 +2157,15 @@ function updateObjectColor(object, colorType, colorValue) {
       typeSpecificData.totalPages = object.userData.totalPages;
       typeSpecificData.currentPage = object.userData.currentPage;
       typeSpecificData.isOpen = object.userData.isOpen;
+      // Preserve PDF document and data for content display after style change
+      typeSpecificData.pdfDocument = object.userData.pdfDocument;
+      typeSpecificData.pdfDataUrl = object.userData.pdfDataUrl;
+      typeSpecificData.pdfResolution = object.userData.pdfResolution;
+      typeSpecificData.renderedPages = object.userData.renderedPages;
+      typeSpecificData.pageTextures = object.userData.pageTextures;
+      // Preserve cover image data
+      typeSpecificData.coverImageDataUrl = object.userData.coverImageDataUrl;
+      typeSpecificData.firstPageAsCover = object.userData.firstPageAsCover;
       break;
     case 'coffee':
       typeSpecificData.drinkType = object.userData.drinkType;
@@ -2236,6 +2245,50 @@ function updateObjectColor(object, colorType, colorValue) {
         coverTitle.material.map = newCoverTexture;
         coverTitle.material.needsUpdate = true;
       }
+    }
+
+    // Restore cover image if present
+    if (typeSpecificData.coverImageDataUrl) {
+      const textureLoader = new THREE.TextureLoader();
+      textureLoader.load(typeSpecificData.coverImageDataUrl, (texture) => {
+        const closedGroup = newObject.getObjectByName('closedBook');
+        if (closedGroup) {
+          const cover = closedGroup.getObjectByName('cover');
+          if (cover) {
+            const baseMaterial = new THREE.MeshStandardMaterial({
+              color: new THREE.Color(newObject.userData.mainColor),
+              roughness: 0.7
+            });
+            const topMaterial = new THREE.MeshStandardMaterial({
+              map: texture,
+              roughness: 0.5
+            });
+            cover.material = [
+              baseMaterial, baseMaterial, topMaterial,
+              baseMaterial, baseMaterial, baseMaterial
+            ];
+            cover.material.forEach(m => m.needsUpdate = true);
+          }
+        }
+      });
+    }
+
+    // Update book thickness and pages if PDF is loaded
+    if (typeSpecificData.pdfDocument) {
+      updateBookThickness(newObject);
+      // Clear texture cache to force re-render with new colors
+      newObject.userData.pageTextures = {};
+      if (typeSpecificData.isOpen) {
+        updateBookPagesWithPDF(newObject);
+      }
+    }
+
+    // Toggle book to correct open/closed state
+    if (typeSpecificData.isOpen) {
+      const closedGroup = newObject.getObjectByName('closedBook');
+      const openGroup = newObject.getObjectByName('openBook');
+      if (closedGroup) closedGroup.visible = false;
+      if (openGroup) openGroup.visible = true;
     }
   }
 
@@ -2790,23 +2843,33 @@ function setupEventListeners() {
       }
     }
 
-    // Arrow keys for book - either panning (in reading mode) or page navigation
+    // Arrow keys for book - page navigation in reading mode, or when aimed at book
     if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown') && !e.altKey && !e.ctrlKey) {
-      // In reading mode, arrow keys control panning (not page turning)
+      // In reading mode, ArrowLeft/Right turn pages, ArrowUp/Down pan vertically
       if (bookReadingState.active && bookReadingState.book) {
         e.preventDefault();
         const book = bookReadingState.book;
+
+        // Arrow Left/Right for page turning in reading mode
+        if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+          const totalPages = book.userData.totalPages || 10;
+          if (e.key === 'ArrowLeft' && book.userData.currentPage > 0) {
+            animatePageTurn(book, -1);
+          } else if (e.key === 'ArrowRight' && book.userData.currentPage < totalPages - 1) {
+            if (!book.userData.totalPages) book.userData.totalPages = 10;
+            animatePageTurn(book, 1);
+          }
+          return;
+        }
+
+        // Arrow Up/Down for vertical panning in reading mode
         const bookWorldPos = new THREE.Vector3();
         book.getWorldPosition(bookWorldPos);
-
         const moveSpeed = 0.1;
         if (e.key === 'ArrowUp') bookReadingState.panOffsetZ -= moveSpeed;
         if (e.key === 'ArrowDown') bookReadingState.panOffsetZ += moveSpeed;
-        if (e.key === 'ArrowLeft') bookReadingState.panOffsetX -= moveSpeed;
-        if (e.key === 'ArrowRight') bookReadingState.panOffsetX += moveSpeed;
 
         // Clamp pan offsets to reasonable limits
-        bookReadingState.panOffsetX = Math.max(-1.5, Math.min(1.5, bookReadingState.panOffsetX));
         bookReadingState.panOffsetZ = Math.max(-1.5, Math.min(1.5, bookReadingState.panOffsetZ));
 
         // Update camera position
@@ -4369,11 +4432,9 @@ function updateCustomizationPanel(object) {
               Upload Image
               <input type="file" id="book-cover-image" accept="image/*" style="display: none;">
             </label>
-            ${object.userData.pdfDocument ? `
-              <button id="book-cover-use-pdf" style="padding: 10px 15px; background: rgba(34, 197, 94, 0.2); border: 1px solid rgba(34, 197, 94, 0.4); border-radius: 8px; color: #22c55e; cursor: pointer;">
-                Use PDF Page 1 as Cover
-              </button>
-            ` : ''}
+            <button id="book-cover-use-pdf" style="padding: 10px 15px; background: rgba(34, 197, 94, 0.2); border: 1px solid rgba(34, 197, 94, 0.4); border-radius: 8px; color: #22c55e; cursor: pointer;${object.userData.pdfDocument ? '' : ' opacity: 0.5;'}">
+              Use PDF Page 1 as Cover${object.userData.pdfDocument ? '' : ' (load PDF first)'}
+            </button>
             ${object.userData.coverImageDataUrl ? `
               <div style="color: rgba(255,255,255,0.5); font-size: 12px;">
                 Cover image set
@@ -6999,11 +7060,15 @@ function createBlankPageTexture(pageMesh, width, height, pageNum) {
 // Update book thickness based on page count
 function updateBookThickness(book) {
   const totalPages = book.userData.totalPages || 10;
-  // Base thickness for 100 pages, scale proportionally
-  // Min thickness 0.02, max thickness 0.12 (for ~500+ pages)
-  const baseThickness = 0.04;
-  const thicknessPerPage = 0.0002; // Each page adds 0.2mm
-  const calculatedThickness = Math.max(0.02, Math.min(0.12, baseThickness + (totalPages * thicknessPerPage)));
+  // Reduced thickness per page for thinner books
+  // Paper sheet thickness in model units: ~0.0001 (0.1mm)
+  // 5 sheets = 0.0005 minimum thickness for pages
+  const paperSheetThickness = 0.0001;
+  const minPagesThickness = paperSheetThickness * 5; // 5 paper sheets minimum
+  const thicknessPerPage = 0.00008; // Reduced: each page adds 0.08mm (was 0.2mm)
+  const baseThickness = 0.015; // Reduced base thickness (was 0.04)
+  // Min thickness based on 5 paper sheets + cover, max 0.08 for very thick books
+  const calculatedThickness = Math.max(minPagesThickness + 0.01, Math.min(0.08, baseThickness + (totalPages * thicknessPerPage)));
 
   const closedGroup = book.getObjectByName('closedBook');
   if (closedGroup) {
