@@ -3090,16 +3090,19 @@ function onMouseDown(event) {
               return;
             }
 
-            // Check shutdown button click if start menu is open
+            // Check shutdown button click if start menu is open (Windows XP style)
             if (laptopStartMenuState.isOpen && laptopStartMenuState.targetLaptop === object) {
-              const menuX = 5;
-              const menuY = 384 - 28 - 100;
-              const menuW = 150;
-              const menuH = 100;
-              const shutdownY = menuY + menuH - 30;
+              const menuX = 0;
+              const menuY = 384 - 28 - 160;  // Updated for XP menu height
+              const menuW = 200;             // Updated for XP menu width
+              const menuH = 160;
+              const bottomBarY = menuY + menuH - 34;  // Orange bottom bar
+              const shutdownX = menuX + menuW - 90;
+              const shutdownY = bottomBarY + 7;
 
-              if (canvasX >= menuX + 10 && canvasX <= menuX + menuW - 10 &&
-                  canvasY >= shutdownY && canvasY <= shutdownY + 24) {
+              // Check if clicking on Turn Off button in orange bar
+              if (canvasX >= shutdownX && canvasX <= shutdownX + 80 &&
+                  canvasY >= shutdownY && canvasY <= shutdownY + 20) {
                 // Shutdown the laptop
                 laptopStartMenuState.isOpen = false;
                 laptopStartMenuState.targetLaptop = null;
@@ -7509,15 +7512,20 @@ function updateLaptopDesktopWithCursor(laptop) {
     ctx.fillRect(winX + winWidth - 8, winY + titleBarHeight + 8, 6, 40);
   }
 
-  // Taskbar
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+  // Windows XP-style Taskbar - blue gradient
+  const taskbarGradient = ctx.createLinearGradient(0, canvas.height - 28, 0, canvas.height);
+  taskbarGradient.addColorStop(0, '#1c5eba');
+  taskbarGradient.addColorStop(0.1, '#3985d8');
+  taskbarGradient.addColorStop(0.9, '#1558b0');
+  taskbarGradient.addColorStop(1, '#0d3d80');
+  ctx.fillStyle = taskbarGradient;
   ctx.fillRect(0, canvas.height - 28, canvas.width, 28);
 
-  // Start button
-  const startBtnX = 5;
-  const startBtnY = canvas.height - 24;
-  const startBtnW = 60;
-  const startBtnH = 20;
+  // Windows XP-style Start button - green with rounded left side
+  const startBtnX = 0;
+  const startBtnY = canvas.height - 26;
+  const startBtnW = 65;
+  const startBtnH = 24;
 
   // Check if cursor is over start button
   const cursorOverStart = laptopCursorState.x >= startBtnX &&
@@ -7525,76 +7533,178 @@ function updateLaptopDesktopWithCursor(laptop) {
                           laptopCursorState.y >= startBtnY &&
                           laptopCursorState.y <= startBtnY + startBtnH;
 
-  // Start button background
+  // Start button background - classic XP green gradient
   const startGradient = ctx.createLinearGradient(startBtnX, startBtnY, startBtnX, startBtnY + startBtnH);
   if (cursorOverStart || (laptopStartMenuState.isOpen && laptopStartMenuState.targetLaptop === laptop)) {
-    startGradient.addColorStop(0, '#4a90d9');
-    startGradient.addColorStop(1, '#2563eb');
+    startGradient.addColorStop(0, '#6ac660');
+    startGradient.addColorStop(0.4, '#3ba536');
+    startGradient.addColorStop(0.6, '#2a9226');
+    startGradient.addColorStop(1, '#1e7a1c');
   } else {
-    startGradient.addColorStop(0, '#3b82f6');
-    startGradient.addColorStop(1, '#1d4ed8');
+    startGradient.addColorStop(0, '#5bba52');
+    startGradient.addColorStop(0.4, '#2f9e2a');
+    startGradient.addColorStop(0.6, '#228a1e');
+    startGradient.addColorStop(1, '#176c14');
   }
+
+  // Draw rounded start button
+  ctx.beginPath();
+  ctx.moveTo(startBtnX, startBtnY);
+  ctx.lineTo(startBtnX + startBtnW - 12, startBtnY);
+  ctx.arcTo(startBtnX + startBtnW, startBtnY, startBtnX + startBtnW, startBtnY + startBtnH / 2, 12);
+  ctx.arcTo(startBtnX + startBtnW, startBtnY + startBtnH, startBtnX + startBtnW - 12, startBtnY + startBtnH, 12);
+  ctx.lineTo(startBtnX, startBtnY + startBtnH);
+  ctx.closePath();
   ctx.fillStyle = startGradient;
-  ctx.fillRect(startBtnX, startBtnY, startBtnW, startBtnH);
-  ctx.strokeStyle = '#60a5fa';
-  ctx.lineWidth = 1;
-  ctx.strokeRect(startBtnX, startBtnY, startBtnW, startBtnH);
+  ctx.fill();
+
+  // Windows flag icon (simplified)
+  const flagX = startBtnX + 8;
+  const flagY = startBtnY + 6;
+  const flagSize = 12;
+
+  // Draw 4 colored squares as Windows logo
+  ctx.fillStyle = '#f25022'; // Red
+  ctx.fillRect(flagX, flagY, flagSize / 2 - 1, flagSize / 2 - 1);
+  ctx.fillStyle = '#7fba00'; // Green
+  ctx.fillRect(flagX + flagSize / 2, flagY, flagSize / 2 - 1, flagSize / 2 - 1);
+  ctx.fillStyle = '#00a4ef'; // Blue
+  ctx.fillRect(flagX, flagY + flagSize / 2, flagSize / 2 - 1, flagSize / 2 - 1);
+  ctx.fillStyle = '#ffb900'; // Yellow
+  ctx.fillRect(flagX + flagSize / 2, flagY + flagSize / 2, flagSize / 2 - 1, flagSize / 2 - 1);
 
   // Start button text
   ctx.fillStyle = '#ffffff';
-  ctx.font = 'bold 11px Arial';
-  ctx.textAlign = 'center';
-  ctx.fillText('Start', startBtnX + startBtnW / 2, startBtnY + 14);
+  ctx.font = 'bold 11px Tahoma, Arial';
+  ctx.textAlign = 'left';
+  ctx.fillText('start', startBtnX + 24, startBtnY + 16);
 
-  // Draw Start Menu if open
+  // Draw Start Menu if open - Windows XP style
   if (laptopStartMenuState.isOpen && laptopStartMenuState.targetLaptop === laptop) {
-    const menuX = 5;
-    const menuY = canvas.height - 28 - 100;
-    const menuW = 150;
-    const menuH = 100;
+    const menuX = 0;
+    const menuY = canvas.height - 28 - 160;
+    const menuW = 200;
+    const menuH = 160;
 
-    // Menu background
-    ctx.fillStyle = 'rgba(30, 30, 50, 0.95)';
+    // Menu shadow
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+    ctx.fillRect(menuX + 4, menuY + 4, menuW, menuH);
+
+    // Main menu background - white/cream color
+    ctx.fillStyle = '#ffffff';
     ctx.fillRect(menuX, menuY, menuW, menuH);
-    ctx.strokeStyle = '#60a5fa';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(menuX, menuY, menuW, menuH);
 
-    // Menu header
-    ctx.fillStyle = '#3b82f6';
-    ctx.fillRect(menuX, menuY, menuW, 24);
+    // Blue left sidebar (user section) - XP style gradient
+    const sidebarW = 50;
+    const sidebarGradient = ctx.createLinearGradient(menuX, menuY, menuX + sidebarW, menuY);
+    sidebarGradient.addColorStop(0, '#1257af');
+    sidebarGradient.addColorStop(1, '#4a95e0');
+    ctx.fillStyle = sidebarGradient;
+    ctx.fillRect(menuX, menuY, sidebarW, menuH - 34);
+
+    // User avatar circle
     ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 11px Arial';
-    ctx.textAlign = 'left';
-    ctx.fillText('Focus Desktop', menuX + 8, menuY + 16);
+    ctx.beginPath();
+    ctx.arc(menuX + sidebarW / 2, menuY + 30, 16, 0, Math.PI * 2);
+    ctx.fill();
 
-    // Shutdown button
-    const shutdownY = menuY + menuH - 30;
-    const cursorOverShutdown = laptopCursorState.x >= menuX + 10 &&
-                               laptopCursorState.x <= menuX + menuW - 10 &&
+    // User icon (simple person silhouette)
+    ctx.fillStyle = '#1257af';
+    ctx.beginPath();
+    ctx.arc(menuX + sidebarW / 2, menuY + 26, 6, 0, Math.PI * 2); // Head
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(menuX + sidebarW / 2, menuY + 40, 10, 7, 0, Math.PI, 0); // Body
+    ctx.fill();
+
+    // Username text rotated vertically on sidebar
+    ctx.save();
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 10px Tahoma, Arial';
+    ctx.translate(menuX + sidebarW / 2 + 3, menuY + 60);
+    ctx.rotate(Math.PI / 2);
+    ctx.textAlign = 'left';
+    ctx.fillText('User', 0, 0);
+    ctx.restore();
+
+    // Blue header at top
+    const headerGradient = ctx.createLinearGradient(menuX + sidebarW, menuY, menuX + menuW, menuY);
+    headerGradient.addColorStop(0, '#1257af');
+    headerGradient.addColorStop(1, '#5aade0');
+    ctx.fillStyle = headerGradient;
+    ctx.fillRect(menuX + sidebarW, menuY, menuW - sidebarW, 28);
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 12px Tahoma, Arial';
+    ctx.textAlign = 'left';
+    ctx.fillText('Focus Desktop', menuX + sidebarW + 8, menuY + 18);
+
+    // Programs section - white area
+    ctx.fillStyle = '#333333';
+    ctx.font = '11px Tahoma, Arial';
+    ctx.textAlign = 'left';
+
+    // Sample programs list
+    const programs = ['📁 My Documents', '🖥️ My Computer', '⚙️ Control Panel'];
+    programs.forEach((prog, i) => {
+      const progY = menuY + 40 + i * 22;
+      const isHovered = laptopCursorState.x >= menuX + sidebarW + 5 &&
+                        laptopCursorState.x <= menuX + menuW - 5 &&
+                        laptopCursorState.y >= progY - 8 &&
+                        laptopCursorState.y <= progY + 14;
+
+      if (isHovered) {
+        ctx.fillStyle = '#316ac5';
+        ctx.fillRect(menuX + sidebarW + 2, progY - 8, menuW - sidebarW - 4, 22);
+        ctx.fillStyle = '#ffffff';
+      } else {
+        ctx.fillStyle = '#333333';
+      }
+      ctx.fillText(prog, menuX + sidebarW + 10, progY + 6);
+    });
+
+    // Orange bottom bar for shutdown - XP style
+    const bottomBarY = menuY + menuH - 34;
+    const bottomGradient = ctx.createLinearGradient(menuX, bottomBarY, menuX, menuY + menuH);
+    bottomGradient.addColorStop(0, '#ff9d00');
+    bottomGradient.addColorStop(0.5, '#e08600');
+    bottomGradient.addColorStop(1, '#cc7800');
+    ctx.fillStyle = bottomGradient;
+    ctx.fillRect(menuX, bottomBarY, menuW, 34);
+
+    // Shutdown button in orange bar
+    const shutdownX = menuX + menuW - 90;
+    const shutdownY = bottomBarY + 7;
+    const cursorOverShutdown = laptopCursorState.x >= shutdownX &&
+                               laptopCursorState.x <= shutdownX + 80 &&
                                laptopCursorState.y >= shutdownY &&
-                               laptopCursorState.y <= shutdownY + 24;
+                               laptopCursorState.y <= shutdownY + 20;
 
-    ctx.fillStyle = cursorOverShutdown ? 'rgba(239, 68, 68, 0.8)' : 'rgba(239, 68, 68, 0.5)';
-    ctx.fillRect(menuX + 10, shutdownY, menuW - 20, 24);
-    ctx.strokeStyle = cursorOverShutdown ? '#f87171' : '#ef4444';
-    ctx.strokeRect(menuX + 10, shutdownY, menuW - 20, 24);
+    if (cursorOverShutdown) {
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+      ctx.fillRect(shutdownX - 5, shutdownY - 2, 90, 24);
+    }
 
-    // Power icon
+    // Power icon (red circle with line)
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(shutdownX + 8, shutdownY + 10, 6, 0.3 * Math.PI, 2.7 * Math.PI);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(shutdownX + 8, shutdownY + 4);
+    ctx.lineTo(shutdownX + 8, shutdownY + 10);
+    ctx.stroke();
+
     ctx.fillStyle = '#ffffff';
-    ctx.beginPath();
-    ctx.arc(menuX + 26, shutdownY + 12, 7, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(menuX + 26, shutdownY + 5);
-    ctx.lineTo(menuX + 26, shutdownY + 12);
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    ctx.lineWidth = 1;
-
-    ctx.font = '11px Arial';
+    ctx.font = '10px Tahoma, Arial';
     ctx.textAlign = 'left';
-    ctx.fillText('Shut Down', menuX + 42, shutdownY + 16);
+    ctx.fillText('Turn Off', shutdownX + 20, shutdownY + 14);
+
+    // Menu border
+    ctx.strokeStyle = '#1257af';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(menuX, menuY, menuW, menuH);
   }
 
   const now = new Date();
