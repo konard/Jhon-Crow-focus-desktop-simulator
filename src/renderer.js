@@ -3163,20 +3163,22 @@ function setupEventListeners() {
 
       // Page navigation (only ArrowLeft/ArrowRight, not in reading mode)
       if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-        // Check if we're examining a book or have a book modal open
+        // Check if we're examining a book/magazine or have a book/magazine modal open
         let bookObject = null;
-        if (examineState.active && examineState.object && examineState.object.userData.type === 'books') {
+        if (examineState.active && examineState.object &&
+            (examineState.object.userData.type === 'books' || examineState.object.userData.type === 'magazine')) {
           bookObject = examineState.object;
-        } else if (interactionObject && interactionObject.userData.type === 'books') {
+        } else if (interactionObject &&
+            (interactionObject.userData.type === 'books' || interactionObject.userData.type === 'magazine')) {
           bookObject = interactionObject;
         } else {
-          // Also check if crosshair is aimed at a book (raycast from center of screen)
+          // Also check if crosshair is aimed at a book/magazine (raycast from center of screen)
           const centerMouse = new THREE.Vector2(0, 0);
           raycaster.setFromCamera(centerMouse, camera);
           const intersects = raycaster.intersectObjects(deskObjects, true);
           for (const hit of intersects) {
             const obj = getParentDeskObject(hit.object);
-            if (obj && obj.userData.type === 'books' && obj.userData.isOpen) {
+            if (obj && (obj.userData.type === 'books' || obj.userData.type === 'magazine') && obj.userData.isOpen) {
               bookObject = obj;
               break;
             }
@@ -3189,12 +3191,20 @@ function setupEventListeners() {
           const totalPages = bookObject.userData.totalPages || 10;
           if (e.key === 'ArrowLeft' && bookObject.userData.currentPage > 0) {
             // Previous page with animation
-            animatePageTurn(bookObject, -1);
+            if (bookObject.userData.type === 'magazine') {
+              animateMagazinePageTurn(bookObject, -1);
+            } else {
+              animatePageTurn(bookObject, -1);
+            }
           } else if (e.key === 'ArrowRight' && bookObject.userData.currentPage < totalPages - 1) {
             // Next page with animation
             // Ensure totalPages is set for the animation
             if (!bookObject.userData.totalPages) bookObject.userData.totalPages = 10;
-            animatePageTurn(bookObject, 1);
+            if (bookObject.userData.type === 'magazine') {
+              animateMagazinePageTurn(bookObject, 1);
+            } else {
+              animatePageTurn(bookObject, 1);
+            }
           }
         }
       }
@@ -3533,13 +3543,13 @@ function onMouseDown(event) {
       }
 
       if (deskObjects.includes(object)) {
-        // For books, check if user is holding for reading mode
-        if (object.userData.type === 'books') {
+        // For books and magazines, check if user is holding for reading mode
+        if (object.userData.type === 'books' || object.userData.type === 'magazine') {
           bookReadingState.middleMouseDownTime = Date.now();
           bookReadingState.book = object;
           bookReadingState.holdTimeout = setTimeout(() => {
-            // If book is open, enter reading mode after holding for 300ms
-            // If book is closed, a hold does nothing extra (will just toggle on quick release)
+            // If book/magazine is open, enter reading mode after holding for 300ms
+            // If book/magazine is closed, a hold does nothing extra (will just toggle on quick release)
             if (object.userData.isOpen) {
               enterBookReadingMode(object);
               bookReadingState.holdTimeout = null; // Mark as already handled
@@ -4004,14 +4014,18 @@ function onMouseUp(event) {
       return;
     }
 
-    // If user releases before the hold timeout fired, it's a quick click - toggle book
+    // If user releases before the hold timeout fired, it's a quick click - toggle book/magazine
     if (bookReadingState.holdTimeout) {
       clearTimeout(bookReadingState.holdTimeout);
       bookReadingState.holdTimeout = null;
 
-      // Quick click on book - toggle open/close
+      // Quick click on book/magazine - toggle open/close
       if (bookReadingState.book) {
-        toggleBookOpen(bookReadingState.book);
+        if (bookReadingState.book.userData.type === 'magazine') {
+          toggleMagazineOpen(bookReadingState.book);
+        } else {
+          toggleBookOpen(bookReadingState.book);
+        }
         bookReadingState.book = null;
       }
     }
@@ -4377,8 +4391,8 @@ function onMouseWheel(event) {
       // Scale object (preserving proportions) with Shift+scroll
       const scaleDelta = event.deltaY > 0 ? 0.95 : 1.05;
       const minScale = 0.3;
-      // Books can be scaled larger for reading
-      const maxScale = object.userData.type === 'books' ? 5.0 : 3.0;
+      // Books and magazines can be scaled larger for reading
+      const maxScale = (object.userData.type === 'books' || object.userData.type === 'magazine') ? 5.0 : 3.0;
 
       const oldScale = object.scale.x;
       const newScale = oldScale * scaleDelta;
@@ -4444,8 +4458,8 @@ function onMouseWheel(event) {
         // Scale object (preserving proportions)
         const scaleDelta = event.deltaY > 0 ? 0.95 : 1.05;
         const minScale = 0.3;
-        // Books can be scaled larger for reading
-        const maxScale = object.userData.type === 'books' ? 5.0 : 3.0;
+        // Books and magazines can be scaled larger for reading
+        const maxScale = (object.userData.type === 'books' || object.userData.type === 'magazine') ? 5.0 : 3.0;
 
         const oldScale = object.scale.x;
         const newScale = oldScale * scaleDelta;
@@ -5838,7 +5852,7 @@ function enterExamineMode(object) {
   if (object.userData.type === 'pen') {
     examineDistance = 1.2; // Bring pen much closer
     yOffset = -0.2; // Lower position so cursor can reach
-  } else if (object.userData.type === 'books') {
+  } else if (object.userData.type === 'books' || object.userData.type === 'magazine') {
     examineDistance = 1.5;
   }
 
@@ -11426,6 +11440,15 @@ function animate() {
       if (!obj.userData.lastLoadingAnimUpdate || Date.now() - obj.userData.lastLoadingAnimUpdate > 500) {
         obj.userData.lastLoadingAnimUpdate = Date.now();
         updateBookPages(obj);
+      }
+    }
+
+    // Magazine loading animation - update every 500ms
+    if (obj.userData.type === 'magazine' && obj.userData.isLoadingPdf && obj.userData.isOpen) {
+      // Track last update time for animation
+      if (!obj.userData.lastLoadingAnimUpdate || Date.now() - obj.userData.lastLoadingAnimUpdate > 500) {
+        obj.userData.lastLoadingAnimUpdate = Date.now();
+        updateMagazinePages(obj);
       }
     }
   });
