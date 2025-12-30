@@ -2168,11 +2168,13 @@ function updateObjectColor(object, colorType, colorValue) {
       // Preserve PDF document and data for content display after style change
       typeSpecificData.pdfDocument = object.userData.pdfDocument;
       typeSpecificData.pdfDataUrl = object.userData.pdfDataUrl;
+      typeSpecificData.pdfDataDirty = object.userData.pdfDataDirty; // Preserve dirty flag
       typeSpecificData.pdfResolution = object.userData.pdfResolution;
       typeSpecificData.renderedPages = object.userData.renderedPages;
       typeSpecificData.pageTextures = object.userData.pageTextures;
       // Preserve cover image data
       typeSpecificData.coverImageDataUrl = object.userData.coverImageDataUrl;
+      typeSpecificData.coverImageDirty = object.userData.coverImageDirty; // Preserve dirty flag
       typeSpecificData.coverFitMode = object.userData.coverFitMode;
       typeSpecificData.firstPageAsCover = object.userData.firstPageAsCover;
       break;
@@ -5126,8 +5128,17 @@ function setupBookCustomizationHandlers(object) {
     if (clearBtn) {
       clearBtn.addEventListener('click', () => {
         object.userData.pdfPath = null;
+        object.userData.pdfDataUrl = null;
+        object.userData.pdfDataDirty = false; // No PDF = nothing to save
+        object.userData.pdfDocument = null;
         object.userData.totalPages = 0;
         object.userData.currentPage = 0;
+        object.userData.renderedPages = {};
+        object.userData.pageTextures = {};
+        // Delete the separate PDF data file
+        window.electronAPI.saveObjectData(object.userData.id, 'pdf', null);
+        // Update book thickness (reset to minimum)
+        updateBookThickness(object);
         saveState();
         // Update the customization panel
         updateCustomizationPanel(object);
@@ -5168,6 +5179,7 @@ function setupBookCustomizationHandlers(object) {
     const applyCoverImage = (dataUrl) => {
       // Store the data URL first
       object.userData.coverImageDataUrl = dataUrl;
+      object.userData.coverImageDirty = true; // Mark as dirty so it gets saved
       // Apply with current fit mode
       const fitMode = object.userData.coverFitMode || 'contain';
       applyCoverImageWithFit(object, dataUrl, fitMode);
@@ -5246,7 +5258,10 @@ function setupBookCustomizationHandlers(object) {
           }
         }
         object.userData.coverImageDataUrl = null;
+        object.userData.coverImageDirty = false; // No cover = nothing to save
         object.userData.originalCoverMaterial = null;
+        // Delete the separate cover image data file
+        window.electronAPI.saveObjectData(object.userData.id, 'cover', null);
         // Also clear the first page as cover flag
         object.userData.firstPageAsCover = false;
         // Clear cached pages and textures to force re-render without offset
@@ -6933,6 +6948,7 @@ async function loadPDFToBook(book, file) {
       const base64Reader = new FileReader();
       base64Reader.onload = () => {
         book.userData.pdfDataUrl = base64Reader.result;
+        book.userData.pdfDataDirty = true; // Mark as dirty so it gets saved
         saveState();
       };
       base64Reader.readAsDataURL(file);
@@ -9364,13 +9380,23 @@ async function saveStateImmediate() {
           data.titleColor = obj.userData.titleColor;
           data.pdfPath = obj.userData.pdfPath;
           data.pdfResolution = obj.userData.pdfResolution;
-          // Save PDF data URL for persistence across reloads
+          // PDF and cover data are stored separately to avoid lag during position saves
+          // Only store reference flags here, actual data is saved separately
           if (obj.userData.pdfDataUrl) {
-            data.pdfDataUrl = obj.userData.pdfDataUrl;
+            data.hasPdfData = true;
+            // Save PDF data separately if dirty
+            if (obj.userData.pdfDataDirty) {
+              window.electronAPI.saveObjectData(obj.userData.id, 'pdf', obj.userData.pdfDataUrl);
+              obj.userData.pdfDataDirty = false;
+            }
           }
-          // Save cover image data URL
           if (obj.userData.coverImageDataUrl) {
-            data.coverImageDataUrl = obj.userData.coverImageDataUrl;
+            data.hasCoverImage = true;
+            // Save cover image data separately if dirty
+            if (obj.userData.coverImageDirty) {
+              window.electronAPI.saveObjectData(obj.userData.id, 'cover', obj.userData.coverImageDataUrl);
+              obj.userData.coverImageDirty = false;
+            }
           }
           // Save cover fit mode
           if (obj.userData.coverFitMode) {
@@ -9526,64 +9552,94 @@ async function loadState() {
                 }
                 break;
               case 'books':
-                if (objData.bookTitle) obj.userData.bookTitle = objData.bookTitle;
+                // Use hasOwnProperty to preserve empty titles (don't fallback to 'My Book')
+                if (objData.hasOwnProperty('bookTitle')) obj.userData.bookTitle = objData.bookTitle;
                 if (objData.titleColor) obj.userData.titleColor = objData.titleColor;
                 if (objData.pdfPath) obj.userData.pdfPath = objData.pdfPath;
                 if (objData.pdfResolution) obj.userData.pdfResolution = objData.pdfResolution;
                 if (objData.currentPage !== undefined) obj.userData.currentPage = objData.currentPage;
                 // Regenerate title texture with saved title (uses userData.titleColor internally)
                 // Also resize geometry for multi-line titles
-                if (objData.bookTitle && obj.userData.createTitleTexture) {
+                // Handle empty titles - hide the coverTitle element
+                if (objData.hasOwnProperty('bookTitle') && obj.userData.createTitleTexture) {
                   const title = objData.bookTitle || '';
-                  const lines = title.split('\n');
+                  const hasTitle = title.trim().length > 0;
 
-                  // Calculate canvas and geometry height based on line count
-                  const baseHeight = 116;
-                  const lineAddition = 60;
-                  const lineCount = Math.max(1, lines.length);
-                  const canvasHeight = baseHeight + (lineCount - 1) * lineAddition;
-
-                  // Calculate geometry height
-                  const baseGeoHeight = 0.08;
-                  const geoHeight = baseGeoHeight * (canvasHeight / baseHeight);
-
-                  const newCoverTexture = obj.userData.createTitleTexture(
-                    objData.bookTitle, 320, canvasHeight, 64
-                  );
-                  // Update the cover mesh with the new texture and geometry
                   obj.traverse(child => {
                     if (child.name === 'coverTitle') {
-                      // Update geometry for multi-line
-                      const newGeometry = new THREE.PlaneGeometry(0.22, geoHeight);
-                      child.geometry.dispose();
-                      child.geometry = newGeometry;
-                      child.position.y = 0.041 + (lineCount - 1) * 0.01;
+                      // Set visibility based on whether title is empty
+                      child.visible = hasTitle;
 
-                      child.material.map = newCoverTexture;
-                      child.material.needsUpdate = true;
+                      // Only update texture if title is visible
+                      if (hasTitle) {
+                        const lines = title.split('\n');
+                        // Calculate canvas and geometry height based on line count
+                        const baseHeight = 116;
+                        const lineAddition = 60;
+                        const lineCount = Math.max(1, lines.length);
+                        const canvasHeight = baseHeight + (lineCount - 1) * lineAddition;
+
+                        // Calculate geometry height
+                        const baseGeoHeight = 0.08;
+                        const geoHeight = baseGeoHeight * (canvasHeight / baseHeight);
+
+                        const newCoverTexture = obj.userData.createTitleTexture(
+                          title, 320, canvasHeight, 64
+                        );
+                        // Update geometry for multi-line
+                        const newGeometry = new THREE.PlaneGeometry(0.22, geoHeight);
+                        child.geometry.dispose();
+                        child.geometry = newGeometry;
+                        child.position.y = 0.041 + (lineCount - 1) * 0.01;
+
+                        child.material.map = newCoverTexture;
+                        child.material.needsUpdate = true;
+                      }
                     }
                   });
                 }
-                // Restore PDF from data URL if available
-                if (objData.pdfDataUrl) {
-                  obj.userData.pdfDataUrl = objData.pdfDataUrl;
-                  // Set loading flag so UI shows loading indicator while PDF loads
-                  obj.userData.isLoadingPdf = true;
-                  loadPDFFromDataUrl(obj, objData.pdfDataUrl);
-                }
-                // Restore cover fit mode
+                // Restore cover fit mode first (needed before loading cover)
                 if (objData.coverFitMode) {
                   obj.userData.coverFitMode = objData.coverFitMode;
-                }
-                // Restore cover image if available (with fit mode)
-                if (objData.coverImageDataUrl) {
-                  obj.userData.coverImageDataUrl = objData.coverImageDataUrl;
-                  const fitMode = obj.userData.coverFitMode || 'contain';
-                  applyCoverImageWithFit(obj, objData.coverImageDataUrl, fitMode);
                 }
                 // Restore first page as cover flag
                 if (objData.firstPageAsCover) {
                   obj.userData.firstPageAsCover = true;
+                }
+                // Load PDF data from separate storage if flagged
+                if (objData.hasPdfData) {
+                  obj.userData.isLoadingPdf = true;
+                  window.electronAPI.loadObjectData(obj.userData.id, 'pdf').then(result => {
+                    if (result.success && result.data) {
+                      obj.userData.pdfDataUrl = result.data;
+                      loadPDFFromDataUrl(obj, result.data);
+                    } else {
+                      obj.userData.isLoadingPdf = false;
+                    }
+                  });
+                }
+                // Load cover image from separate storage if flagged
+                if (objData.hasCoverImage) {
+                  window.electronAPI.loadObjectData(obj.userData.id, 'cover').then(result => {
+                    if (result.success && result.data) {
+                      obj.userData.coverImageDataUrl = result.data;
+                      const fitMode = obj.userData.coverFitMode || 'contain';
+                      applyCoverImageWithFit(obj, result.data, fitMode);
+                    }
+                  });
+                }
+                // Legacy support: load from inline data if present (for old saves)
+                if (objData.pdfDataUrl) {
+                  obj.userData.pdfDataUrl = objData.pdfDataUrl;
+                  obj.userData.pdfDataDirty = true; // Mark dirty to migrate to new storage
+                  obj.userData.isLoadingPdf = true;
+                  loadPDFFromDataUrl(obj, objData.pdfDataUrl);
+                }
+                if (objData.coverImageDataUrl) {
+                  obj.userData.coverImageDataUrl = objData.coverImageDataUrl;
+                  obj.userData.coverImageDirty = true; // Mark dirty to migrate to new storage
+                  const fitMode = obj.userData.coverFitMode || 'contain';
+                  applyCoverImageWithFit(obj, objData.coverImageDataUrl, fitMode);
                 }
                 break;
               case 'coffee':
