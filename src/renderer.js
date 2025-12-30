@@ -137,10 +137,10 @@ let cameraLookState = {
   pitch: DEFAULT_CAMERA_ANGLES.pitch, // Vertical rotation - looking down at desk surface
   minPitch: -1.15,   // Looking down limit - extended by ~8 degrees to reach near table edge
   maxPitch: 0.25,    // Looking up limit - extended by ~8 degrees
-  // Yaw limits centered around the default yaw (±0.97 radians ~ ±55 degrees)
-  // Extended by ~10 degrees (0.17 rad) on each side to reach desk corners
-  minYaw: DEFAULT_CAMERA_ANGLES.yaw - 0.97,  // Limit horizontal rotation to left
-  maxYaw: DEFAULT_CAMERA_ANGLES.yaw + 0.97   // Limit horizontal rotation to right
+  // Yaw limits centered around the default yaw (±1.22 radians ~ ±70 degrees)
+  // Extended to reach all desk corners
+  minYaw: DEFAULT_CAMERA_ANGLES.yaw - 1.22,  // Limit horizontal rotation to left
+  maxYaw: DEFAULT_CAMERA_ANGLES.yaw + 1.22   // Limit horizontal rotation to right
 };
 
 // Physics state for objects
@@ -868,9 +868,10 @@ function createCoffeeMug(options = {}) {
   group.userData = {
     type: 'coffee',
     name: 'Coffee Mug',
-    interactive: true, // Now interactive for drink customization
+    interactive: false, // Settings only in edit mode (RMB), no middle-click interaction
     drinkType: 'coffee',
     liquidLevel: 1.0, // 0-1, how full the mug is
+    isHot: true, // Shows steam if true
     wavePhase: 0,
     mainColor: options.mainColor || '#ffffff',
     accentColor: options.accentColor || '#3b82f6'
@@ -895,10 +896,11 @@ function createCoffeeMug(options = {}) {
     roughness: 0.4
   });
   const handle = new THREE.Mesh(handleGeometry, handleMaterial);
-  // Rotate to make handle vertical (arc in XY plane) and pointing outward
-  handle.rotation.x = Math.PI / 2;  // Stand the arc up vertically
-  handle.rotation.z = -Math.PI / 2; // Rotate so arc curves outward from mug
-  handle.position.set(0.12, 0.1, 0); // Attach to side of mug (mug radius is ~0.11)
+  // Rotate to make handle vertical: first rotate the flat torus to stand up (Y axis),
+  // then position it on the side of the mug
+  handle.rotation.y = Math.PI / 2;  // Rotate so the arc plane faces outward (X direction)
+  handle.rotation.z = Math.PI / 2;  // Stand the arc up vertically
+  handle.position.set(0.18, 0.1, 0); // Attach to side of mug (offset from center)
   handle.castShadow = true;
   group.add(handle);
 
@@ -1146,7 +1148,7 @@ function createPhotoFrame(options = {}) {
   group.userData = {
     type: 'photo-frame',
     name: 'Photo Frame',
-    interactive: true, // Now interactive for photo upload
+    interactive: false, // Settings only in edit mode (RMB)
     photoTexture: null,
     mainColor: options.mainColor || '#92400e',
     accentColor: options.accentColor || '#60a5fa'
@@ -1173,11 +1175,11 @@ function createPhotoFrame(options = {}) {
   photo.position.z = 0.016;
   group.add(photo);
 
-  // Stand
-  const standGeometry = new THREE.BoxGeometry(0.04, 0.3, 0.15);
+  // Stand - positioned further back to avoid clipping through frame front
+  const standGeometry = new THREE.BoxGeometry(0.04, 0.25, 0.08);
   const stand = new THREE.Mesh(standGeometry, frameMaterial);
-  stand.position.set(0, -0.1, -0.08);
-  stand.rotation.x = Math.PI / 6;
+  stand.position.set(0, -0.12, -0.12);
+  stand.rotation.x = Math.PI / 5; // Slightly steeper angle
   stand.castShadow = true;
   group.add(stand);
 
@@ -1446,9 +1448,10 @@ function createMetronome(options = {}) {
   group.userData = {
     type: 'metronome',
     name: 'Metronome',
-    interactive: true,
+    interactive: false, // Settings only in edit mode (RMB), middle-click just toggles
     isRunning: false,
     bpm: 120,
+    tickSound: false, // Tick sound off by default
     pendulumAngle: 0,
     pendulumDirection: 1,
     mainColor: options.mainColor || '#8b4513',
@@ -2420,34 +2423,56 @@ function onMouseMove(event) {
   updateMousePosition(event);
 
   if (isDragging && selectedObject) {
-    raycaster.setFromCamera(mouse, camera);
-    const intersects = raycaster.intersectObject(dragPlane);
+    // Clamp to desk bounds
+    const halfWidth = CONFIG.desk.width / 2 - 0.2;
+    const halfDepth = CONFIG.desk.depth / 2 - 0.2;
 
-    if (intersects.length > 0) {
-      const point = intersects[0].point;
+    let newX, newZ;
 
-      // Clamp to desk bounds
-      const halfWidth = CONFIG.desk.width / 2 - 0.2;
-      const halfDepth = CONFIG.desk.depth / 2 - 0.2;
+    if (pointerLockState.isLocked) {
+      // When pointer is locked, use relative movement to drag objects
+      // Convert mouse movement to world-space movement on the desk plane
+      const dragSensitivity = 0.008;
 
-      const newX = Math.max(-halfWidth, Math.min(halfWidth, point.x));
-      const newZ = Math.max(-halfDepth, Math.min(halfDepth, point.z));
+      // Calculate movement based on camera orientation
+      const cameraYaw = cameraLookState.yaw;
+      const cosYaw = Math.cos(cameraYaw);
+      const sinYaw = Math.sin(cameraYaw);
 
-      // Track drag velocity for physics collision force scaling
-      const now = Date.now();
-      if (physicsState.lastDragPosition && physicsState.lastDragTime > 0) {
-        const dt = (now - physicsState.lastDragTime) / 1000; // Convert to seconds
-        if (dt > 0 && dt < 0.1) { // Ignore stale data
-          physicsState.dragVelocity.x = (newX - physicsState.lastDragPosition.x) / dt;
-          physicsState.dragVelocity.z = (newZ - physicsState.lastDragPosition.z) / dt;
-        }
+      // Transform mouse delta to world coordinates (rotate by camera yaw)
+      const worldDeltaX = (deltaX * cosYaw + deltaY * sinYaw) * dragSensitivity;
+      const worldDeltaZ = (-deltaX * sinYaw + deltaY * cosYaw) * dragSensitivity;
+
+      newX = Math.max(-halfWidth, Math.min(halfWidth, selectedObject.position.x + worldDeltaX));
+      newZ = Math.max(-halfDepth, Math.min(halfDepth, selectedObject.position.z + worldDeltaZ));
+    } else {
+      // When pointer is not locked, use raycasting for absolute positioning
+      raycaster.setFromCamera(mouse, camera);
+      const intersects = raycaster.intersectObject(dragPlane);
+
+      if (intersects.length > 0) {
+        const point = intersects[0].point;
+        newX = Math.max(-halfWidth, Math.min(halfWidth, point.x));
+        newZ = Math.max(-halfDepth, Math.min(halfDepth, point.z));
+      } else {
+        return; // No valid position
       }
-      physicsState.lastDragPosition = { x: newX, z: newZ };
-      physicsState.lastDragTime = now;
-
-      selectedObject.position.x = newX;
-      selectedObject.position.z = newZ;
     }
+
+    // Track drag velocity for physics collision force scaling
+    const now = Date.now();
+    if (physicsState.lastDragPosition && physicsState.lastDragTime > 0) {
+      const dt = (now - physicsState.lastDragTime) / 1000; // Convert to seconds
+      if (dt > 0 && dt < 0.1) { // Ignore stale data
+        physicsState.dragVelocity.x = (newX - physicsState.lastDragPosition.x) / dt;
+        physicsState.dragVelocity.z = (newZ - physicsState.lastDragPosition.z) / dt;
+      }
+    }
+    physicsState.lastDragPosition = { x: newX, z: newZ };
+    physicsState.lastDragTime = now;
+
+    selectedObject.position.x = newX;
+    selectedObject.position.z = newZ;
   }
 
   // Update tooltip
@@ -2488,9 +2513,15 @@ function onMouseUp(event) {
   }
 
   if (isDragging && selectedObject) {
+    // Check if dropping on top of another object (stacking)
+    const dropY = calculateStackingY(selectedObject);
+
+    // Update the original Y to the new stacking position
+    selectedObject.userData.originalY = dropY;
+
     // Drop the object
     selectedObject.userData.isLifted = false;
-    selectedObject.userData.targetY = selectedObject.userData.originalY;
+    selectedObject.userData.targetY = dropY;
     isDragging = false;
 
     // Reset drag velocity tracking
@@ -2502,17 +2533,65 @@ function onMouseUp(event) {
   }
 }
 
+// Calculate Y position for stacking - checks if the object is above another and returns appropriate Y
+function calculateStackingY(droppedObject) {
+  const droppedRadius = getObjectBounds(droppedObject);
+  const droppedPhysics = getObjectPhysics(droppedObject);
+  const baseY = getDeskSurfaceY();
+
+  // Default Y position (on desk surface)
+  let stackY = baseY + (OBJECT_PHYSICS[droppedObject.userData.type]?.baseOffset || 0);
+
+  // Check all other objects to see if we're above any of them
+  deskObjects.forEach(obj => {
+    if (obj === droppedObject) return;
+    if (obj.userData.isFallen) return;
+
+    const otherRadius = getObjectBounds(obj);
+    const otherPhysics = getObjectPhysics(obj);
+
+    // Calculate horizontal distance
+    const dx = droppedObject.position.x - obj.position.x;
+    const dz = droppedObject.position.z - obj.position.z;
+    const horizontalDist = Math.sqrt(dx * dx + dz * dz);
+
+    // Check if objects overlap horizontally (with some tolerance for stacking)
+    const overlapThreshold = (droppedRadius + otherRadius) * 0.6;
+
+    if (horizontalDist < overlapThreshold) {
+      // Calculate the top surface of the object below
+      const objTopY = obj.position.y + otherPhysics.height;
+
+      // If dropping would place us above this object's top, consider stacking
+      if (objTopY > stackY - 0.1) {
+        // Weight check: only stack if the dropped object is lighter or similar weight
+        const weightRatio = droppedPhysics.weight / otherPhysics.weight;
+
+        // Allow stacking if weight ratio is reasonable (dropped is lighter or similar)
+        if (weightRatio < 1.5) {
+          // Stack on top of this object
+          const droppedBaseOffset = OBJECT_PHYSICS[droppedObject.userData.type]?.baseOffset || 0;
+          stackY = Math.max(stackY, objTopY + droppedBaseOffset);
+        }
+      }
+    }
+  });
+
+  return stackY;
+}
+
 function onMouseWheel(event) {
   updateMousePosition(event);
 
-  // If in examine mode: scroll UP exits examine mode, scroll DOWN with Shift scales
+  // If in examine mode: scroll UP exits examine mode (only when LMB is held), scroll DOWN with Shift scales
   if (examineState.active && examineState.object) {
     event.preventDefault();
 
     const object = examineState.object;
 
-    // Scroll UP (deltaY < 0) exits examine mode and returns object to its place
-    if (event.deltaY < 0 && !event.shiftKey) {
+    // Scroll UP (deltaY < 0) exits examine mode only when LMB is held on the examined object
+    // This prevents accidental exits
+    if (event.deltaY < 0 && !event.shiftKey && event.buttons === 1) {
       exitExamineMode();
       return;
     }
@@ -2644,6 +2723,11 @@ function onRightClick(event) {
     if (deskObjects.includes(object)) {
       selectedObject = object;
 
+      // Exit pointer lock to show cursor for panel interaction
+      if (pointerLockState.isLocked) {
+        document.exitPointerLock();
+      }
+
       // Update customization panel
       document.getElementById('customization-title').textContent = `Customize: ${object.userData.name}`;
       document.getElementById('customization-panel').classList.add('open');
@@ -2660,11 +2744,270 @@ function onRightClick(event) {
         const accentSwatch = document.querySelector(`#accent-colors .color-swatch[data-color="${object.userData.accentColor}"]`);
         if (accentSwatch) accentSwatch.classList.add('selected');
       }
+
+      // Add object-specific customization options
+      updateCustomizationPanel(object);
     }
   } else {
     document.getElementById('customization-panel').classList.remove('open');
     selectedObject = null;
+    // Clear dynamic options
+    const dynamicOptions = document.getElementById('object-specific-options');
+    if (dynamicOptions) dynamicOptions.innerHTML = '';
   }
+}
+
+// Update customization panel with object-specific options
+function updateCustomizationPanel(object) {
+  // Get or create the dynamic options container
+  let dynamicOptions = document.getElementById('object-specific-options');
+  if (!dynamicOptions) {
+    // Create container after accent colors but before delete button
+    dynamicOptions = document.createElement('div');
+    dynamicOptions.id = 'object-specific-options';
+    const deleteBtn = document.getElementById('delete-object');
+    deleteBtn.parentNode.insertBefore(dynamicOptions, deleteBtn);
+  }
+
+  // Clear existing content
+  dynamicOptions.innerHTML = '';
+
+  // Add object-specific options based on type
+  switch (object.userData.type) {
+    case 'coffee':
+      dynamicOptions.innerHTML = `
+        <div class="customization-group" style="margin-top: 20px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.1);">
+          <label>Drink Type</label>
+          <div class="color-picker-container" id="drink-types" style="flex-direction: column; gap: 8px;">
+            ${Object.entries(DRINK_COLORS).map(([key, drink]) => `
+              <button class="drink-option ${object.userData.drinkType === key ? 'selected' : ''}"
+                      data-drink="${key}"
+                      style="width: 100%; padding: 8px 12px; background: ${object.userData.drinkType === key ? 'rgba(79, 70, 229, 0.3)' : 'rgba(255,255,255,0.1)'}; border: 1px solid ${object.userData.drinkType === key ? 'rgba(79, 70, 229, 0.6)' : 'rgba(255,255,255,0.2)'}; border-radius: 8px; color: #fff; cursor: pointer; text-align: left; display: flex; align-items: center; gap: 10px;">
+                <span style="width: 20px; height: 20px; border-radius: 4px; background: #${drink.color.toString(16).padStart(6, '0')};"></span>
+                ${drink.name}
+              </button>
+            `).join('')}
+          </div>
+        </div>
+        <div class="customization-group" style="margin-top: 15px;">
+          <label>Fill Level: <span id="fill-level-display">${Math.round(object.userData.liquidLevel * 100)}%</span></label>
+          <input type="range" id="fill-level" min="0" max="100" value="${object.userData.liquidLevel * 100}"
+                 style="width: 100%; margin-top: 8px; accent-color: #4f46e5;">
+        </div>
+        <div class="customization-group" style="margin-top: 15px;">
+          <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+            <input type="checkbox" id="hot-drink" ${object.userData.isHot ? 'checked' : ''} style="width: 18px; height: 18px; accent-color: #4f46e5;">
+            Hot drink (shows steam)
+          </label>
+        </div>
+      `;
+      setupMugCustomizationHandlers(object);
+      break;
+
+    case 'metronome':
+      dynamicOptions.innerHTML = `
+        <div class="customization-group" style="margin-top: 20px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.1);">
+          <label>BPM: <span id="bpm-display">${object.userData.bpm}</span></label>
+          <input type="range" id="metronome-bpm-edit" min="40" max="220" value="${object.userData.bpm}"
+                 style="width: 100%; margin-top: 8px; accent-color: #4f46e5;">
+        </div>
+        <div class="customization-group" style="margin-top: 15px;">
+          <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+            <input type="checkbox" id="tick-sound" ${object.userData.tickSound ? 'checked' : ''} style="width: 18px; height: 18px; accent-color: #4f46e5;">
+            Enable tick sound
+          </label>
+        </div>
+      `;
+      setupMetronomeCustomizationHandlers(object);
+      break;
+
+    case 'photo-frame':
+      dynamicOptions.innerHTML = `
+        <div class="customization-group" style="margin-top: 20px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.1);">
+          <label>Photo</label>
+          <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 8px;">
+            <label style="display: inline-block; padding: 10px 15px; background: rgba(79, 70, 229, 0.3); border: 1px solid rgba(79, 70, 229, 0.5); border-radius: 8px; color: #fff; cursor: pointer; text-align: center;">
+              Choose Photo
+              <input type="file" id="photo-upload-edit" accept="image/*" style="display: none;">
+            </label>
+            <button id="photo-clear-edit" style="padding: 10px 15px; background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 8px; color: #ef4444; cursor: pointer;">
+              Clear Photo
+            </button>
+          </div>
+        </div>
+      `;
+      setupPhotoFrameCustomizationHandlers(object);
+      break;
+  }
+}
+
+function setupMugCustomizationHandlers(object) {
+  // Drink type buttons
+  setTimeout(() => {
+    const drinkButtons = document.querySelectorAll('#drink-types button');
+    drinkButtons.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const drinkType = btn.dataset.drink;
+        object.userData.drinkType = drinkType;
+
+        // Update liquid color
+        const liquid = object.getObjectByName('liquid');
+        if (liquid && DRINK_COLORS[drinkType]) {
+          liquid.material.color.set(DRINK_COLORS[drinkType].color);
+          liquid.material.needsUpdate = true;
+        }
+
+        // Update button styles
+        drinkButtons.forEach(b => {
+          b.style.background = b.dataset.drink === drinkType ? 'rgba(79, 70, 229, 0.3)' : 'rgba(255,255,255,0.1)';
+          b.style.borderColor = b.dataset.drink === drinkType ? 'rgba(79, 70, 229, 0.6)' : 'rgba(255,255,255,0.2)';
+        });
+
+        saveState();
+      });
+    });
+
+    // Fill level slider
+    const fillSlider = document.getElementById('fill-level');
+    const fillDisplay = document.getElementById('fill-level-display');
+    if (fillSlider) {
+      fillSlider.addEventListener('input', (e) => {
+        const level = parseInt(e.target.value) / 100;
+        object.userData.liquidLevel = level;
+        fillDisplay.textContent = `${Math.round(level * 100)}%`;
+
+        // Update liquid visibility
+        const liquid = object.getObjectByName('liquid');
+        if (liquid) {
+          liquid.visible = level > 0.05;
+          liquid.scale.y = Math.max(0.1, level);
+          liquid.position.y = 0.08 + level * 0.1;
+        }
+
+        saveState();
+      });
+    }
+
+    // Hot drink checkbox
+    const hotCheckbox = document.getElementById('hot-drink');
+    if (hotCheckbox) {
+      hotCheckbox.addEventListener('change', (e) => {
+        object.userData.isHot = e.target.checked;
+        updateSteamVisibility(object);
+        saveState();
+      });
+    }
+  }, 0);
+}
+
+function setupMetronomeCustomizationHandlers(object) {
+  setTimeout(() => {
+    const bpmSlider = document.getElementById('metronome-bpm-edit');
+    const bpmDisplay = document.getElementById('bpm-display');
+    if (bpmSlider) {
+      bpmSlider.addEventListener('input', (e) => {
+        object.userData.bpm = parseInt(e.target.value);
+        bpmDisplay.textContent = e.target.value;
+        saveState();
+      });
+    }
+
+    const tickCheckbox = document.getElementById('tick-sound');
+    if (tickCheckbox) {
+      tickCheckbox.addEventListener('change', (e) => {
+        object.userData.tickSound = e.target.checked;
+        saveState();
+      });
+    }
+  }, 0);
+}
+
+function setupPhotoFrameCustomizationHandlers(object) {
+  setTimeout(() => {
+    const uploadInput = document.getElementById('photo-upload-edit');
+    const clearBtn = document.getElementById('photo-clear-edit');
+
+    if (uploadInput) {
+      uploadInput.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (file && file.type.startsWith('image/')) {
+          const reader = new FileReader();
+          reader.onload = (event) => {
+            const imageUrl = event.target.result;
+            const textureLoader = new THREE.TextureLoader();
+            textureLoader.load(imageUrl, (texture) => {
+              const photoSurface = object.getObjectByName('photoSurface');
+              if (photoSurface) {
+                photoSurface.material.map = texture;
+                photoSurface.material.color.set(0xffffff);
+                photoSurface.material.needsUpdate = true;
+                object.userData.photoTexture = texture;
+              }
+            });
+          };
+          reader.readAsDataURL(file);
+        }
+      });
+    }
+
+    if (clearBtn) {
+      clearBtn.addEventListener('click', () => {
+        const photoSurface = object.getObjectByName('photoSurface');
+        if (photoSurface) {
+          if (object.userData.photoTexture) {
+            object.userData.photoTexture.dispose();
+            object.userData.photoTexture = null;
+          }
+          photoSurface.material.map = null;
+          photoSurface.material.color.set(new THREE.Color(object.userData.accentColor));
+          photoSurface.material.needsUpdate = true;
+        }
+      });
+    }
+  }, 0);
+}
+
+// Update steam visibility for mug
+function updateSteamVisibility(object) {
+  let steam = object.getObjectByName('steam');
+
+  if (object.userData.isHot && object.userData.liquidLevel > 0.1) {
+    if (!steam) {
+      // Create steam particles
+      steam = createSteamEffect();
+      steam.name = 'steam';
+      object.add(steam);
+    }
+    steam.visible = true;
+  } else if (steam) {
+    steam.visible = false;
+  }
+}
+
+// Create simple steam effect
+function createSteamEffect() {
+  const steamGroup = new THREE.Group();
+
+  // Create multiple steam wisps
+  for (let i = 0; i < 3; i++) {
+    const wispGeometry = new THREE.SphereGeometry(0.02, 8, 8);
+    const wispMaterial = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.3,
+      roughness: 1
+    });
+    const wisp = new THREE.Mesh(wispGeometry, wispMaterial);
+    wisp.position.set(
+      (Math.random() - 0.5) * 0.05,
+      0.22 + i * 0.03,
+      (Math.random() - 0.5) * 0.05
+    );
+    wisp.scale.set(1 + i * 0.2, 1.5 + i * 0.3, 1 + i * 0.2);
+    steamGroup.add(wisp);
+  }
+
+  return steamGroup;
 }
 
 // Double-click examine removed - use drag+scroll down to enter, scroll up to exit
@@ -3693,6 +4036,37 @@ function animate() {
 
         pendulum.rotation.z = obj.userData.pendulumAngle;
       }
+    }
+
+    // Animate steam for hot mug
+    if (obj.userData.type === 'coffee' && obj.userData.isHot && obj.userData.liquidLevel > 0.1) {
+      // Create steam if not exists
+      let steam = obj.getObjectByName('steam');
+      if (!steam) {
+        steam = createSteamEffect();
+        steam.name = 'steam';
+        obj.add(steam);
+      }
+      steam.visible = true;
+
+      // Animate steam wisps floating up
+      steam.children.forEach((wisp, i) => {
+        wisp.position.y += 0.002;
+        wisp.material.opacity -= 0.002;
+
+        // Reset when wisp floats too high or fades out
+        if (wisp.position.y > 0.4 || wisp.material.opacity <= 0) {
+          wisp.position.set(
+            (Math.random() - 0.5) * 0.05,
+            0.22,
+            (Math.random() - 0.5) * 0.05
+          );
+          wisp.material.opacity = 0.3;
+        }
+      });
+    } else if (obj.userData.type === 'coffee') {
+      const steam = obj.getObjectByName('steam');
+      if (steam) steam.visible = false;
     }
   });
 
