@@ -167,6 +167,17 @@ let laptopStartMenuState = {
   targetLaptop: null
 };
 
+// Laptop icon drag state
+let laptopIconDragState = {
+  isDragging: false,
+  iconName: null,
+  startX: 0,
+  startY: 0,
+  offsetX: 0,
+  offsetY: 0,
+  targetLaptop: null
+};
+
 // ============================================================================
 // UTILITY FUNCTIONS
 // ============================================================================
@@ -3119,22 +3130,34 @@ function onMouseDown(event) {
               }
             }
 
-            // Obsidian icon position
-            const iconX = 60 / 512;
-            const iconY = 1 - (60 / 384);
-            const iconRadius = 40 / 512;
+            // Get icon position from saved positions or default
+            const iconPos = object.userData.iconPositions || { obsidian: { x: 60, y: 60 } };
+            const iconPosX = iconPos.obsidian?.x || 60;
+            const iconPosY = iconPos.obsidian?.y || 60;
+            const iconSize = 48;
 
-            const dx = clickX - iconX;
-            const dy = clickY - iconY;
+            // Check if click is on the icon (using canvas coordinates)
+            const dx = canvasX - iconPosX;
+            const dy = canvasY - iconPosY;
             const dist = Math.sqrt(dx * dx + dy * dy);
+            const onIcon = dist < iconSize;
 
             if (timeDiff < laptopDoubleClickState.doubleClickThreshold) {
               // Double-click detected - open editor if on icon
-              if (dist < iconRadius * 2) {
+              if (onIcon) {
                 openMarkdownEditor(object);
                 laptopDoubleClickState.lastClickTime = 0;
                 return;
               }
+            } else if (onIcon) {
+              // Single click on icon - start dragging
+              laptopIconDragState.isDragging = true;
+              laptopIconDragState.iconName = 'obsidian';
+              laptopIconDragState.startX = canvasX;
+              laptopIconDragState.startY = canvasY;
+              laptopIconDragState.offsetX = canvasX - iconPosX;
+              laptopIconDragState.offsetY = canvasY - iconPosY;
+              laptopIconDragState.targetLaptop = object;
             }
           }
           laptopDoubleClickState.lastClickTime = now;
@@ -3215,6 +3238,29 @@ function onMouseMove(event) {
     // Clamp cursor to screen bounds (512x384 canvas)
     laptopCursorState.x = Math.max(0, Math.min(512, laptopCursorState.x));
     laptopCursorState.y = Math.max(0, Math.min(384, laptopCursorState.y));
+
+    // Handle icon dragging
+    if (laptopIconDragState.isDragging && laptopIconDragState.targetLaptop === zoomedLaptop) {
+      // Update icon position based on cursor
+      if (!zoomedLaptop.userData.iconPositions) {
+        zoomedLaptop.userData.iconPositions = { obsidian: { x: 60, y: 60 } };
+      }
+      const iconName = laptopIconDragState.iconName;
+      if (iconName && zoomedLaptop.userData.iconPositions[iconName]) {
+        // Calculate new position
+        let newX = laptopCursorState.x - laptopIconDragState.offsetX;
+        let newY = laptopCursorState.y - laptopIconDragState.offsetY;
+
+        // Clamp to screen bounds (with padding for icon size)
+        const iconSize = 48;
+        const taskbarHeight = 30;
+        newX = Math.max(iconSize / 2, Math.min(512 - iconSize / 2, newX));
+        newY = Math.max(iconSize / 2 + 20, Math.min(384 - taskbarHeight - iconSize / 2, newY));
+
+        zoomedLaptop.userData.iconPositions[iconName].x = newX;
+        zoomedLaptop.userData.iconPositions[iconName].y = newY;
+      }
+    }
 
     // Update the desktop texture to show cursor
     updateLaptopDesktopWithCursor(zoomedLaptop);
@@ -3346,6 +3392,21 @@ function onMouseMove(event) {
 }
 
 function onMouseUp(event) {
+  // Handle laptop icon drag end (before other handlers)
+  if (laptopIconDragState.isDragging) {
+    // End icon dragging and save state
+    const laptop = laptopIconDragState.targetLaptop;
+    laptopIconDragState.isDragging = false;
+    laptopIconDragState.iconName = null;
+    laptopIconDragState.targetLaptop = null;
+
+    // Save the new icon position to state
+    if (laptop) {
+      saveState();
+    }
+    return;
+  }
+
   // Middle mouse button - handle book quick click or cancel hold timeout
   if (event.button === 1) {
     // If in reading mode, don't exit on release - stay in mode until user clicks elsewhere
@@ -6306,6 +6367,10 @@ async function updateBookPagesWithPDF(book) {
     if (canvas) {
       const texture = new THREE.CanvasTexture(canvas);
       texture.anisotropy = 16;
+      // Use LinearFilter for crisp PDF rendering (no mipmap blur)
+      texture.minFilter = THREE.LinearFilter;
+      texture.magFilter = THREE.LinearFilter;
+      texture.generateMipmaps = false;
       leftPage.material.map = texture;
       leftPage.material.needsUpdate = true;
     }
@@ -6328,6 +6393,10 @@ async function updateBookPagesWithPDF(book) {
     if (canvas) {
       const texture = new THREE.CanvasTexture(canvas);
       texture.anisotropy = 16;
+      // Use LinearFilter for crisp PDF rendering (no mipmap blur)
+      texture.minFilter = THREE.LinearFilter;
+      texture.magFilter = THREE.LinearFilter;
+      texture.generateMipmaps = false;
       rightPage.material.map = texture;
       rightPage.material.needsUpdate = true;
     }
@@ -6423,17 +6492,56 @@ function updateBookPages(book) {
     // Show loading animation if PDF is loading
     let contentLines;
     if (isLoading) {
+      // Draw animated gradient loading indicator
+      const time = Date.now() / 1000;
+      const gradientWidth = canvasWidth - margin * 2;
+      const gradientHeight = 120;
+      const gradientY = 480;
+
+      // Create animated gradient that sweeps left to right
+      const offset = (Math.sin(time * 2) + 1) / 2; // 0 to 1 oscillation
+      const shimmerPos = offset * gradientWidth;
+
+      // Base loading bar background
+      ctx.fillStyle = '#e0e0e0';
+      ctx.fillRect(margin, gradientY, gradientWidth, gradientHeight);
+
+      // Animated shimmer gradient
+      const shimmerGradient = ctx.createLinearGradient(
+        margin + shimmerPos - 200, gradientY,
+        margin + shimmerPos + 200, gradientY
+      );
+      shimmerGradient.addColorStop(0, 'rgba(200, 200, 220, 0)');
+      shimmerGradient.addColorStop(0.3, 'rgba(180, 180, 220, 0.6)');
+      shimmerGradient.addColorStop(0.5, 'rgba(160, 160, 240, 0.9)');
+      shimmerGradient.addColorStop(0.7, 'rgba(180, 180, 220, 0.6)');
+      shimmerGradient.addColorStop(1, 'rgba(200, 200, 220, 0)');
+      ctx.fillStyle = shimmerGradient;
+      ctx.fillRect(margin, gradientY, gradientWidth, gradientHeight);
+
+      // Border around loading bar
+      ctx.strokeStyle = '#bbb';
+      ctx.lineWidth = 4;
+      ctx.strokeRect(margin, gradientY, gradientWidth, gradientHeight);
+
       // Get animated ellipsis based on time
       const dots = '.'.repeat((Math.floor(Date.now() / 500) % 3) + 1);
       contentLines = [
         'Loading PDF' + dots,
         '',
-        pdfFileName ? `📄 ${pdfFileName}` : '',
-        '',
-        'Please wait while the',
-        'PDF content is being',
-        'rendered...'
-      ].filter(line => line !== '' || contentLines);
+        pdfFileName ? `📄 ${pdfFileName}` : ''
+      ].filter(line => line !== '');
+
+      // Draw loading text above gradient
+      ctx.font = '96px Georgia, serif';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#333';
+      contentLines.forEach((line, i) => {
+        ctx.fillText(line, canvasWidth / 2, 380 + i * lineHeight);
+      });
+
+      // Skip normal content drawing since we drew custom loading
+      contentLines = [];
     } else if (pdfFileName) {
       contentLines = [
         `📄 ${pdfFileName}`,
@@ -6914,11 +7022,13 @@ function animatePageTurn(book, direction) {
     if (progress < 1) {
       requestAnimationFrame(animate);
     } else {
-      // Animation complete - update page and cleanup
-      book.userData.currentPage += direction;
-      updateBookPages(book);
+      // Animation complete - update page and cleanup immediately
       openGroup.remove(pivotGroup);
+      book.userData.currentPage += direction;
       book.userData.isTurningPage = false;
+
+      // Update pages synchronously
+      updateBookPages(book);
 
       // Update modal if open
       if (interactionObject === book) {
@@ -6928,6 +7038,25 @@ function animatePageTurn(book, direction) {
           setupBookHandlers(book);
         }
       }
+    }
+  }
+
+  // Pre-render upcoming pages while animation plays
+  if (book.userData.pdfDocument) {
+    const nextPage1 = (book.userData.currentPage + direction) * 2 + 1;
+    const nextPage2 = (book.userData.currentPage + direction) * 2 + 2;
+    const pdfDoc = book.userData.pdfDocument;
+
+    // Pre-render in background
+    if (nextPage1 > 0 && nextPage1 <= pdfDoc.numPages && !book.userData.renderedPages[nextPage1]) {
+      renderPDFPageToCanvas(pdfDoc, nextPage1, 2048, 2896).then(canvas => {
+        if (canvas) book.userData.renderedPages[nextPage1] = canvas;
+      });
+    }
+    if (nextPage2 > 0 && nextPage2 <= pdfDoc.numPages && !book.userData.renderedPages[nextPage2]) {
+      renderPDFPageToCanvas(pdfDoc, nextPage2, 2048, 2896).then(canvas => {
+        if (canvas) book.userData.renderedPages[nextPage2] = canvas;
+      });
     }
   }
 
@@ -7015,13 +7144,18 @@ function exitLaptopZoomMode(object) {
 
   object.userData.isZoomedIn = false;
 
-  // Reset cursor state
+  // Save cursor state for visual persistence on screen
+  object.userData.lastCursorX = laptopCursorState.x;
+  object.userData.lastCursorY = laptopCursorState.y;
+  object.userData.lastStartMenuOpen = laptopStartMenuState.isOpen && laptopStartMenuState.targetLaptop === object;
+
+  // Reset cursor interaction state but keep visuals
   laptopCursorState.visible = false;
   laptopCursorState.targetLaptop = null;
 
-  // Restore desktop texture without cursor
+  // Update desktop texture with persisted cursor and start menu
   if (object.userData.isOn && object.userData.screenState === 'desktop') {
-    updateLaptopDesktop(object);
+    updateLaptopDesktopWithPersistedState(object);
   }
 
   // Animate camera back to original position
@@ -7394,14 +7528,16 @@ function updateLaptopDesktopWithCursor(laptop) {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
   }
 
-  // Draw Obsidian icon
-  const iconX = 60;
-  const iconY = 60;
+  // Draw Obsidian icon (using saved position or default)
+  const iconPos = laptop.userData.iconPositions || { obsidian: { x: 60, y: 60 } };
+  const iconX = iconPos.obsidian?.x || 60;
+  const iconY = iconPos.obsidian?.y || 60;
   const iconSize = 48;
 
-  // Check if cursor is over icon for hover effect
-  const cursorOverIcon = Math.abs(laptopCursorState.x - iconX) < iconSize / 2 + 10 &&
-                         Math.abs(laptopCursorState.y - iconY) < iconSize / 2 + 20;
+  // Check if cursor is over icon for hover effect (or if dragging)
+  const cursorOverIcon = (Math.abs(laptopCursorState.x - iconX) < iconSize / 2 + 10 &&
+                         Math.abs(laptopCursorState.y - iconY) < iconSize / 2 + 20) ||
+                         (laptopIconDragState.isDragging && laptopIconDragState.iconName === 'obsidian');
 
   // Icon background (highlight if hovered)
   ctx.beginPath();
@@ -7770,6 +7906,299 @@ function updateLaptopDesktopWithCursor(laptop) {
   laptop.userData.desktopTexture = texture;
 }
 
+// Update laptop desktop with persisted cursor/start menu when exiting zoom mode
+function updateLaptopDesktopWithPersistedState(laptop) {
+  const screen = laptop.getObjectByName('screen');
+  if (!screen) return;
+
+  const hasNote = laptop.userData.editorContent && laptop.userData.editorContent.trim().length > 0;
+
+  // Create base desktop texture content
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 384;
+  const ctx = canvas.getContext('2d');
+
+  // Draw wallpaper or gradient background
+  if (laptop.userData.wallpaperImage) {
+    ctx.drawImage(laptop.userData.wallpaperImage, 0, 0, canvas.width, canvas.height);
+  } else if (laptop.userData.wallpaperDataUrl) {
+    const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+    gradient.addColorStop(0, '#005a5a');
+    gradient.addColorStop(1, '#003838');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  } else {
+    const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+    gradient.addColorStop(0, '#005a5a');
+    gradient.addColorStop(1, '#003838');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
+
+  // Get icon position (support draggable in future)
+  const iconPos = laptop.userData.iconPositions || { obsidian: { x: 60, y: 60 } };
+  const iconX = iconPos.obsidian?.x || 60;
+  const iconY = iconPos.obsidian?.y || 60;
+  const iconSize = 48;
+
+  // Icon background
+  ctx.beginPath();
+  ctx.arc(iconX, iconY, iconSize / 2 + 4, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+  ctx.fill();
+
+  // Obsidian gem shape
+  ctx.beginPath();
+  ctx.moveTo(iconX, iconY - iconSize / 2);
+  ctx.lineTo(iconX + iconSize / 2, iconY);
+  ctx.lineTo(iconX, iconY + iconSize / 2);
+  ctx.lineTo(iconX - iconSize / 2, iconY);
+  ctx.closePath();
+
+  const gemGradient = ctx.createLinearGradient(iconX - iconSize / 2, iconY - iconSize / 2, iconX + iconSize / 2, iconY + iconSize / 2);
+  gemGradient.addColorStop(0, '#9b59b6');
+  gemGradient.addColorStop(0.5, '#8b5cf6');
+  gemGradient.addColorStop(1, '#6366f1');
+  ctx.fillStyle = gemGradient;
+  ctx.fill();
+
+  // Gem highlight
+  ctx.beginPath();
+  ctx.moveTo(iconX, iconY - iconSize / 2);
+  ctx.lineTo(iconX + iconSize / 4, iconY - iconSize / 8);
+  ctx.lineTo(iconX, iconY);
+  ctx.lineTo(iconX - iconSize / 4, iconY - iconSize / 8);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+  ctx.fill();
+
+  // Icon label
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 11px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('Obsidian', iconX, iconY + iconSize / 2 + 16);
+
+  // Draw editor window if note exists
+  if (hasNote && laptop.userData.editorContent) {
+    const winWidth = 380;
+    const winHeight = 260;
+    const winX = (canvas.width - winWidth) / 2;
+    const winY = 30;
+
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+    ctx.fillRect(winX + 4, winY + 4, winWidth, winHeight);
+    ctx.fillStyle = '#1e1e2e';
+    ctx.fillRect(winX, winY, winWidth, winHeight);
+    ctx.strokeStyle = '#45475a';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(winX, winY, winWidth, winHeight);
+
+    // Title bar
+    const titleBarHeight = 26;
+    const titleGradient = ctx.createLinearGradient(winX, winY, winX, winY + titleBarHeight);
+    titleGradient.addColorStop(0, '#313244');
+    titleGradient.addColorStop(1, '#1e1e2e');
+    ctx.fillStyle = titleGradient;
+    ctx.fillRect(winX, winY, winWidth, titleBarHeight);
+
+    ctx.fillStyle = '#cdd6f4';
+    ctx.font = 'bold 11px Arial';
+    ctx.textAlign = 'left';
+    ctx.fillText('◆ ' + (laptop.userData.editorFileName || 'notes.md'), winX + 10, winY + 17);
+
+    // Window control buttons
+    const btnY = winY + 7;
+    const btnSize = 12;
+    ctx.fillStyle = '#f38ba8';
+    ctx.beginPath();
+    ctx.arc(winX + winWidth - 18, btnY + 6, btnSize / 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#fab387';
+    ctx.beginPath();
+    ctx.arc(winX + winWidth - 36, btnY + 6, btnSize / 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#a6e3a1';
+    ctx.beginPath();
+    ctx.arc(winX + winWidth - 54, btnY + 6, btnSize / 2, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Draw note content
+    const lines = laptop.userData.editorContent.split('\n').slice(0, 16);
+    ctx.fillStyle = '#cdd6f4';
+    ctx.font = '10px monospace';
+    ctx.textAlign = 'left';
+    lines.forEach((line, i) => {
+      const displayLine = line.length > 50 ? line.substring(0, 50) + '...' : line;
+      ctx.fillText(displayLine, winX + 10, winY + titleBarHeight + 20 + i * 14);
+    });
+  }
+
+  // Draw Windows XP taskbar
+  const taskbarHeight = 30;
+  const taskbarY = canvas.height - taskbarHeight;
+
+  // Blue gradient taskbar
+  const taskbarGradient = ctx.createLinearGradient(0, taskbarY, 0, canvas.height);
+  taskbarGradient.addColorStop(0, '#245EDC');
+  taskbarGradient.addColorStop(0.3, '#3C7CFC');
+  taskbarGradient.addColorStop(0.5, '#4C94FF');
+  taskbarGradient.addColorStop(1, '#245EDC');
+  ctx.fillStyle = taskbarGradient;
+  ctx.fillRect(0, taskbarY, canvas.width, taskbarHeight);
+
+  // Start button
+  const startBtnW = 70;
+  const startBtnH = taskbarHeight - 4;
+  const startBtnX = 2;
+  const startBtnY = taskbarY + 2;
+
+  // Start button gradient
+  const startGradient = ctx.createLinearGradient(startBtnX, startBtnY, startBtnX, startBtnY + startBtnH);
+  startGradient.addColorStop(0, '#3A9B34');
+  startGradient.addColorStop(0.4, '#2D7D27');
+  startGradient.addColorStop(1, '#1A5C15');
+  ctx.fillStyle = startGradient;
+
+  ctx.beginPath();
+  ctx.moveTo(startBtnX + 10, startBtnY);
+  ctx.lineTo(startBtnX + startBtnW - 4, startBtnY);
+  ctx.arcTo(startBtnX + startBtnW, startBtnY, startBtnX + startBtnW, startBtnY + startBtnH, 4);
+  ctx.arcTo(startBtnX + startBtnW, startBtnY + startBtnH, startBtnX, startBtnY + startBtnH, 4);
+  ctx.lineTo(startBtnX + 10, startBtnY + startBtnH);
+  ctx.arcTo(startBtnX, startBtnY + startBtnH, startBtnX, startBtnY, 10);
+  ctx.arcTo(startBtnX, startBtnY, startBtnX + 10, startBtnY, 10);
+  ctx.closePath();
+  ctx.fill();
+
+  // Start text
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold italic 13px Arial';
+  ctx.textAlign = 'left';
+  ctx.fillText('start', startBtnX + 22, startBtnY + 18);
+
+  // Clock
+  const now = new Date();
+  const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  ctx.font = '11px Arial';
+  ctx.textAlign = 'right';
+  ctx.fillText(timeStr, canvas.width - 10, canvas.height - 10);
+
+  // Draw persisted start menu if it was open
+  if (laptop.userData.lastStartMenuOpen) {
+    drawStartMenu(ctx, canvas, laptop);
+  }
+
+  // Draw persisted cursor position
+  if (laptop.userData.lastCursorX !== undefined) {
+    const cx = laptop.userData.lastCursorX;
+    const cy = laptop.userData.lastCursorY;
+
+    // Arrow cursor shape
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx, cy + 16);
+    ctx.lineTo(cx + 4, cy + 12);
+    ctx.lineTo(cx + 7, cy + 19);
+    ctx.lineTo(cx + 10, cy + 18);
+    ctx.lineTo(cx + 7, cy + 11);
+    ctx.lineTo(cx + 12, cy + 11);
+    ctx.closePath();
+
+    // Cursor shadow
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+    ctx.save();
+    ctx.translate(1, 1);
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx, cy + 16);
+    ctx.lineTo(cx + 4, cy + 12);
+    ctx.lineTo(cx + 7, cy + 19);
+    ctx.lineTo(cx + 10, cy + 18);
+    ctx.lineTo(cx + 7, cy + 11);
+    ctx.lineTo(cx + 12, cy + 11);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+
+    // Cursor body
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.needsUpdate = true;
+
+  screen.material.map = texture;
+  screen.material.needsUpdate = true;
+  laptop.userData.desktopTexture = texture;
+}
+
+// Helper function to draw start menu on canvas
+function drawStartMenu(ctx, canvas, laptop) {
+  const taskbarHeight = 30;
+  const menuW = 240;
+  const menuH = 320;
+  const menuX = 2;
+  const menuY = canvas.height - taskbarHeight - menuH;
+
+  // Menu shadow
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+  ctx.fillRect(menuX + 4, menuY + 4, menuW, menuH);
+
+  // Menu background
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(menuX, menuY, menuW, menuH);
+
+  // Blue sidebar
+  const sidebarW = 54;
+  const sidebarGradient = ctx.createLinearGradient(menuX, menuY, menuX + sidebarW, menuY);
+  sidebarGradient.addColorStop(0, '#245EDC');
+  sidebarGradient.addColorStop(1, '#1948AA');
+  ctx.fillStyle = sidebarGradient;
+  ctx.fillRect(menuX, menuY, sidebarW, menuH);
+
+  // User area at top
+  ctx.fillStyle = '#245EDC';
+  ctx.fillRect(menuX + sidebarW, menuY, menuW - sidebarW, 50);
+
+  // User icon
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath();
+  ctx.arc(menuX + sidebarW + 25, menuY + 25, 15, 0, Math.PI * 2);
+  ctx.fill();
+
+  // User name
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 12px Arial';
+  ctx.textAlign = 'left';
+  ctx.fillText('User', menuX + sidebarW + 48, menuY + 30);
+
+  // Separator line
+  ctx.strokeStyle = '#e0e0e0';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(menuX + sidebarW, menuY + 50);
+  ctx.lineTo(menuX + menuW, menuY + 50);
+  ctx.stroke();
+
+  // Orange shutdown bar at bottom
+  const shutdownH = 32;
+  const shutdownGradient = ctx.createLinearGradient(menuX, menuY + menuH - shutdownH, menuX, menuY + menuH);
+  shutdownGradient.addColorStop(0, '#FF9933');
+  shutdownGradient.addColorStop(1, '#CC6600');
+  ctx.fillStyle = shutdownGradient;
+  ctx.fillRect(menuX + sidebarW, menuY + menuH - shutdownH, menuW - sidebarW, shutdownH);
+
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 11px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('Turn Off Computer', menuX + sidebarW + (menuW - sidebarW) / 2, menuY + menuH - 10);
+}
+
 function toggleLaptopPower(object) {
   if (object.userData.isBooting) return; // Don't toggle while booting
 
@@ -7972,6 +8401,9 @@ async function saveState() {
           break;
         case 'laptop':
           data.bootTime = obj.userData.bootTime;
+          // Save power state
+          data.isOn = obj.userData.isOn || false;
+          data.screenState = obj.userData.screenState || 'off';
           if (obj.userData.bootScreenDataUrl) {
             data.bootScreenDataUrl = obj.userData.bootScreenDataUrl;
           }
@@ -7997,6 +8429,14 @@ async function saveState() {
           // Save wallpaper
           if (obj.userData.wallpaperDataUrl) {
             data.wallpaperDataUrl = obj.userData.wallpaperDataUrl;
+          }
+          // Save start menu state and cursor position for visual persistence
+          data.startMenuOpen = laptopStartMenuState.isOpen && laptopStartMenuState.targetLaptop === obj;
+          data.cursorX = laptopCursorState.x;
+          data.cursorY = laptopCursorState.y;
+          // Save icon positions if they exist
+          if (obj.userData.iconPositions) {
+            data.iconPositions = obj.userData.iconPositions;
           }
           break;
         case 'pen':
@@ -8189,6 +8629,27 @@ async function loadState() {
                     }
                   };
                   wallpaperImg.src = objData.wallpaperDataUrl;
+                }
+                // Restore icon positions for desktop
+                if (objData.iconPositions) {
+                  obj.userData.iconPositions = objData.iconPositions;
+                }
+                // Restore power state (laptop was on/off when saved)
+                if (objData.isOn) {
+                  obj.userData.isOn = true;
+                  obj.userData.isBooting = false;
+                  obj.userData.screenState = objData.screenState || 'desktop';
+                  // Update screen to show desktop
+                  const screen = obj.getObjectByName('screen');
+                  if (screen) {
+                    updateLaptopDesktop(obj);
+                  }
+                  // Update power LED to show on state
+                  const powerLed = obj.getObjectByName('powerLed');
+                  if (powerLed) {
+                    powerLed.material.emissive.setHex(0x00ff00);
+                    powerLed.material.emissiveIntensity = 0.8;
+                  }
                 }
                 break;
               case 'pen':
