@@ -161,6 +161,17 @@ let laptopCursorState = {
 };
 
 // ============================================================================
+// UTILITY FUNCTIONS
+// ============================================================================
+// Helper function to find the parent desk object from a child mesh
+function getParentDeskObject(obj) {
+  while (obj.parent && !deskObjects.includes(obj)) {
+    obj = obj.parent;
+  }
+  return deskObjects.includes(obj) ? obj : null;
+}
+
+// ============================================================================
 // CAMERA CONTROL POINTS (Starting position and direction)
 // ============================================================================
 // These control points define the default camera state at startup.
@@ -991,23 +1002,33 @@ function createCoffeeMug(options = {}) {
 
   // Handle - torus arc that sticks out from the mug side (vertical "D" shape)
   // TorusGeometry(radius, tube, radialSegments, tubularSegments, arc)
-  // radius=0.05 makes a smaller arc, tube=0.015 is the thickness
+  // Mug handle: A proper "D" or "C" shaped handle attached on two points to the mug body
+  // radius=0.05 is the major radius (arc radius), tube=0.015 is the thickness
+  // Using full Math.PI for half a torus (semicircle shape)
   const handleGeometry = new THREE.TorusGeometry(0.05, 0.015, 8, 16, Math.PI);
   const handleMaterial = new THREE.MeshStandardMaterial({
     color: new THREE.Color(group.userData.mainColor),
     roughness: 0.4
   });
   const handle = new THREE.Mesh(handleGeometry, handleMaterial);
-  // The torus is flat in XY plane by default, arc opens upward (like a smile ∩)
-  // We want a vertical "D" shape handle that sticks out horizontally from the mug:
-  // - The "D" loop should be in a vertical plane (perpendicular to table)
-  // - The handle should stick out to the side (along Z axis)
-  // Default torus is in XY plane (vertical), which is correct for the "D" shape
-  // Rotate 90° around Y to orient the arc to stick out along Z axis
-  handle.rotation.y = Math.PI / 2;  // Rotate so handle sticks out along Z axis
-  // Position: mug outer radius ~0.12, handle arc radius 0.05
-  // Place handle center at mug edge + handle radius so both ends touch mug
-  handle.position.set(0, 0.1, 0.12 + 0.05); // Center at mug side (Z), plus handle radius offset
+  // The TorusGeometry creates a ring in the XY plane by default
+  // With arc=PI, we get a half-ring (semicircle):
+  // - Two ends at (-radius, 0, 0) and (+radius, 0, 0)
+  // - Arc bulges upward with peak at (0, radius, 0)
+  //
+  // For a mug handle we need:
+  // - The two attachment points at different heights on the mug (vertical separation)
+  // - The arc bulging outward horizontally (away from mug center)
+  //
+  // Rotation Z=PI/2 swaps X and Y:
+  // - End points become (0, -radius, 0) and (0, +radius, 0) - vertical separation!
+  // - Arc now bulges in +X direction
+  handle.rotation.z = Math.PI / 2;
+  // Now we have vertical handle with arc bulging in +X
+  // Position it on the +X side of the mug so arc extends outward
+  // Mug outer radius ~0.12 at rim level, handle arc radius 0.05
+  // Position so the handle center is on the mug surface, arc extends outward
+  handle.position.set(0.12, 0.1, 0); // On mug side (+X direction), centered at mug height
   handle.castShadow = true;
   group.add(handle);
 
@@ -1129,18 +1150,18 @@ function createLaptop(options = {}) {
   // Power button (in top right corner of keyboard area)
   // Keyboard is centered at Z=0.05, extends from X=-0.3 to X=0.3
   // Top edge of keyboard is at Z = 0.05 - 0.175 = -0.125
-  const powerBtnGeometry = new THREE.CylinderGeometry(0.012, 0.012, 0.005, 16);
+  // Make it a tall red cylinder for high visibility (user requested to see it)
+  const powerBtnGeometry = new THREE.CylinderGeometry(0.015, 0.015, 0.025, 16);
   const powerBtnMaterial = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(group.userData.powerButtonColor),
-    emissive: 0x000000,
-    emissiveIntensity: 0,
+    color: 0xcc2222, // Red color for visibility
+    emissive: 0x220000,
+    emissiveIntensity: 0.3,
     roughness: 0.3,
     metalness: 0.5
   });
   const powerButton = new THREE.Mesh(powerBtnGeometry, powerBtnMaterial);
-  powerButton.rotation.x = -Math.PI / 2;
-  // Position in top-right corner of keyboard area
-  powerButton.position.set(0.27, 0.032, -0.10);
+  // Position in top-right corner of keyboard area, standing upright
+  powerButton.position.set(0.27, 0.032 + 0.0125, -0.10); // Raise by half height
   powerButton.name = 'powerButton';
   group.add(powerButton);
 
@@ -1277,27 +1298,16 @@ function createPen(options = {}) {
     colorHex: colorHex
   };
 
-  // Create a sub-group for pen parts so we can pivot around the cap
-  // When dragging, we rotate this subgroup, keeping the cap anchored
+  // Create a sub-group for pen parts so we can pivot around the TIP (writing end)
+  // When dragging, we rotate this subgroup, keeping the tip anchored
+  // The cap (upper end when standing) swings freely
   const penBody = new THREE.Group();
   penBody.name = 'penBody';
 
-  // Cap position is the anchor point (will be at Y=0)
-  const capY = 0; // Cap at origin for pivot
+  // Tip position is the anchor point (will be at Y=0 in penBody local space)
+  const tipY = 0; // Tip at origin for pivot
 
-  // Pen body - offset from cap
-  const bodyGeometry = new THREE.CylinderGeometry(0.012, 0.012, 0.3, 8);
-  const bodyMaterial = new THREE.MeshStandardMaterial({
-    color: colorHex,
-    roughness: 0.4,
-    metalness: 0.2
-  });
-  const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
-  body.position.y = capY - 0.175; // Body center below cap
-  body.castShadow = true;
-  penBody.add(body);
-
-  // Pen tip (silver/metallic) - furthest from cap
+  // Pen tip (silver/metallic) - at anchor point
   const tipGeometry = new THREE.ConeGeometry(0.012, 0.04, 8);
   const tipMaterial = new THREE.MeshStandardMaterial({
     color: 0xc0c0c0,
@@ -1305,14 +1315,26 @@ function createPen(options = {}) {
     metalness: 0.8
   });
   const tip = new THREE.Mesh(tipGeometry, tipMaterial);
-  tip.position.y = capY - 0.345; // Tip at bottom
+  tip.position.y = tipY; // Tip at pivot point
   tip.rotation.x = Math.PI; // Point down
   penBody.add(tip);
 
-  // Pen cap - at anchor point
+  // Pen body - above tip (toward cap)
+  const bodyGeometry = new THREE.CylinderGeometry(0.012, 0.012, 0.3, 8);
+  const bodyMaterial = new THREE.MeshStandardMaterial({
+    color: colorHex,
+    roughness: 0.4,
+    metalness: 0.2
+  });
+  const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+  body.position.y = tipY + 0.04 + 0.15; // Body center above tip (tip height 0.04 + half body 0.15)
+  body.castShadow = true;
+  penBody.add(body);
+
+  // Pen cap - at top, furthest from anchor (will swing)
   const capGeometry = new THREE.CylinderGeometry(0.013, 0.013, 0.05, 8);
   const cap = new THREE.Mesh(capGeometry, bodyMaterial);
-  cap.position.y = capY; // Cap at pivot
+  cap.position.y = tipY + 0.04 + 0.3 + 0.025; // Cap center above body (tip 0.04 + body 0.3 + half cap 0.025)
   penBody.add(cap);
 
   // Clip on cap
@@ -1323,13 +1345,13 @@ function createPen(options = {}) {
     metalness: 0.8
   });
   const clip = new THREE.Mesh(clipGeometry, clipMaterial);
-  clip.position.set(0.014, capY - 0.005, 0);
+  clip.position.set(0.014, cap.position.y - 0.005, 0);
   penBody.add(clip);
 
   group.add(penBody);
 
   // Rotate pen to lie flat on the desk (along X axis)
-  // The pen lies with cap toward +X, tip toward -X
+  // The pen lies with tip toward -X, cap toward +X
   group.rotation.z = -Math.PI / 2;
   // Position so the pen sits on the desk surface
   // After rotation, the pen's radius determines the height above desk
@@ -3309,8 +3331,15 @@ function checkPenHolderInsertion(droppedObject) {
     return { inserted: false };
   }
 
-  const penX = droppedObject.position.x;
-  const penZ = droppedObject.position.z;
+  // Get the pen's tip position in world coordinates
+  // The tip is the anchor point (at local Y=0 in the penBody, after group rotation)
+  // When the pen is lying flat (rotation.z = -PI/2), the tip is offset in world X
+  const penWorldPos = new THREE.Vector3();
+  droppedObject.getWorldPosition(penWorldPos);
+
+  // The pen group's position is where the tip is (after our restructuring)
+  const penTipX = penWorldPos.x;
+  const penTipZ = penWorldPos.z;
 
   // Check all pen holders and empty mugs
   for (const obj of deskObjects) {
@@ -3322,19 +3351,24 @@ function checkPenHolderInsertion(droppedObject) {
 
     const holderX = obj.position.x;
     const holderZ = obj.position.z;
+    const holderY = obj.position.y;
 
-    // Calculate distance from pen to holder center
-    const dx = penX - holderX;
-    const dz = penZ - holderZ;
+    // Calculate distance from pen tip to holder center (XZ plane)
+    const dx = penTipX - holderX;
+    const dz = penTipZ - holderZ;
     const dist = Math.sqrt(dx * dx + dz * dz);
 
-    // Holder opening radius - very generous for easier insertion
-    // Pen holder cylinder outer radius is 0.12, expand to 0.3 for easy drop detection
-    // This creates a large target area around the holder
-    const openingRadius = isHolder ? 0.3 : 0.2;
+    // Holder opening radius - use actual holder dimensions
+    // Pen holder cylinder outer radius is 0.12, inner is slightly smaller
+    // For easier insertion, use 0.15 radius detection (within the holder opening)
+    const openingRadius = isHolder ? 0.15 : 0.12;
 
-    // If pen is within the holder opening (generous detection area)
-    if (dist < openingRadius) {
+    // Also check if pen is high enough (tip should be above holder opening)
+    const holderHeight = isHolder ? 0.2 : 0.2; // Approximate holder/mug height
+    const minY = holderY + holderHeight * 0.5; // Pen needs to be above the middle of holder
+
+    // If pen tip is within the holder opening and high enough
+    if (dist < openingRadius && penWorldPos.y > minY) {
       // Find an available slot position
       const slot = findAvailableHolderSlot(obj, droppedObject);
 
@@ -5886,36 +5920,197 @@ function setupBookHandlers(object) {
   }
 }
 
-function loadPDFToBook(book, file) {
-  // Create a simple text representation since we can't load actual PDF
-  // In a full implementation, you'd use pdf.js library
+async function loadPDFToBook(book, file) {
+  // Use PDF.js to load and render the PDF
   const reader = new FileReader();
-  reader.onload = () => {
-    // For now, just indicate PDF is loaded
-    book.userData.totalPages = 10; // Placeholder
-    book.userData.currentPage = 0;
 
-    // Automatically open the book to show the PDF content
-    if (!book.userData.isOpen) {
-      toggleBookOpen(book);
+  reader.onload = async () => {
+    try {
+      // Check if PDF.js is available
+      if (typeof pdfjsLib === 'undefined') {
+        console.warn('PDF.js library not loaded. Using placeholder.');
+        book.userData.totalPages = 10;
+        book.userData.currentPage = 0;
+        updateBookPages(book);
+        return;
+      }
+
+      // Load PDF document using PDF.js
+      const typedArray = new Uint8Array(reader.result);
+      const loadingTask = pdfjsLib.getDocument({ data: typedArray });
+
+      const pdfDoc = await loadingTask.promise;
+      console.log(`PDF loaded: ${pdfDoc.numPages} pages`);
+
+      // Store PDF document reference for later page rendering
+      book.userData.pdfDocument = pdfDoc;
+      book.userData.totalPages = pdfDoc.numPages;
+      book.userData.currentPage = 0;
+      book.userData.renderedPages = {}; // Cache for rendered page canvases
+
+      // Automatically open the book to show the PDF content
+      if (!book.userData.isOpen) {
+        toggleBookOpen(book);
+      }
+
+      // Update the page surfaces with actual PDF content
+      await updateBookPagesWithPDF(book);
+
+      // Refresh the modal to show the PDF content immediately
+      const content = document.getElementById('interaction-content');
+      if (content && interactionObject === book) {
+        content.innerHTML = getInteractionContent(book);
+        setupBookHandlers(book);
+      }
+
+      saveState();
+    } catch (error) {
+      console.error('Error loading PDF:', error);
+      book.userData.totalPages = 1;
+      book.userData.currentPage = 0;
+      updateBookPages(book);
     }
-
-    // Update the page surfaces with a "PDF loaded" texture
-    updateBookPages(book);
-
-    // Refresh the modal to show the PDF content immediately
-    const content = document.getElementById('interaction-content');
-    if (content && interactionObject === book) {
-      content.innerHTML = getInteractionContent(book);
-      setupBookHandlers(book);
-    }
-
-    saveState();
   };
+
   reader.readAsArrayBuffer(file);
 }
 
+// Render a PDF page to a canvas
+async function renderPDFPageToCanvas(pdfDoc, pageNum, canvasWidth, canvasHeight) {
+  try {
+    const page = await pdfDoc.getPage(pageNum);
+    const viewport = page.getViewport({ scale: 1.0 });
+
+    // Calculate scale to fit the canvas while maintaining aspect ratio
+    const scaleX = canvasWidth / viewport.width;
+    const scaleY = canvasHeight / viewport.height;
+    const scale = Math.min(scaleX, scaleY);
+
+    const scaledViewport = page.getViewport({ scale });
+
+    // Create canvas for rendering
+    const canvas = document.createElement('canvas');
+    canvas.width = canvasWidth;
+    canvas.height = canvasHeight;
+    const ctx = canvas.getContext('2d');
+
+    // Fill with white background
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Center the rendered PDF on the canvas
+    const offsetX = (canvas.width - scaledViewport.width) / 2;
+    const offsetY = (canvas.height - scaledViewport.height) / 2;
+
+    ctx.translate(offsetX, offsetY);
+
+    // Render PDF page to canvas
+    const renderContext = {
+      canvasContext: ctx,
+      viewport: scaledViewport
+    };
+
+    await page.render(renderContext).promise;
+
+    return canvas;
+  } catch (error) {
+    console.error(`Error rendering PDF page ${pageNum}:`, error);
+    return null;
+  }
+}
+
+// Update book pages with actual PDF content
+async function updateBookPagesWithPDF(book) {
+  const openGroup = book.getObjectByName('openBook');
+  if (!openGroup) return;
+
+  const leftPage = openGroup.getObjectByName('leftPageSurface');
+  const rightPage = openGroup.getObjectByName('rightPageSurface');
+
+  const pdfDoc = book.userData.pdfDocument;
+  if (!pdfDoc) {
+    // Fall back to placeholder if no PDF document
+    updateBookPages(book);
+    return;
+  }
+
+  const canvasWidth = 1024;
+  const canvasHeight = 1448;
+
+  // Render left page (current page)
+  const leftPageNum = book.userData.currentPage * 2 + 1; // 1-indexed
+  if (leftPage && leftPageNum <= pdfDoc.numPages) {
+    let canvas = book.userData.renderedPages[leftPageNum];
+    if (!canvas) {
+      canvas = await renderPDFPageToCanvas(pdfDoc, leftPageNum, canvasWidth, canvasHeight);
+      if (canvas) {
+        book.userData.renderedPages[leftPageNum] = canvas;
+      }
+    }
+
+    if (canvas) {
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.anisotropy = 16;
+      leftPage.material.map = texture;
+      leftPage.material.needsUpdate = true;
+    }
+  } else if (leftPage) {
+    // Show blank page if beyond PDF pages
+    createBlankPageTexture(leftPage, canvasWidth, canvasHeight, leftPageNum);
+  }
+
+  // Render right page (current page + 1)
+  const rightPageNum = book.userData.currentPage * 2 + 2; // 1-indexed
+  if (rightPage && rightPageNum <= pdfDoc.numPages) {
+    let canvas = book.userData.renderedPages[rightPageNum];
+    if (!canvas) {
+      canvas = await renderPDFPageToCanvas(pdfDoc, rightPageNum, canvasWidth, canvasHeight);
+      if (canvas) {
+        book.userData.renderedPages[rightPageNum] = canvas;
+      }
+    }
+
+    if (canvas) {
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.anisotropy = 16;
+      rightPage.material.map = texture;
+      rightPage.material.needsUpdate = true;
+    }
+  } else if (rightPage) {
+    // Show blank page if beyond PDF pages
+    createBlankPageTexture(rightPage, canvasWidth, canvasHeight, rightPageNum);
+  }
+}
+
+// Create a blank page texture for pages beyond PDF content
+function createBlankPageTexture(pageMesh, width, height, pageNum) {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+
+  ctx.fillStyle = '#fff8f0';
+  ctx.fillRect(0, 0, width, height);
+
+  // Page number at bottom
+  ctx.fillStyle = '#999';
+  ctx.font = '36px Georgia, serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(`Page ${pageNum}`, width / 2, height - 60);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.anisotropy = 16;
+  pageMesh.material.map = texture;
+  pageMesh.material.needsUpdate = true;
+}
+
 function updateBookPages(book) {
+  // If PDF document is loaded, use PDF.js rendering instead of placeholder
+  if (book.userData.pdfDocument) {
+    updateBookPagesWithPDF(book);
+    return;
+  }
+
   const openGroup = book.getObjectByName('openBook');
   if (!openGroup) return;
 
@@ -6604,11 +6799,11 @@ function enterBookReadingMode(book) {
   book.getWorldPosition(bookWorldPos);
 
   // Calculate target camera position - at comfortable reading height above the book
-  // Not too high, just enough to see the pages clearly
+  // Slightly higher for comfortable viewing, not too close to the book
   const targetCameraPos = new THREE.Vector3(
     bookWorldPos.x,
-    bookWorldPos.y + 0.35, // Comfortable reading height (not too high)
-    bookWorldPos.z + 0.35  // Closer to the book for reading
+    bookWorldPos.y + 0.55, // Higher position for comfortable reading (was 0.35)
+    bookWorldPos.z + 0.45  // Slightly further back for better overview
   );
 
   // Animate camera to reading position
@@ -7392,6 +7587,19 @@ async function loadState() {
                 if (objData.bookTitle) obj.userData.bookTitle = objData.bookTitle;
                 if (objData.titleColor) obj.userData.titleColor = objData.titleColor;
                 if (objData.pdfPath) obj.userData.pdfPath = objData.pdfPath;
+                // Regenerate title texture with saved title (uses userData.titleColor internally)
+                if (objData.bookTitle && obj.userData.createTitleTexture) {
+                  const newCoverTexture = obj.userData.createTitleTexture(
+                    objData.bookTitle, 320, 116, 64
+                  );
+                  // Update the cover mesh with the new texture
+                  obj.traverse(child => {
+                    if (child.name === 'coverTitle') {
+                      child.material.map = newCoverTexture;
+                      child.material.needsUpdate = true;
+                    }
+                  });
+                }
                 break;
               case 'coffee':
                 if (objData.drinkType) {
