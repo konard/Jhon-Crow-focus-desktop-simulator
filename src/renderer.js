@@ -98,6 +98,24 @@ let pointerLockState = {
   showInstructions: true  // Show instructions on first load
 };
 
+// Drawing state (for pen holder interaction)
+let drawingState = {
+  isDrawing: false,
+  selectedPen: null, // Currently held pen color
+  selectedPenColor: null, // Hex color value
+  currentObject: null, // Object being drawn on (notebook or paper)
+  currentLine: null, // Current line being drawn
+  points: [] // Points in current line
+};
+
+// Laptop control state
+let laptopControlState = {
+  active: false,
+  laptop: null,
+  originalCameraPosition: null,
+  originalCameraLook: null
+};
+
 // ============================================================================
 // CAMERA CONTROL POINTS (Starting position and direction)
 // ============================================================================
@@ -868,11 +886,14 @@ function createCoffeeMug(options = {}) {
   group.userData = {
     type: 'coffee',
     name: 'Coffee Mug',
-    interactive: false, // Settings only in edit mode (RMB), no middle-click interaction
+    interactive: true, // Now interactive - sipping in examine mode
     drinkType: 'coffee',
     liquidLevel: 1.0, // 0-1, how full the mug is
+    maxLiquidLevel: 1.0, // Store the starting level for display
     isHot: true, // Shows steam if true
     wavePhase: 0,
+    isSipping: false, // Animation state
+    isCheckingEmpty: false, // Animation state for looking at empty mug
     mainColor: options.mainColor || '#ffffff',
     accentColor: options.accentColor || '#3b82f6'
   };
@@ -937,6 +958,14 @@ function createLaptop(options = {}) {
     type: 'laptop',
     name: 'Laptop',
     interactive: true,
+    isOn: false, // Power state
+    isBooting: false, // Boot animation in progress
+    bootProgress: 0, // 0-1 boot progress
+    bootTime: options.bootTime || 4000, // Boot time in ms (default 4 seconds)
+    screenState: 'off', // 'off', 'bios', 'loading', 'desktop'
+    isZoomedIn: false, // Whether user is in laptop control mode
+    editorContent: '', // Markdown editor content
+    editorFileName: 'notes.md',
     mainColor: options.mainColor || '#1e293b',
     accentColor: options.accentColor || '#60a5fa'
   };
@@ -955,18 +984,19 @@ function createLaptop(options = {}) {
 
   // Screen
   const screenGroup = new THREE.Group();
+  screenGroup.name = 'screenGroup';
 
   const screenBackGeometry = new THREE.BoxGeometry(0.78, 0.5, 0.02);
   const screenBack = new THREE.Mesh(screenBackGeometry, baseMaterial);
   screenBack.castShadow = true;
   screenGroup.add(screenBack);
 
-  // Screen display
+  // Screen display (starts black/off)
   const displayGeometry = new THREE.PlaneGeometry(0.7, 0.42);
   const displayMaterial = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(group.userData.accentColor),
-    emissive: new THREE.Color(group.userData.accentColor),
-    emissiveIntensity: 0.3,
+    color: 0x000000, // Black when off
+    emissive: 0x000000,
+    emissiveIntensity: 0,
     roughness: 0.1
   });
   const display = new THREE.Mesh(displayGeometry, displayMaterial);
@@ -988,7 +1018,36 @@ function createLaptop(options = {}) {
   keyboard.rotation.x = -Math.PI / 2;
   keyboard.position.y = 0.031;
   keyboard.position.z = 0.05;
+  keyboard.name = 'keyboard';
   group.add(keyboard);
+
+  // Power button (in top right corner of keyboard area)
+  const powerBtnGeometry = new THREE.CylinderGeometry(0.015, 0.015, 0.005, 16);
+  const powerBtnMaterial = new THREE.MeshStandardMaterial({
+    color: 0x555555,
+    emissive: 0x000000,
+    emissiveIntensity: 0,
+    roughness: 0.3,
+    metalness: 0.5
+  });
+  const powerButton = new THREE.Mesh(powerBtnGeometry, powerBtnMaterial);
+  powerButton.rotation.x = -Math.PI / 2;
+  powerButton.position.set(0.35, 0.032, -0.18);
+  powerButton.name = 'powerButton';
+  group.add(powerButton);
+
+  // Power LED indicator
+  const ledGeometry = new THREE.CircleGeometry(0.005, 8);
+  const ledMaterial = new THREE.MeshStandardMaterial({
+    color: 0x222222,
+    emissive: 0x000000,
+    emissiveIntensity: 0
+  });
+  const powerLed = new THREE.Mesh(ledGeometry, ledMaterial);
+  powerLed.rotation.x = -Math.PI / 2;
+  powerLed.position.set(0.35, 0.033, -0.15);
+  powerLed.name = 'powerLed';
+  group.add(powerLed);
 
   group.position.y = getDeskSurfaceY();
 
@@ -1000,7 +1059,9 @@ function createNotebook(options = {}) {
   group.userData = {
     type: 'notebook',
     name: 'Notebook',
-    interactive: false,
+    interactive: true, // Interactive - can draw with pen
+    drawingLines: [], // Array of drawing line data
+    fileName: options.fileName || 'notebook.png',
     mainColor: options.mainColor || '#3b82f6',
     accentColor: options.accentColor || '#ffffff'
   };
@@ -1042,7 +1103,9 @@ function createPenHolder(options = {}) {
   group.userData = {
     type: 'pen-holder',
     name: 'Pen Holder',
-    interactive: false,
+    interactive: true, // Now interactive - can select pens
+    pens: ['red', 'blue', 'green', 'black'], // Available pen colors
+    selectedPen: null, // Currently selected pen color name
     mainColor: options.mainColor || '#64748b',
     accentColor: options.accentColor || '#f472b6'
   };
@@ -1067,16 +1130,28 @@ function createPenHolder(options = {}) {
   bottom.position.y = 0.001;
   group.add(bottom);
 
-  // Pens
-  const penColors = [0xef4444, 0x3b82f6, 0x22c55e, 0x000000];
-  penColors.forEach((color, i) => {
+  // Pens with individual names for selection
+  const penData = [
+    { color: 0xef4444, name: 'red' },
+    { color: 0x3b82f6, name: 'blue' },
+    { color: 0x22c55e, name: 'green' },
+    { color: 0x000000, name: 'black' }
+  ];
+
+  const pensGroup = new THREE.Group();
+  pensGroup.name = 'pens';
+
+  penData.forEach((data, i) => {
     const penGeometry = new THREE.CylinderGeometry(0.015, 0.015, 0.35, 8);
     const penMaterial = new THREE.MeshStandardMaterial({
-      color: color,
+      color: data.color,
       roughness: 0.4
     });
     const pen = new THREE.Mesh(penGeometry, penMaterial);
-    const angle = (i / penColors.length) * Math.PI * 2;
+    pen.name = `pen_${data.name}`;
+    pen.userData.penColor = data.name;
+    pen.userData.colorHex = data.color;
+    const angle = (i / penData.length) * Math.PI * 2;
     pen.position.set(
       Math.cos(angle) * 0.04,
       0.3,
@@ -1084,9 +1159,10 @@ function createPenHolder(options = {}) {
     );
     pen.rotation.z = (Math.random() - 0.5) * 0.2;
     pen.rotation.x = (Math.random() - 0.5) * 0.2;
-    group.add(pen);
+    pensGroup.add(pen);
   });
 
+  group.add(pensGroup);
   group.position.y = getDeskSurfaceY();
 
   return group;
@@ -1097,13 +1173,22 @@ function createBooks(options = {}) {
   group.userData = {
     type: 'books',
     name: 'Book',
-    interactive: false,
+    interactive: true, // Interactive - can open to view PDF
+    isOpen: false, // Whether book is open
+    openAngle: 0, // Animation angle
+    bookTitle: options.bookTitle || 'My Book',
+    pdfPath: null, // Path to PDF file
+    currentPage: 0, // Current page index
+    totalPages: 0, // Total number of pages
     mainColor: options.mainColor || '#7c3aed',
     accentColor: options.accentColor || '#f59e0b'
   };
 
-  // Single book model
-  // Book cover
+  // Book closed group (visible when closed)
+  const closedGroup = new THREE.Group();
+  closedGroup.name = 'closedBook';
+
+  // Single book model - Book cover
   const coverMaterial = new THREE.MeshStandardMaterial({
     color: new THREE.Color(group.userData.mainColor),
     roughness: 0.7
@@ -1113,7 +1198,7 @@ function createBooks(options = {}) {
   const cover = new THREE.Mesh(coverGeometry, coverMaterial);
   cover.position.y = 0.02;
   cover.castShadow = true;
-  group.add(cover);
+  closedGroup.add(cover);
 
   // Pages (white interior)
   const pagesMaterial = new THREE.MeshStandardMaterial({
@@ -1124,7 +1209,7 @@ function createBooks(options = {}) {
   const pagesGeometry = new THREE.BoxGeometry(0.26, 0.035, 0.36);
   const pages = new THREE.Mesh(pagesGeometry, pagesMaterial);
   pages.position.y = 0.02;
-  group.add(pages);
+  closedGroup.add(pages);
 
   // Spine detail
   const spineMaterial = new THREE.MeshStandardMaterial({
@@ -1136,7 +1221,81 @@ function createBooks(options = {}) {
   const spine = new THREE.Mesh(spineGeometry, spineMaterial);
   spine.position.set(-0.13, 0.02, 0);
   spine.castShadow = true;
-  group.add(spine);
+  closedGroup.add(spine);
+
+  // Title on cover (simple text represented as a lighter rectangle)
+  const titleGeometry = new THREE.BoxGeometry(0.18, 0.001, 0.08);
+  const titleMaterial = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(group.userData.accentColor),
+    roughness: 0.5
+  });
+  const title = new THREE.Mesh(titleGeometry, titleMaterial);
+  title.position.set(0, 0.041, 0);
+  closedGroup.add(title);
+
+  group.add(closedGroup);
+
+  // Book open group (visible when open)
+  const openGroup = new THREE.Group();
+  openGroup.name = 'openBook';
+  openGroup.visible = false;
+
+  // Left page (cover rotated back)
+  const leftCoverGeometry = new THREE.BoxGeometry(0.28, 0.005, 0.38);
+  const leftCover = new THREE.Mesh(leftCoverGeometry, coverMaterial);
+  leftCover.position.set(-0.14, 0.003, 0);
+  leftCover.name = 'leftCover';
+  openGroup.add(leftCover);
+
+  // Right page (cover rotated back)
+  const rightCover = new THREE.Mesh(leftCoverGeometry, coverMaterial);
+  rightCover.position.set(0.14, 0.003, 0);
+  rightCover.name = 'rightCover';
+  openGroup.add(rightCover);
+
+  // Page block on left
+  const leftPagesGeometry = new THREE.BoxGeometry(0.26, 0.02, 0.36);
+  const leftPages = new THREE.Mesh(leftPagesGeometry, pagesMaterial);
+  leftPages.position.set(-0.13, 0.015, 0);
+  openGroup.add(leftPages);
+
+  // Page block on right
+  const rightPages = new THREE.Mesh(leftPagesGeometry, pagesMaterial);
+  rightPages.position.set(0.13, 0.015, 0);
+  openGroup.add(rightPages);
+
+  // Left page surface (for displaying content)
+  const pageSurfaceGeometry = new THREE.PlaneGeometry(0.24, 0.34);
+  const leftPageSurfaceMaterial = new THREE.MeshStandardMaterial({
+    color: 0xfff8f0,
+    roughness: 0.9,
+    side: THREE.DoubleSide
+  });
+  const leftPageSurface = new THREE.Mesh(pageSurfaceGeometry, leftPageSurfaceMaterial);
+  leftPageSurface.rotation.x = -Math.PI / 2;
+  leftPageSurface.position.set(-0.13, 0.026, 0);
+  leftPageSurface.name = 'leftPageSurface';
+  openGroup.add(leftPageSurface);
+
+  // Right page surface
+  const rightPageSurfaceMaterial = new THREE.MeshStandardMaterial({
+    color: 0xfff8f0,
+    roughness: 0.9,
+    side: THREE.DoubleSide
+  });
+  const rightPageSurface = new THREE.Mesh(pageSurfaceGeometry, rightPageSurfaceMaterial);
+  rightPageSurface.rotation.x = -Math.PI / 2;
+  rightPageSurface.position.set(0.13, 0.026, 0);
+  rightPageSurface.name = 'rightPageSurface';
+  openGroup.add(rightPageSurface);
+
+  // Spine when open
+  const openSpineGeometry = new THREE.BoxGeometry(0.02, 0.03, 0.38);
+  const openSpine = new THREE.Mesh(openSpineGeometry, spineMaterial);
+  openSpine.position.set(0, 0.015, 0);
+  openGroup.add(openSpine);
+
+  group.add(openGroup);
 
   group.position.y = getDeskSurfaceY();
 
@@ -1395,7 +1554,9 @@ function createPaper(options = {}) {
   group.userData = {
     type: 'paper',
     name: 'Paper Sheet',
-    interactive: false,
+    interactive: true, // Interactive - can draw with pen
+    drawingLines: [], // Array of drawing line data
+    fileName: options.fileName || 'drawing.png',
     mainColor: options.mainColor || '#fffff5',
     accentColor: options.accentColor || '#cccccc'
   };
@@ -3105,7 +3266,11 @@ function openInteractionModal(object) {
     'hourglass': '⏳',
     'metronome': '🎵',
     'photo-frame': '🖼️',
-    'coffee': '☕'
+    'coffee': '☕',
+    'pen-holder': '🖊️',
+    'books': '📕',
+    'notebook': '📓',
+    'paper': '📄'
   };
 
   title.textContent = object.userData.name;
@@ -3174,14 +3339,29 @@ function getInteractionContent(object) {
       `;
 
     case 'laptop':
+      const screenStatus = object.userData.isOn
+        ? (object.userData.isBooting ? 'Booting...' : 'On')
+        : 'Off';
       return `
         <div class="timer-controls">
           <div class="timer-display">
-            <div class="time" style="font-size: 24px;">Laptop Screen</div>
+            <div class="time" style="font-size: 24px;">Laptop</div>
+            <div style="color: rgba(255,255,255,0.6); margin-top: 10px;">Status: ${screenStatus}</div>
           </div>
-          <div class="timer-buttons">
-            <button class="timer-btn start" id="laptop-color">Change Screen Color</button>
+          <div class="timer-buttons" style="flex-direction: column; gap: 10px;">
+            <button class="timer-btn ${object.userData.isOn ? 'pause' : 'start'}" id="laptop-power"
+                    ${object.userData.isBooting ? 'disabled' : ''}>
+              ${object.userData.isOn ? 'Shutdown' : 'Power On'}
+            </button>
+            ${object.userData.isOn && !object.userData.isBooting ? `
+              <button class="timer-btn start" id="laptop-editor">Open Markdown Editor</button>
+            ` : ''}
           </div>
+          ${object.userData.isOn && !object.userData.isBooting ? `
+            <div style="margin-top: 15px; color: rgba(255,255,255,0.5); font-size: 12px;">
+              Middle-click laptop to toggle power
+            </div>
+          ` : ''}
         </div>
       `;
 
@@ -3256,24 +3436,94 @@ function getInteractionContent(object) {
         <div class="timer-controls">
           <div class="timer-display">
             <div class="time" style="font-size: 24px;">${currentDrink.name}</div>
-            <div style="color: rgba(255,255,255,0.6); margin-top: 10px;">Choose your drink</div>
+            <div style="color: rgba(255,255,255,0.6); margin-top: 10px;">Middle-click to sip drink</div>
+            <div style="color: rgba(255,255,255,0.5); margin-top: 5px;">Fill: ${Math.round(object.userData.liquidLevel * 100)}%</div>
+          </div>
+        </div>
+      `;
+
+    case 'pen-holder':
+      const pensGroup = object.getObjectByName('pens');
+      const availablePens = pensGroup ? pensGroup.children.filter(p => p.visible).map(p => p.userData.penColor) : [];
+      return `
+        <div class="timer-controls">
+          <div class="timer-display">
+            <div class="time" style="font-size: 24px;">Pen Holder</div>
+            <div style="color: rgba(255,255,255,0.6); margin-top: 10px;">
+              ${drawingState.selectedPen ? `Holding: ${drawingState.selectedPen} pen` : 'Select a pen to draw'}
+            </div>
           </div>
           <div class="timer-buttons" style="flex-wrap: wrap; gap: 10px;">
-            ${Object.entries(DRINK_COLORS).map(([key, drink]) => `
-              <button class="timer-btn ${object.userData.drinkType === key ? 'pause' : 'start'}"
-                      data-drink="${key}" style="min-width: 80px;">
-                ${drink.name}
-              </button>
-            `).join('')}
+            ${[
+              { name: 'red', color: '#ef4444' },
+              { name: 'blue', color: '#3b82f6' },
+              { name: 'green', color: '#22c55e' },
+              { name: 'black', color: '#000000' }
+            ].map(pen => {
+              const isAvailable = availablePens.includes(pen.name);
+              const isSelected = drawingState.selectedPen === pen.name;
+              return `
+                <button class="timer-btn ${isSelected ? 'pause' : 'start'}"
+                        id="pen-${pen.name}"
+                        style="min-width: 70px; background: ${isAvailable ? pen.color : '#444'}; opacity: ${isAvailable ? 1 : 0.3};"
+                        ${!isAvailable ? 'disabled' : ''}>
+                  ${pen.name.charAt(0).toUpperCase() + pen.name.slice(1)}
+                </button>
+              `;
+            }).join('')}
+          </div>
+          ${drawingState.selectedPen ? `
+            <div class="timer-buttons" style="margin-top: 15px;">
+              <button class="timer-btn reset" id="pen-return">Return Pen</button>
+            </div>
+          ` : ''}
+          <div style="color: rgba(255,255,255,0.5); margin-top: 15px; font-size: 12px;">
+            With pen selected: hover over Notebook/Paper and draw with middle mouse button
+          </div>
+        </div>
+      `;
+
+    case 'books':
+      return `
+        <div class="timer-controls">
+          <div class="timer-display">
+            <div class="time" style="font-size: 24px;">Book</div>
+            <div style="color: rgba(255,255,255,0.6); margin-top: 10px;">
+              ${object.userData.isOpen ? 'Book is open' : 'Middle-click to open'}
+            </div>
           </div>
           <div style="margin-top: 15px;">
-            <label style="color: rgba(255,255,255,0.7); display: block; margin-bottom: 8px;">
-              Fill Level: ${Math.round(object.userData.liquidLevel * 100)}%
-            </label>
-            <input type="range" id="mug-level" min="0" max="100"
-                   value="${object.userData.liquidLevel * 100}"
-                   style="width: 100%; accent-color: #4f46e5;">
+            <label style="color: rgba(255,255,255,0.7); display: block; margin-bottom: 8px;">Book Title</label>
+            <input type="text" id="book-title" value="${object.userData.bookTitle || ''}"
+                   placeholder="Enter book title"
+                   style="width: 100%; padding: 10px; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; color: #fff;">
           </div>
+          <div style="margin-top: 15px;">
+            <label style="color: rgba(255,255,255,0.7); display: block; margin-bottom: 8px;">PDF File</label>
+            <label class="timer-btn start" style="cursor: pointer; display: inline-block; width: 100%; text-align: center;">
+              ${object.userData.pdfPath ? 'Change PDF' : 'Choose PDF'}
+              <input type="file" id="book-pdf" accept=".pdf" style="display: none;">
+            </label>
+            ${object.userData.pdfPath ? `
+              <div style="color: rgba(255,255,255,0.5); margin-top: 8px; font-size: 12px;">
+                Current: ${object.userData.pdfPath.split('/').pop() || object.userData.pdfPath.split('\\\\').pop()}
+              </div>
+            ` : ''}
+          </div>
+          <div class="timer-buttons" style="margin-top: 15px;">
+            <button class="timer-btn ${object.userData.isOpen ? 'pause' : 'start'}" id="book-toggle">
+              ${object.userData.isOpen ? 'Close Book' : 'Open Book'}
+            </button>
+          </div>
+          ${object.userData.isOpen && object.userData.totalPages > 0 ? `
+            <div class="timer-buttons" style="margin-top: 10px;">
+              <button class="timer-btn reset" id="book-prev" ${object.userData.currentPage <= 0 ? 'disabled' : ''}>← Prev</button>
+              <span style="color: rgba(255,255,255,0.7); padding: 0 15px;">
+                Page ${object.userData.currentPage + 1} / ${object.userData.totalPages}
+              </span>
+              <button class="timer-btn start" id="book-next" ${object.userData.currentPage >= object.userData.totalPages - 1 ? 'disabled' : ''}>Next →</button>
+            </div>
+          ` : ''}
         </div>
       `;
 
@@ -3307,6 +3557,12 @@ function setupInteractionHandlers(object) {
       break;
     case 'coffee':
       setupMugHandlers(object);
+      break;
+    case 'pen-holder':
+      setupPenHolderHandlers(object);
+      break;
+    case 'books':
+      setupBookHandlers(object);
       break;
   }
 }
@@ -3504,18 +3760,300 @@ function setupLampHandlers(object) {
 }
 
 function setupLaptopHandlers(object) {
-  const colorBtn = document.getElementById('laptop-color');
-  const screenColors = ['#60a5fa', '#22c55e', '#f59e0b', '#ec4899', '#8b5cf6', '#ef4444'];
-  let colorIndex = 0;
+  const powerBtn = document.getElementById('laptop-power');
+  const editorBtn = document.getElementById('laptop-editor');
 
-  colorBtn.addEventListener('click', () => {
-    colorIndex = (colorIndex + 1) % screenColors.length;
-    const screen = object.getObjectByName('screen');
-    if (screen) {
-      screen.material.color.set(screenColors[colorIndex]);
-      screen.material.emissive.set(screenColors[colorIndex]);
-    }
+  if (powerBtn) {
+    powerBtn.addEventListener('click', () => {
+      toggleLaptopPower(object);
+      // Refresh modal after state change
+      setTimeout(() => {
+        if (interactionObject === object) {
+          const content = document.getElementById('interaction-content');
+          content.innerHTML = getInteractionContent(object);
+          setupInteractionHandlers(object);
+        }
+      }, 100);
+    });
+  }
+
+  if (editorBtn) {
+    editorBtn.addEventListener('click', () => {
+      openMarkdownEditor(object);
+    });
+  }
+}
+
+// Markdown Editor Functions
+function openMarkdownEditor(laptop) {
+  // Close the interaction modal
+  closeInteractionModal();
+  exitExamineMode();
+
+  // Create markdown editor overlay
+  const editorOverlay = document.createElement('div');
+  editorOverlay.id = 'markdown-editor-overlay';
+  editorOverlay.innerHTML = `
+    <div class="md-editor-container">
+      <div class="md-editor-header">
+        <div class="md-editor-title">
+          <span class="md-editor-icon">📝</span>
+          <input type="text" id="md-filename" value="${laptop.userData.editorFileName}" class="md-filename-input">
+        </div>
+        <div class="md-editor-actions">
+          <button id="md-save" class="md-btn md-btn-save">Save</button>
+          <button id="md-close" class="md-btn md-btn-close">×</button>
+        </div>
+      </div>
+      <div class="md-editor-body">
+        <div class="md-editor-pane md-editor-source">
+          <div class="md-pane-header">Source</div>
+          <textarea id="md-source" placeholder="Write your markdown here...">${laptop.userData.editorContent}</textarea>
+        </div>
+        <div class="md-editor-pane md-editor-preview">
+          <div class="md-pane-header">Preview</div>
+          <div id="md-preview" class="md-preview-content"></div>
+        </div>
+      </div>
+      <div class="md-editor-footer">
+        <span class="md-status">Obsidian-style Markdown Editor</span>
+        <span class="md-word-count" id="md-word-count">0 words</span>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(editorOverlay);
+
+  // Add editor styles
+  if (!document.getElementById('md-editor-styles')) {
+    const styles = document.createElement('style');
+    styles.id = 'md-editor-styles';
+    styles.textContent = `
+      #markdown-editor-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        background: rgba(0, 0, 0, 0.9);
+        z-index: 300;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        animation: fadeIn 0.3s ease;
+      }
+      @keyframes fadeIn {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+      .md-editor-container {
+        width: 90%;
+        height: 85%;
+        max-width: 1400px;
+        background: #1e1e2e;
+        border-radius: 12px;
+        display: flex;
+        flex-direction: column;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+      }
+      .md-editor-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 15px 20px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(0, 0, 0, 0.2);
+        border-radius: 12px 12px 0 0;
+      }
+      .md-editor-title {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .md-editor-icon { font-size: 20px; }
+      .md-filename-input {
+        background: transparent;
+        border: 1px solid transparent;
+        color: #fff;
+        font-size: 16px;
+        padding: 5px 10px;
+        border-radius: 6px;
+      }
+      .md-filename-input:focus {
+        border-color: rgba(139, 92, 246, 0.5);
+        outline: none;
+        background: rgba(255, 255, 255, 0.05);
+      }
+      .md-editor-actions { display: flex; gap: 10px; }
+      .md-btn {
+        padding: 8px 16px;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 14px;
+        transition: all 0.2s;
+      }
+      .md-btn-save {
+        background: rgba(139, 92, 246, 0.8);
+        color: #fff;
+      }
+      .md-btn-save:hover { background: rgba(139, 92, 246, 1); }
+      .md-btn-close {
+        background: rgba(255, 255, 255, 0.1);
+        color: #fff;
+        font-size: 18px;
+        padding: 8px 12px;
+      }
+      .md-btn-close:hover { background: rgba(255, 255, 255, 0.2); }
+      .md-editor-body {
+        flex: 1;
+        display: flex;
+        overflow: hidden;
+      }
+      .md-editor-pane {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      .md-editor-source { border-right: 1px solid rgba(255, 255, 255, 0.1); }
+      .md-pane-header {
+        padding: 8px 15px;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        color: rgba(255, 255, 255, 0.5);
+        background: rgba(0, 0, 0, 0.2);
+      }
+      #md-source {
+        flex: 1;
+        background: transparent;
+        border: none;
+        color: #cdd6f4;
+        font-family: 'JetBrains Mono', 'Fira Code', monospace;
+        font-size: 14px;
+        line-height: 1.6;
+        padding: 15px;
+        resize: none;
+        outline: none;
+      }
+      #md-source::placeholder { color: rgba(255, 255, 255, 0.3); }
+      .md-preview-content {
+        flex: 1;
+        padding: 15px;
+        overflow-y: auto;
+        color: #cdd6f4;
+        font-size: 14px;
+        line-height: 1.8;
+      }
+      .md-preview-content h1 { font-size: 2em; color: #cba6f7; margin: 0.5em 0; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 0.3em; }
+      .md-preview-content h2 { font-size: 1.5em; color: #89b4fa; margin: 0.5em 0; }
+      .md-preview-content h3 { font-size: 1.25em; color: #94e2d5; margin: 0.5em 0; }
+      .md-preview-content p { margin: 0.8em 0; }
+      .md-preview-content code { background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 4px; font-family: monospace; }
+      .md-preview-content pre { background: rgba(0,0,0,0.3); padding: 15px; border-radius: 8px; overflow-x: auto; }
+      .md-preview-content pre code { background: none; padding: 0; }
+      .md-preview-content blockquote { border-left: 3px solid #cba6f7; padding-left: 15px; margin: 1em 0; color: rgba(255,255,255,0.7); }
+      .md-preview-content ul, .md-preview-content ol { padding-left: 25px; margin: 0.5em 0; }
+      .md-preview-content li { margin: 0.3em 0; }
+      .md-preview-content a { color: #89b4fa; }
+      .md-preview-content strong { color: #f9e2af; }
+      .md-preview-content em { color: #a6e3a1; }
+      .md-preview-content hr { border: none; border-top: 1px solid rgba(255,255,255,0.1); margin: 1.5em 0; }
+      .md-editor-footer {
+        display: flex;
+        justify-content: space-between;
+        padding: 10px 20px;
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.5);
+        border-top: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(0, 0, 0, 0.2);
+        border-radius: 0 0 12px 12px;
+      }
+    `;
+    document.head.appendChild(styles);
+  }
+
+  // Setup editor functionality
+  const sourceTextarea = document.getElementById('md-source');
+  const preview = document.getElementById('md-preview');
+  const wordCount = document.getElementById('md-word-count');
+  const saveBtn = document.getElementById('md-save');
+  const closeBtn = document.getElementById('md-close');
+  const filenameInput = document.getElementById('md-filename');
+
+  function updatePreview() {
+    const md = sourceTextarea.value;
+    preview.innerHTML = parseMarkdown(md);
+    const words = md.trim().split(/\s+/).filter(w => w.length > 0).length;
+    wordCount.textContent = `${words} word${words !== 1 ? 's' : ''}`;
+  }
+
+  function parseMarkdown(text) {
+    // Simple markdown parser
+    let html = text
+      // Escape HTML
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      // Headers
+      .replace(/^### (.*)$/gm, '<h3>$1</h3>')
+      .replace(/^## (.*)$/gm, '<h2>$1</h2>')
+      .replace(/^# (.*)$/gm, '<h1>$1</h1>')
+      // Bold and Italic
+      .replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*(.+?)\*/g, '<em>$1</em>')
+      // Inline code
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      // Code blocks
+      .replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>')
+      // Blockquotes
+      .replace(/^> (.*)$/gm, '<blockquote>$1</blockquote>')
+      // Unordered lists
+      .replace(/^- (.*)$/gm, '<li>$1</li>')
+      // Links
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>')
+      // Horizontal rule
+      .replace(/^---$/gm, '<hr>')
+      // Line breaks
+      .replace(/\n/g, '<br>');
+
+    // Wrap consecutive li elements in ul
+    html = html.replace(/(<li>.*?<\/li>(<br>)?)+/g, (match) => {
+      return '<ul>' + match.replace(/<br>/g, '') + '</ul>';
+    });
+
+    return html;
+  }
+
+  sourceTextarea.addEventListener('input', updatePreview);
+  updatePreview();
+
+  saveBtn.addEventListener('click', () => {
+    laptop.userData.editorContent = sourceTextarea.value;
+    laptop.userData.editorFileName = filenameInput.value || 'notes.md';
+    saveState();
   });
+
+  closeBtn.addEventListener('click', () => {
+    laptop.userData.editorContent = sourceTextarea.value;
+    laptop.userData.editorFileName = filenameInput.value || 'notes.md';
+    editorOverlay.remove();
+    saveState();
+  });
+
+  // Handle Escape key
+  const handleEscape = (e) => {
+    if (e.key === 'Escape') {
+      laptop.userData.editorContent = sourceTextarea.value;
+      laptop.userData.editorFileName = filenameInput.value || 'notes.md';
+      editorOverlay.remove();
+      document.removeEventListener('keydown', handleEscape);
+      saveState();
+    }
+  };
+  document.addEventListener('keydown', handleEscape);
 }
 
 function setupGlobeHandlers(object) {
@@ -3716,6 +4254,245 @@ function setupMugHandlers(object) {
   }
 }
 
+// ============================================================================
+// PEN HOLDER HANDLERS
+// ============================================================================
+function setupPenHolderHandlers(object) {
+  const penButtons = ['red', 'blue', 'green', 'black'].map(color =>
+    document.getElementById(`pen-${color}`)
+  );
+  const returnBtn = document.getElementById('pen-return');
+
+  penButtons.forEach(btn => {
+    if (btn && !btn.disabled) {
+      btn.addEventListener('click', () => {
+        const penColor = btn.id.replace('pen-', '');
+        selectPen(object, penColor);
+
+        // Refresh modal
+        const content = document.getElementById('interaction-content');
+        content.innerHTML = getInteractionContent(object);
+        setupPenHolderHandlers(object);
+      });
+    }
+  });
+
+  if (returnBtn) {
+    returnBtn.addEventListener('click', () => {
+      returnPen(object);
+
+      // Refresh modal
+      const content = document.getElementById('interaction-content');
+      content.innerHTML = getInteractionContent(object);
+      setupPenHolderHandlers(object);
+    });
+  }
+}
+
+function selectPen(penHolder, penColor) {
+  // If already holding a pen, return it first
+  if (drawingState.selectedPen) {
+    returnPen(penHolder);
+  }
+
+  // Select the new pen
+  drawingState.selectedPen = penColor;
+  const pensGroup = penHolder.getObjectByName('pens');
+  if (pensGroup) {
+    pensGroup.children.forEach(pen => {
+      if (pen.userData.penColor === penColor) {
+        pen.visible = false; // Hide pen from holder
+        drawingState.selectedPenColor = pen.userData.colorHex;
+      }
+    });
+  }
+}
+
+function returnPen(penHolder) {
+  if (!drawingState.selectedPen) return;
+
+  const pensGroup = penHolder.getObjectByName('pens');
+  if (pensGroup) {
+    pensGroup.children.forEach(pen => {
+      if (pen.userData.penColor === drawingState.selectedPen) {
+        pen.visible = true; // Show pen in holder again
+      }
+    });
+  }
+
+  drawingState.selectedPen = null;
+  drawingState.selectedPenColor = null;
+}
+
+// ============================================================================
+// BOOK HANDLERS
+// ============================================================================
+function setupBookHandlers(object) {
+  const toggleBtn = document.getElementById('book-toggle');
+  const titleInput = document.getElementById('book-title');
+  const pdfInput = document.getElementById('book-pdf');
+  const prevBtn = document.getElementById('book-prev');
+  const nextBtn = document.getElementById('book-next');
+
+  if (toggleBtn) {
+    toggleBtn.addEventListener('click', () => {
+      toggleBookOpen(object);
+
+      // Refresh modal
+      const content = document.getElementById('interaction-content');
+      content.innerHTML = getInteractionContent(object);
+      setupBookHandlers(object);
+    });
+  }
+
+  if (titleInput) {
+    titleInput.addEventListener('change', (e) => {
+      object.userData.bookTitle = e.target.value;
+      saveState();
+    });
+  }
+
+  if (pdfInput) {
+    pdfInput.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (file && file.type === 'application/pdf') {
+        // Store the PDF file path
+        object.userData.pdfPath = file.name;
+        object.userData.pdfFile = file;
+
+        // Load PDF (simplified - in real implementation would use pdf.js)
+        loadPDFToBook(object, file);
+      }
+    });
+  }
+
+  if (prevBtn) {
+    prevBtn.addEventListener('click', () => {
+      if (object.userData.currentPage > 0) {
+        object.userData.currentPage--;
+        updateBookPages(object);
+
+        // Refresh modal
+        const content = document.getElementById('interaction-content');
+        content.innerHTML = getInteractionContent(object);
+        setupBookHandlers(object);
+      }
+    });
+  }
+
+  if (nextBtn) {
+    nextBtn.addEventListener('click', () => {
+      if (object.userData.currentPage < object.userData.totalPages - 1) {
+        object.userData.currentPage++;
+        updateBookPages(object);
+
+        // Refresh modal
+        const content = document.getElementById('interaction-content');
+        content.innerHTML = getInteractionContent(object);
+        setupBookHandlers(object);
+      }
+    });
+  }
+}
+
+function loadPDFToBook(book, file) {
+  // Create a simple text representation since we can't load actual PDF
+  // In a full implementation, you'd use pdf.js library
+  const reader = new FileReader();
+  reader.onload = () => {
+    // For now, just indicate PDF is loaded
+    book.userData.totalPages = 10; // Placeholder
+    book.userData.currentPage = 0;
+
+    // Update the page surfaces with a "PDF loaded" texture
+    updateBookPages(book);
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function updateBookPages(book) {
+  const openGroup = book.getObjectByName('openBook');
+  if (!openGroup) return;
+
+  const leftPage = openGroup.getObjectByName('leftPageSurface');
+  const rightPage = openGroup.getObjectByName('rightPageSurface');
+
+  // Create simple canvas textures for pages
+  if (leftPage && book.userData.totalPages > 0) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 362;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff8f0';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#333';
+    ctx.font = '16px serif';
+    ctx.textAlign = 'center';
+
+    const pageNum = book.userData.currentPage * 2;
+    ctx.fillText(`Page ${pageNum + 1}`, canvas.width / 2, 30);
+
+    // Add some placeholder content
+    ctx.font = '12px serif';
+    ctx.textAlign = 'left';
+    const lines = [
+      book.userData.pdfPath || 'No PDF loaded',
+      '',
+      'Lorem ipsum dolor sit amet,',
+      'consectetur adipiscing elit.',
+      'Sed do eiusmod tempor...'
+    ];
+    lines.forEach((line, i) => {
+      ctx.fillText(line, 20, 60 + i * 20);
+    });
+
+    const texture = new THREE.CanvasTexture(canvas);
+    leftPage.material.map = texture;
+    leftPage.material.needsUpdate = true;
+  }
+
+  if (rightPage && book.userData.totalPages > 0) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 362;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff8f0';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#333';
+    ctx.font = '16px serif';
+    ctx.textAlign = 'center';
+
+    const pageNum = book.userData.currentPage * 2 + 1;
+    ctx.fillText(`Page ${pageNum + 1}`, canvas.width / 2, 30);
+
+    // Add some placeholder content
+    ctx.font = '12px serif';
+    ctx.textAlign = 'left';
+    const lines = [
+      'Continued...',
+      '',
+      'Ut enim ad minim veniam,',
+      'quis nostrud exercitation',
+      'ullamco laboris nisi ut...'
+    ];
+    lines.forEach((line, i) => {
+      ctx.fillText(line, 20, 60 + i * 20);
+    });
+
+    const texture = new THREE.CanvasTexture(canvas);
+    rightPage.material.map = texture;
+    rightPage.material.needsUpdate = true;
+  }
+}
+
+// Helper function to update steam visibility
+function updateSteamVisibility(object) {
+  const steam = object.getObjectByName('steam');
+  if (steam) {
+    steam.visible = object.userData.isHot && object.userData.liquidLevel > 0.1;
+  }
+}
+
 // Quick interaction function for middle-click toggle actions
 // This allows simple interactions without picking up or opening modal
 function performQuickInteraction(object) {
@@ -3809,6 +4586,32 @@ function performQuickInteraction(object) {
       }
       break;
 
+    case 'coffee':
+      // In examine mode, sip the drink
+      if (examineState.active && examineState.object === object) {
+        performMugSip(object);
+      } else {
+        // Enter examine mode first
+        enterExamineMode(object);
+      }
+      break;
+
+    case 'books':
+      // Toggle book open/closed
+      toggleBookOpen(object);
+      break;
+
+    case 'laptop':
+      // Toggle laptop power
+      toggleLaptopPower(object);
+      break;
+
+    case 'pen-holder':
+      // Open pen selection modal
+      enterExamineMode(object);
+      openInteractionModal(object);
+      break;
+
     default:
       // For non-toggle objects, open the interaction modal instead
       if (object.userData.interactive) {
@@ -3816,6 +4619,213 @@ function performQuickInteraction(object) {
         openInteractionModal(object);
       }
       break;
+  }
+}
+
+// ============================================================================
+// MUG SIPPING ANIMATION
+// ============================================================================
+function performMugSip(object) {
+  if (object.userData.isSipping || object.userData.isCheckingEmpty) return;
+
+  if (object.userData.liquidLevel > 0.05) {
+    // Sip animation
+    object.userData.isSipping = true;
+    const sipAmount = 0.15; // Each sip takes 15% of the drink
+    const startRotation = object.rotation.x;
+    const sipRotation = startRotation - 0.5; // Tilt toward camera
+    const duration = 800;
+    const startTime = Date.now();
+
+    function animateSip() {
+      const elapsed = Date.now() - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+
+      if (progress < 0.3) {
+        // Tilt up
+        const tiltProgress = progress / 0.3;
+        object.rotation.x = startRotation + (sipRotation - startRotation) * tiltProgress;
+      } else if (progress < 0.7) {
+        // Hold position (drinking)
+        object.rotation.x = sipRotation;
+      } else {
+        // Tilt back down
+        const returnProgress = (progress - 0.7) / 0.3;
+        object.rotation.x = sipRotation + (startRotation - sipRotation) * returnProgress;
+      }
+
+      if (progress < 1) {
+        requestAnimationFrame(animateSip);
+      } else {
+        object.rotation.x = startRotation;
+        object.userData.isSipping = false;
+
+        // Reduce liquid level
+        object.userData.liquidLevel = Math.max(0, object.userData.liquidLevel - sipAmount);
+
+        // Update liquid visual
+        const liquid = object.getObjectByName('liquid');
+        if (liquid) {
+          if (object.userData.liquidLevel < 0.05) {
+            liquid.visible = false;
+          } else {
+            liquid.scale.y = object.userData.liquidLevel;
+            liquid.position.y = 0.08 + object.userData.liquidLevel * 0.1;
+          }
+        }
+
+        // Update steam visibility
+        updateSteamVisibility(object);
+        saveState();
+      }
+    }
+
+    animateSip();
+  } else {
+    // Empty mug - check if there's anything left
+    object.userData.isCheckingEmpty = true;
+    const startRotation = object.rotation.x;
+    const checkRotation = startRotation - 1.2; // Tilt almost upside down to look inside
+    const duration = 1200;
+    const startTime = Date.now();
+
+    function animateCheck() {
+      const elapsed = Date.now() - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+
+      if (progress < 0.4) {
+        // Tilt up to look inside
+        const tiltProgress = progress / 0.4;
+        object.rotation.x = startRotation + (checkRotation - startRotation) * tiltProgress;
+      } else if (progress < 0.6) {
+        // Rotate slightly to look around
+        const lookProgress = (progress - 0.4) / 0.2;
+        object.rotation.x = checkRotation;
+        object.rotation.z = Math.sin(lookProgress * Math.PI * 2) * 0.2;
+      } else {
+        // Return to original position
+        const returnProgress = (progress - 0.6) / 0.4;
+        object.rotation.x = checkRotation + (startRotation - checkRotation) * returnProgress;
+        object.rotation.z *= (1 - returnProgress);
+      }
+
+      if (progress < 1) {
+        requestAnimationFrame(animateCheck);
+      } else {
+        object.rotation.x = startRotation;
+        object.rotation.z = 0;
+        object.userData.isCheckingEmpty = false;
+      }
+    }
+
+    animateCheck();
+  }
+}
+
+// ============================================================================
+// BOOK OPEN/CLOSE ANIMATION
+// ============================================================================
+function toggleBookOpen(object) {
+  const closedGroup = object.getObjectByName('closedBook');
+  const openGroup = object.getObjectByName('openBook');
+
+  if (object.userData.isOpen) {
+    // Close book animation
+    object.userData.isOpen = false;
+    if (openGroup) openGroup.visible = false;
+    if (closedGroup) closedGroup.visible = true;
+  } else {
+    // Open book animation
+    object.userData.isOpen = true;
+    if (closedGroup) closedGroup.visible = false;
+    if (openGroup) openGroup.visible = true;
+  }
+}
+
+// ============================================================================
+// LAPTOP POWER TOGGLE AND BOOT ANIMATION
+// ============================================================================
+function toggleLaptopPower(object) {
+  if (object.userData.isBooting) return; // Don't toggle while booting
+
+  const screen = object.getObjectByName('screen');
+  const powerLed = object.getObjectByName('powerLed');
+
+  if (object.userData.isOn) {
+    // Turn off
+    object.userData.isOn = false;
+    object.userData.screenState = 'off';
+    if (screen) {
+      screen.material.color.set(0x000000);
+      screen.material.emissive.set(0x000000);
+      screen.material.emissiveIntensity = 0;
+    }
+    if (powerLed) {
+      powerLed.material.color.set(0x222222);
+      powerLed.material.emissive.set(0x000000);
+      powerLed.material.emissiveIntensity = 0;
+    }
+  } else {
+    // Boot sequence
+    object.userData.isOn = true;
+    object.userData.isBooting = true;
+    object.userData.bootProgress = 0;
+
+    // Power LED on
+    if (powerLed) {
+      powerLed.material.color.set(0x00ff00);
+      powerLed.material.emissive.set(0x00ff00);
+      powerLed.material.emissiveIntensity = 0.5;
+    }
+
+    const bootTime = object.userData.bootTime;
+    const startTime = Date.now();
+
+    function animateBoot() {
+      const elapsed = Date.now() - startTime;
+      const progress = elapsed / bootTime;
+
+      if (progress < 0.3) {
+        // BIOS screen (dark with text-like color)
+        if (object.userData.screenState !== 'bios') {
+          object.userData.screenState = 'bios';
+          if (screen) {
+            screen.material.color.set(0x000033);
+            screen.material.emissive.set(0x000066);
+            screen.material.emissiveIntensity = 0.3;
+          }
+        }
+      } else if (progress < 0.8) {
+        // Loading screen (Windows XP-like blue)
+        if (object.userData.screenState !== 'loading') {
+          object.userData.screenState = 'loading';
+          if (screen) {
+            screen.material.color.set(0x0052cc);
+            screen.material.emissive.set(0x0052cc);
+            screen.material.emissiveIntensity = 0.4;
+          }
+        }
+      } else if (progress < 1) {
+        // Desktop loading
+        if (object.userData.screenState !== 'desktop') {
+          object.userData.screenState = 'desktop';
+          if (screen) {
+            screen.material.color.set(0x008080); // Teal desktop
+            screen.material.emissive.set(0x008080);
+            screen.material.emissiveIntensity = 0.3;
+          }
+        }
+      }
+
+      if (progress < 1) {
+        requestAnimationFrame(animateBoot);
+      } else {
+        object.userData.isBooting = false;
+        object.userData.screenState = 'desktop';
+      }
+    }
+
+    animateBoot();
   }
 }
 
