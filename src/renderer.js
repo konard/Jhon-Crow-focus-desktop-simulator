@@ -79,6 +79,19 @@ let timerState = {
   isAlerting: false
 };
 
+// Shared audio context for metronome (reuse to avoid lag)
+let sharedAudioCtx = null;
+function getSharedAudioContext() {
+  if (!sharedAudioCtx) {
+    sharedAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  // Resume if suspended (browsers often suspend audio contexts)
+  if (sharedAudioCtx.state === 'suspended') {
+    sharedAudioCtx.resume();
+  }
+  return sharedAudioCtx;
+}
+
 // Drag-and-drop state for menu items
 let draggedPresetType = null;
 let dragPreviewElement = null;
@@ -911,17 +924,21 @@ function createCoffeeMug(options = {}) {
   group.add(mug);
 
   // Handle - torus arc that sticks out from the mug side
-  const handleGeometry = new THREE.TorusGeometry(0.06, 0.015, 8, 16, Math.PI);
+  // TorusGeometry(radius, tube, radialSegments, tubularSegments, arc)
+  // radius=0.05 makes a smaller arc, tube=0.015 is the thickness
+  const handleGeometry = new THREE.TorusGeometry(0.05, 0.015, 8, 16, Math.PI);
   const handleMaterial = new THREE.MeshStandardMaterial({
     color: new THREE.Color(group.userData.mainColor),
     roughness: 0.4
   });
   const handle = new THREE.Mesh(handleGeometry, handleMaterial);
-  // Rotate to make handle vertical: first rotate the flat torus to stand up (Y axis),
-  // then position it on the side of the mug
-  handle.rotation.y = Math.PI / 2;  // Rotate so the arc plane faces outward (X direction)
-  handle.rotation.z = Math.PI / 2;  // Stand the arc up vertically
-  handle.position.set(0.18, 0.1, 0); // Attach to side of mug (offset from center)
+  // The torus is flat in XY plane by default, arc opens upward
+  // We need to rotate it so the arc is vertical (opens to the side) and attached to the mug
+  // First, rotate around X axis to make the arc plane vertical
+  handle.rotation.x = Math.PI / 2;  // Arc now in XZ plane, opening outward
+  // Position so the inner edge of the arc touches the mug side
+  // Mug outer radius is ~0.12, handle radius is 0.05, so handle center at mug edge + handle radius
+  handle.position.set(0.12 + 0.05, 0.1, 0); // Attach to side of mug
   handle.castShadow = true;
   group.add(handle);
 
@@ -2259,6 +2276,15 @@ function setupEventListeners() {
   // Double-click examine removed - use drag+scroll instead
   container.addEventListener('wheel', onMouseWheel, { passive: false });
 
+  // Keyboard shortcuts
+  window.addEventListener('keydown', (e) => {
+    // Alt+I toggles the left sidebar (menu)
+    if (e.altKey && (e.key === 'i' || e.key === 'I' || e.key === 'ш' || e.key === 'Ш')) {
+      e.preventDefault();
+      document.getElementById('menu').classList.toggle('open');
+    }
+  });
+
   // Window resize
   window.addEventListener('resize', onWindowResize, false);
 
@@ -2497,11 +2523,20 @@ function onMouseDown(event) {
     return;
   }
 
+  // Right mouse button - edit mode (customization panel)
+  // Handle here because contextmenu doesn't fire properly when pointer is locked
+  if (event.button === 2) {
+    event.preventDefault();
+    handleRightClick(event);
+    return;
+  }
+
   if (event.button !== 0) return; // Left click only
 
-  // If in examine mode, exit it first before allowing any drag operations
+  // If in examine mode, LMB click doesn't exit - only LMB held + scroll up exits
+  // LMB is used for holding while scrolling to exit, not for clicking to exit
   if (examineState.active) {
-    exitExamineMode();
+    // Don't exit on click, just return to prevent dragging while examining
     return;
   }
 
@@ -2560,11 +2595,12 @@ function onMouseMove(event) {
     deltaY = event.clientY - previousMousePosition.y;
   }
 
-  // FPS-style camera look - active when pointer is locked and not dragging
+  // FPS-style camera look - active when pointer is locked
+  // Camera continues to move even while dragging - object stays under crosshair
   const modal = document.getElementById('interaction-modal');
   const isModalOpen = modal && modal.classList.contains('open');
 
-  if (pointerLockState.isLocked && cameraLookState.isLooking && !isDragging && !isModalOpen) {
+  if (pointerLockState.isLocked && cameraLookState.isLooking && !isModalOpen) {
     // Update yaw and pitch
     cameraLookState.yaw -= deltaX * cameraLookState.sensitivity;
     cameraLookState.pitch -= deltaY * cameraLookState.sensitivity;
@@ -2591,21 +2627,19 @@ function onMouseMove(event) {
     let newX, newZ;
 
     if (pointerLockState.isLocked) {
-      // When pointer is locked, use relative movement to drag objects
-      // Convert mouse movement to world-space movement on the desk plane
-      const dragSensitivity = 0.008;
+      // When pointer is locked, the object stays under the crosshair (screen center)
+      // Camera moves, and we raycast from screen center to find where object should be
+      const centerMouse = new THREE.Vector2(0, 0); // Screen center
+      raycaster.setFromCamera(centerMouse, camera);
+      const intersects = raycaster.intersectObject(dragPlane);
 
-      // Calculate movement based on camera orientation
-      const cameraYaw = cameraLookState.yaw;
-      const cosYaw = Math.cos(cameraYaw);
-      const sinYaw = Math.sin(cameraYaw);
-
-      // Transform mouse delta to world coordinates (rotate by camera yaw)
-      const worldDeltaX = (deltaX * cosYaw + deltaY * sinYaw) * dragSensitivity;
-      const worldDeltaZ = (-deltaX * sinYaw + deltaY * cosYaw) * dragSensitivity;
-
-      newX = Math.max(-halfWidth, Math.min(halfWidth, selectedObject.position.x + worldDeltaX));
-      newZ = Math.max(-halfDepth, Math.min(halfDepth, selectedObject.position.z + worldDeltaZ));
+      if (intersects.length > 0) {
+        const point = intersects[0].point;
+        newX = Math.max(-halfWidth, Math.min(halfWidth, point.x));
+        newZ = Math.max(-halfDepth, Math.min(halfDepth, point.z));
+      } else {
+        return; // No valid position
+      }
     } else {
       // When pointer is not locked, use raycasting for absolute positioning
       raycaster.setFromCamera(mouse, camera);
@@ -2634,6 +2668,12 @@ function onMouseMove(event) {
 
     selectedObject.position.x = newX;
     selectedObject.position.z = newZ;
+
+    // Dynamically adjust Y position to stay above objects while dragging
+    // This allows the dragged object to "ride" on top of static objects
+    const dragStackY = calculateDragStackingY(selectedObject, newX, newZ);
+    const liftedY = dragStackY + CONFIG.physics.liftHeight;
+    selectedObject.userData.targetY = liftedY;
   }
 
   // Update tooltip
@@ -2694,6 +2734,43 @@ function onMouseUp(event) {
   }
 }
 
+// Calculate Y position for dragging - allows object to ride on top of ANY object (no weight check)
+function calculateDragStackingY(draggedObject, posX, posZ) {
+  const draggedRadius = getObjectBounds(draggedObject);
+  const baseY = getDeskSurfaceY();
+  const draggedBaseOffset = OBJECT_PHYSICS[draggedObject.userData.type]?.baseOffset || 0;
+
+  // Default Y position (on desk surface)
+  let stackY = baseY + draggedBaseOffset;
+
+  // Check all other objects to see if we're above any of them
+  deskObjects.forEach(obj => {
+    if (obj === draggedObject) return;
+    if (obj.userData.isFallen) return;
+
+    const otherRadius = getObjectBounds(obj);
+    const otherPhysics = getObjectPhysics(obj);
+
+    // Calculate horizontal distance
+    const dx = posX - obj.position.x;
+    const dz = posZ - obj.position.z;
+    const horizontalDist = Math.sqrt(dx * dx + dz * dz);
+
+    // Check if objects overlap horizontally
+    const overlapThreshold = (draggedRadius + otherRadius) * 0.7;
+
+    if (horizontalDist < overlapThreshold) {
+      // Calculate the top surface of the object below
+      const objTopY = obj.position.y + otherPhysics.height;
+
+      // Stack on top of any object we overlap with (no weight restrictions while dragging)
+      stackY = Math.max(stackY, objTopY + draggedBaseOffset);
+    }
+  });
+
+  return stackY;
+}
+
 // Calculate Y position for stacking - checks if the object is above another and returns appropriate Y
 function calculateStackingY(droppedObject) {
   const droppedRadius = getObjectBounds(droppedObject);
@@ -2723,17 +2800,11 @@ function calculateStackingY(droppedObject) {
       // Calculate the top surface of the object below
       const objTopY = obj.position.y + otherPhysics.height;
 
-      // If dropping would place us above this object's top, consider stacking
+      // If dropping would place us above this object's top, stack on it
+      // No weight restrictions - any object can stack on any other object
       if (objTopY > stackY - 0.1) {
-        // Weight check: only stack if the dropped object is lighter or similar weight
-        const weightRatio = droppedPhysics.weight / otherPhysics.weight;
-
-        // Allow stacking if weight ratio is reasonable (dropped is lighter or similar)
-        if (weightRatio < 1.5) {
-          // Stack on top of this object
-          const droppedBaseOffset = OBJECT_PHYSICS[droppedObject.userData.type]?.baseOffset || 0;
-          stackY = Math.max(stackY, objTopY + droppedBaseOffset);
-        }
+        const droppedBaseOffset = OBJECT_PHYSICS[droppedObject.userData.type]?.baseOffset || 0;
+        stackY = Math.max(stackY, objTopY + droppedBaseOffset);
       }
     }
   });
@@ -2744,13 +2815,13 @@ function calculateStackingY(droppedObject) {
 function onMouseWheel(event) {
   updateMousePosition(event);
 
-  // If in examine mode: scroll UP exits examine mode (only when LMB is held), scroll DOWN with Shift scales
+  // If in examine mode: scroll rotates object, LMB held + scroll UP exits, Shift+scroll scales
   if (examineState.active && examineState.object) {
     event.preventDefault();
 
     const object = examineState.object;
 
-    // Scroll UP (deltaY < 0) exits examine mode only when LMB is held on the examined object
+    // Scroll UP (deltaY < 0) with LMB held exits examine mode
     // This prevents accidental exits
     if (event.deltaY < 0 && !event.shiftKey && event.buttons === 1) {
       exitExamineMode();
@@ -2779,9 +2850,10 @@ function onMouseWheel(event) {
         adjustObjectYForScale(object, oldScale, newScale);
         saveState();
       }
-    } else if (event.deltaY > 0) {
-      // Scroll DOWN rotates object around Y axis
-      const rotationDelta = 0.15;
+    } else {
+      // Scroll (both UP and DOWN) rotates object around Y axis
+      // Scroll DOWN (deltaY > 0) rotates clockwise, scroll UP (deltaY < 0) rotates counter-clockwise
+      const rotationDelta = event.deltaY > 0 ? 0.15 : -0.15;
       object.rotation.y += rotationDelta;
       object.userData.rotationY = object.rotation.y;
       saveState();
@@ -2869,10 +2941,22 @@ function onMouseWheel(event) {
 
 function onRightClick(event) {
   event.preventDefault();
+  handleRightClick(event);
+}
 
-  updateMousePosition(event);
+// Handle right-click for edit mode - works both when pointer is locked and unlocked
+function handleRightClick(event) {
+  // When pointer is locked, use screen center for raycasting
+  // When unlocked, use mouse position
+  let raycastMouse;
+  if (pointerLockState.isLocked) {
+    raycastMouse = new THREE.Vector2(0, 0); // Screen center
+  } else {
+    updateMousePosition(event);
+    raycastMouse = mouse;
+  }
 
-  raycaster.setFromCamera(mouse, camera);
+  raycaster.setFromCamera(raycastMouse, camera);
   const intersects = raycaster.intersectObjects(deskObjects, true);
 
   if (intersects.length > 0) {
@@ -5030,7 +5114,7 @@ function animate() {
           // Play tick sound at each swing endpoint (optional - simple click)
           if (obj.userData.tickSound) {
             try {
-              const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+              const audioCtx = getSharedAudioContext();
               const osc = audioCtx.createOscillator();
               const gain = audioCtx.createGain();
               osc.connect(gain);
@@ -5039,7 +5123,7 @@ function animate() {
               osc.type = 'square';
               gain.gain.value = 0.1;
               osc.start();
-              setTimeout(() => osc.stop(), 20);
+              osc.stop(audioCtx.currentTime + 0.02); // Use proper scheduling instead of setTimeout
             } catch (e) {}
           }
         }
