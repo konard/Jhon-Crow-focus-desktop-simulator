@@ -5296,8 +5296,8 @@ function openMarkdownEditor(laptop) {
     saveState();
   });
 
-  // Function to save and close the editor
-  function saveAndClose() {
+  // Function to save and close the editor (exitLaptopMode: also exit laptop zoom mode)
+  function saveAndClose(exitLaptopMode = false) {
     laptop.userData.editorContent = sourceTextarea.value;
     laptop.userData.editorFileName = filenameInput.value || 'notes.md';
     editorOverlay.remove();
@@ -5308,23 +5308,29 @@ function openMarkdownEditor(laptop) {
     saveState();
     document.removeEventListener('keydown', handleEditorKeys);
     document.removeEventListener('mousedown', handleEditorMiddleClick);
+
+    // Exit laptop zoom mode if requested
+    if (exitLaptopMode) {
+      closeInteractionModal();
+      exitLaptopZoomMode(laptop);
+    }
   }
 
-  closeBtn.addEventListener('click', saveAndClose);
+  closeBtn.addEventListener('click', () => saveAndClose(false));
 
   // Handle keyboard shortcuts
   const handleEditorKeys = (e) => {
     if (e.key === 'Escape') {
-      saveAndClose();
+      saveAndClose(false);
     }
   };
   document.addEventListener('keydown', handleEditorKeys);
 
-  // Handle middle-click to save and exit
+  // Handle middle-click to save and exit laptop mode entirely
   const handleEditorMiddleClick = (e) => {
     if (e.button === 1) { // Middle mouse button
       e.preventDefault();
-      saveAndClose();
+      saveAndClose(true); // Exit laptop mode too
     }
   };
   document.addEventListener('mousedown', handleEditorMiddleClick);
@@ -6336,9 +6342,15 @@ function enterLaptopZoomMode(object) {
 
   animateZoom();
 
-  // Open interaction modal after zoom
+  // Open interaction modal or editor after zoom
   setTimeout(() => {
-    openInteractionModal(object);
+    // If laptop has saved content and is on desktop, go directly to editor
+    if (object.userData.isOn && object.userData.screenState === 'desktop' &&
+        object.userData.editorContent && object.userData.editorContent.trim().length > 0) {
+      openMarkdownEditor(object);
+    } else {
+      openInteractionModal(object);
+    }
   }, 550);
 }
 
