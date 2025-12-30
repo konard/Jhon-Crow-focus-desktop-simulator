@@ -1241,7 +1241,9 @@ function createPen(options = {}) {
     interactive: false,
     penColor: penColor,
     mainColor: options.mainColor || `#${colorHex.toString(16).padStart(6, '0')}`,
-    accentColor: options.accentColor || '#d4d4d4'
+    accentColor: options.accentColor || '#d4d4d4',
+    inkColor: options.inkColor || `#${colorHex.toString(16).padStart(6, '0')}`,
+    colorHex: colorHex
   };
 
   // Pen body
@@ -2021,6 +2023,11 @@ function updateObjectColor(object, colorType, colorValue) {
       typeSpecificData.powerButtonColor = object.userData.powerButtonColor;
       typeSpecificData.editorContent = object.userData.editorContent;
       typeSpecificData.editorFileName = object.userData.editorFileName;
+      break;
+    case 'pen':
+      typeSpecificData.penColor = object.userData.penColor;
+      typeSpecificData.inkColor = object.userData.inkColor;
+      typeSpecificData.colorHex = object.userData.colorHex;
       break;
   }
 
@@ -3556,6 +3563,28 @@ function updateCustomizationPanel(object) {
       `;
       setupBookCustomizationHandlers(object);
       break;
+
+    case 'pen':
+      dynamicOptions.innerHTML = `
+        <div class="customization-group" style="margin-top: 20px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.1);">
+          <label>Body Color</label>
+          <div style="display: flex; align-items: center; gap: 10px; margin-top: 8px;">
+            <input type="color" id="pen-body-color-edit" value="${object.userData.mainColor || '#3b82f6'}"
+                   style="width: 40px; height: 30px; border: none; cursor: pointer; border-radius: 4px;">
+            <span id="pen-body-color-display" style="color: rgba(255,255,255,0.7);">${object.userData.mainColor || '#3b82f6'}</span>
+          </div>
+        </div>
+        <div class="customization-group" style="margin-top: 15px;">
+          <label>Ink Color (for writing)</label>
+          <div style="display: flex; align-items: center; gap: 10px; margin-top: 8px;">
+            <input type="color" id="pen-ink-color-edit" value="${object.userData.inkColor || object.userData.mainColor || '#3b82f6'}"
+                   style="width: 40px; height: 30px; border: none; cursor: pointer; border-radius: 4px;">
+            <span id="pen-ink-color-display" style="color: rgba(255,255,255,0.7);">${object.userData.inkColor || object.userData.mainColor || '#3b82f6'}</span>
+          </div>
+        </div>
+      `;
+      setupPenCustomizationHandlers(object);
+      break;
   }
 }
 
@@ -3718,6 +3747,45 @@ function setupMetronomeCustomizationHandlers(object) {
       beepBtn.addEventListener('click', () => {
         object.userData.tickSoundType = 'beep';
         updateSoundTypeButtons();
+        saveState();
+      });
+    }
+  }, 0);
+}
+
+function setupPenCustomizationHandlers(object) {
+  setTimeout(() => {
+    const bodyColorInput = document.getElementById('pen-body-color-edit');
+    const bodyColorDisplay = document.getElementById('pen-body-color-display');
+    const inkColorInput = document.getElementById('pen-ink-color-edit');
+    const inkColorDisplay = document.getElementById('pen-ink-color-display');
+
+    if (bodyColorInput) {
+      bodyColorInput.addEventListener('input', (e) => {
+        const color = e.target.value;
+        object.userData.mainColor = color;
+        if (bodyColorDisplay) bodyColorDisplay.textContent = color;
+
+        // Update the pen body and cap color
+        object.children.forEach(child => {
+          if (child.isMesh && child.material) {
+            // Body and cap share the same material by reference, update body
+            if (child.geometry.type === 'CylinderGeometry' && child.position.y > 0.1) {
+              child.material.color.set(color);
+              child.material.needsUpdate = true;
+            }
+          }
+        });
+
+        saveState();
+      });
+    }
+
+    if (inkColorInput) {
+      inkColorInput.addEventListener('input', (e) => {
+        const color = e.target.value;
+        object.userData.inkColor = color;
+        if (inkColorDisplay) inkColorDisplay.textContent = color;
         saveState();
       });
     }
@@ -5936,6 +6004,10 @@ async function saveState() {
             data.powerButtonColor = obj.userData.powerButtonColor;
           }
           break;
+        case 'pen':
+          data.penColor = obj.userData.penColor;
+          data.inkColor = obj.userData.inkColor;
+          break;
       }
 
       return data;
@@ -6060,6 +6132,21 @@ async function loadState() {
                   const textureLoader = new THREE.TextureLoader();
                   textureLoader.load(objData.bootScreenDataUrl, (texture) => {
                     obj.userData.bootScreenTexture = texture;
+                  });
+                }
+                break;
+              case 'pen':
+                if (objData.penColor) obj.userData.penColor = objData.penColor;
+                if (objData.inkColor) {
+                  obj.userData.inkColor = objData.inkColor;
+                }
+                // Update pen body color from mainColor
+                if (objData.mainColor) {
+                  obj.children.forEach(child => {
+                    if (child.isMesh && child.geometry.type === 'CylinderGeometry' && child.position.y > 0.1) {
+                      child.material.color.set(objData.mainColor);
+                      child.material.needsUpdate = true;
+                    }
                   });
                 }
                 break;
