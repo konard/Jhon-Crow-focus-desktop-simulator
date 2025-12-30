@@ -2796,14 +2796,16 @@ function onMouseDown(event) {
     const intersects = raycaster.intersectObjects(deskObjects, true);
 
     if (intersects.length > 0) {
-      let object = intersects[0].object;
+      const clickedMesh = intersects[0].object;
+      let object = clickedMesh;
       while (object.parent && !deskObjects.includes(object)) {
         object = object.parent;
       }
 
       if (deskObjects.includes(object)) {
         // Perform quick toggle interaction based on object type
-        performQuickInteraction(object);
+        // Pass the clicked mesh so we can detect sub-component clicks (like power button)
+        performQuickInteraction(object, clickedMesh);
       }
     }
     return;
@@ -3585,6 +3587,34 @@ function updateCustomizationPanel(object) {
       `;
       setupPenCustomizationHandlers(object);
       break;
+
+    case 'laptop':
+      dynamicOptions.innerHTML = `
+        <div class="customization-group" style="margin-top: 20px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.1);">
+          <label>Power LED Color</label>
+          <div style="display: flex; align-items: center; gap: 10px; margin-top: 8px;">
+            <input type="color" id="laptop-led-color-edit" value="${object.userData.powerLedColor || '#00ff00'}"
+                   style="width: 40px; height: 30px; border: none; cursor: pointer; border-radius: 4px;">
+            <span id="laptop-led-color-display" style="color: rgba(255,255,255,0.7);">${object.userData.powerLedColor || '#00ff00'}</span>
+          </div>
+        </div>
+        <div class="customization-group" style="margin-top: 15px;">
+          <label>Boot Screen Image</label>
+          <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 8px;">
+            <label style="display: inline-block; padding: 10px 15px; background: rgba(79, 70, 229, 0.3); border: 1px solid rgba(79, 70, 229, 0.5); border-radius: 8px; color: #fff; cursor: pointer; text-align: center;">
+              ${object.userData.bootScreenDataUrl ? 'Change Boot Screen' : 'Upload Boot Screen'}
+              <input type="file" id="laptop-boot-screen-edit" accept="image/*" style="display: none;">
+            </label>
+            ${object.userData.bootScreenDataUrl ? `
+              <button id="laptop-boot-screen-clear" style="padding: 10px 15px; background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 8px; color: #ef4444; cursor: pointer;">
+                Clear Boot Screen
+              </button>
+            ` : ''}
+          </div>
+        </div>
+      `;
+      setupLaptopCustomizationHandlers(object);
+      break;
   }
 }
 
@@ -3748,6 +3778,66 @@ function setupMetronomeCustomizationHandlers(object) {
         object.userData.tickSoundType = 'beep';
         updateSoundTypeButtons();
         saveState();
+      });
+    }
+  }, 0);
+}
+
+function setupLaptopCustomizationHandlers(object) {
+  setTimeout(() => {
+    const ledColorInput = document.getElementById('laptop-led-color-edit');
+    const ledColorDisplay = document.getElementById('laptop-led-color-display');
+    const bootScreenInput = document.getElementById('laptop-boot-screen-edit');
+    const bootScreenClear = document.getElementById('laptop-boot-screen-clear');
+
+    if (ledColorInput) {
+      ledColorInput.addEventListener('input', (e) => {
+        const color = e.target.value;
+        object.userData.powerLedColor = color;
+        if (ledColorDisplay) ledColorDisplay.textContent = color;
+
+        // Update LED color if laptop is on
+        if (object.userData.isOn) {
+          const powerLed = object.getObjectByName('powerLed');
+          if (powerLed) {
+            const ledColor = new THREE.Color(color);
+            powerLed.material.color.copy(ledColor);
+            powerLed.material.emissive.copy(ledColor);
+          }
+        }
+        saveState();
+      });
+    }
+
+    if (bootScreenInput) {
+      bootScreenInput.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (file && file.type.startsWith('image/')) {
+          const reader = new FileReader();
+          reader.onload = (event) => {
+            const imageUrl = event.target.result;
+            object.userData.bootScreenDataUrl = imageUrl;
+            const textureLoader = new THREE.TextureLoader();
+            textureLoader.load(imageUrl, (texture) => {
+              object.userData.bootScreenTexture = texture;
+              saveState();
+            });
+          };
+          reader.readAsDataURL(file);
+        }
+      });
+    }
+
+    if (bootScreenClear) {
+      bootScreenClear.addEventListener('click', () => {
+        if (object.userData.bootScreenTexture) {
+          object.userData.bootScreenTexture.dispose();
+          object.userData.bootScreenTexture = null;
+        }
+        object.userData.bootScreenDataUrl = null;
+        saveState();
+        // Refresh the panel to update button text
+        showCustomizationPanel(object);
       });
     }
   }, 0);
@@ -5437,7 +5527,8 @@ function updateSteamVisibility(object) {
 
 // Quick interaction function for middle-click toggle actions
 // This allows simple interactions without picking up or opening modal
-function performQuickInteraction(object) {
+// clickedMesh is the actual mesh that was clicked (for detecting sub-component clicks)
+function performQuickInteraction(object, clickedMesh = null) {
   const type = object.userData.type;
 
   switch (type) {
@@ -5544,8 +5635,14 @@ function performQuickInteraction(object) {
       break;
 
     case 'laptop':
-      // Toggle laptop power
-      toggleLaptopPower(object);
+      // Check if the power button was clicked
+      if (clickedMesh && clickedMesh.name === 'powerButton') {
+        // Toggle power only when clicking on power button
+        toggleLaptopPower(object);
+      } else {
+        // Enter laptop zoom mode for other areas
+        enterLaptopZoomMode(object);
+      }
       break;
 
     case 'pen-holder':
@@ -5805,6 +5902,102 @@ function animatePageTurn(book, direction) {
 // ============================================================================
 // LAPTOP POWER TOGGLE AND BOOT ANIMATION
 // ============================================================================
+
+// Enter laptop zoom mode (focus on screen)
+function enterLaptopZoomMode(object) {
+  if (object.userData.isZoomedIn) {
+    // Already zoomed in, exit zoom mode
+    exitLaptopZoomMode(object);
+    return;
+  }
+
+  object.userData.isZoomedIn = true;
+
+  // Get screen position in world coordinates
+  const screenGroup = object.getObjectByName('screenGroup');
+  if (!screenGroup) return;
+
+  const screenWorldPos = new THREE.Vector3();
+  screenGroup.getWorldPosition(screenWorldPos);
+
+  // Store original camera state for returning
+  object.userData.originalCameraPos = camera.position.clone();
+  object.userData.originalCameraYaw = cameraLookState.yaw;
+  object.userData.originalCameraPitch = cameraLookState.pitch;
+
+  // Calculate target position in front of the screen
+  const direction = new THREE.Vector3();
+  object.getWorldDirection(direction);
+
+  // Position camera to look at screen from front
+  const targetCameraPos = new THREE.Vector3(
+    screenWorldPos.x,
+    screenWorldPos.y + 0.2,
+    screenWorldPos.z + 0.8
+  );
+
+  // Animate camera to target position
+  const startPos = camera.position.clone();
+  const startTime = Date.now();
+  const duration = 500;
+
+  function animateZoom() {
+    const elapsed = Date.now() - startTime;
+    const progress = Math.min(elapsed / duration, 1);
+    const eased = 1 - Math.pow(1 - progress, 3); // Ease out cubic
+
+    camera.position.lerpVectors(startPos, targetCameraPos, eased);
+
+    if (progress < 1) {
+      requestAnimationFrame(animateZoom);
+    }
+  }
+
+  animateZoom();
+
+  // Open interaction modal after zoom
+  setTimeout(() => {
+    openInteractionModal(object);
+  }, 550);
+}
+
+function exitLaptopZoomMode(object) {
+  if (!object.userData.isZoomedIn) return;
+
+  object.userData.isZoomedIn = false;
+
+  // Animate camera back to original position
+  if (object.userData.originalCameraPos) {
+    const startPos = camera.position.clone();
+    const targetPos = object.userData.originalCameraPos;
+    const startTime = Date.now();
+    const duration = 400;
+
+    function animateZoomOut() {
+      const elapsed = Date.now() - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+      const eased = 1 - Math.pow(1 - progress, 3);
+
+      camera.position.lerpVectors(startPos, targetPos, eased);
+
+      if (progress < 1) {
+        requestAnimationFrame(animateZoomOut);
+      } else {
+        // Restore camera look direction
+        if (object.userData.originalCameraYaw !== undefined) {
+          cameraLookState.yaw = object.userData.originalCameraYaw;
+        }
+        if (object.userData.originalCameraPitch !== undefined) {
+          cameraLookState.pitch = object.userData.originalCameraPitch;
+        }
+        updateCameraLook();
+      }
+    }
+
+    animateZoomOut();
+  }
+}
+
 function toggleLaptopPower(object) {
   if (object.userData.isBooting) return; // Don't toggle while booting
 
