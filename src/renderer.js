@@ -4627,9 +4627,12 @@ function setupBookCustomizationHandlers(object) {
     if (pdfInput) {
       pdfInput.addEventListener('change', (e) => {
         const file = e.target.files[0];
-        if (file) {
+        if (file && file.type === 'application/pdf') {
           object.userData.pdfPath = file.path || file.name;
-          saveState();
+          object.userData.pdfFile = file;
+          object.userData.isLoadingPdf = true; // Mark as loading for animation
+          // Actually load and render the PDF
+          loadPDFToBook(object, file);
           // Update the customization panel to show the new file
           updateCustomizationPanel(object);
         }
@@ -6071,6 +6074,7 @@ function setupBookHandlers(object) {
         // Store the PDF file path
         object.userData.pdfPath = file.name;
         object.userData.pdfFile = file;
+        object.userData.isLoadingPdf = true; // Mark as loading for animation
 
         // Load PDF (simplified - in real implementation would use pdf.js)
         loadPDFToBook(object, file);
@@ -6118,6 +6122,7 @@ async function loadPDFToBook(book, file) {
         console.warn('PDF.js library not loaded. Using placeholder.');
         book.userData.totalPages = 10;
         book.userData.currentPage = 0;
+        book.userData.isLoadingPdf = false;
         updateBookPages(book);
         return;
       }
@@ -6134,6 +6139,15 @@ async function loadPDFToBook(book, file) {
       book.userData.totalPages = pdfDoc.numPages;
       book.userData.currentPage = 0;
       book.userData.renderedPages = {}; // Cache for rendered page canvases
+      book.userData.isLoadingPdf = false; // Clear loading flag
+
+      // Store PDF as base64 data URL for persistence after reload
+      const base64Reader = new FileReader();
+      base64Reader.onload = () => {
+        book.userData.pdfDataUrl = base64Reader.result;
+        saveState();
+      };
+      base64Reader.readAsDataURL(file);
 
       // Automatically open the book to show the PDF content
       if (!book.userData.isOpen) {
@@ -6155,11 +6169,53 @@ async function loadPDFToBook(book, file) {
       console.error('Error loading PDF:', error);
       book.userData.totalPages = 1;
       book.userData.currentPage = 0;
+      book.userData.isLoadingPdf = false;
       updateBookPages(book);
     }
   };
 
   reader.readAsArrayBuffer(file);
+}
+
+// Load PDF from base64 data URL (for restoring from saved state)
+async function loadPDFFromDataUrl(book, dataUrl) {
+  if (!dataUrl || typeof pdfjsLib === 'undefined') {
+    console.warn('Cannot load PDF: missing data URL or PDF.js library');
+    return;
+  }
+
+  try {
+    book.userData.isLoadingPdf = true;
+
+    // Convert base64 data URL to array buffer
+    const base64 = dataUrl.split(',')[1];
+    const binaryString = atob(base64);
+    const len = binaryString.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+
+    const loadingTask = pdfjsLib.getDocument({ data: bytes });
+    const pdfDoc = await loadingTask.promise;
+    console.log(`PDF restored from saved state: ${pdfDoc.numPages} pages`);
+
+    // Store PDF document reference for later page rendering
+    book.userData.pdfDocument = pdfDoc;
+    book.userData.totalPages = pdfDoc.numPages;
+    book.userData.currentPage = book.userData.currentPage || 0;
+    book.userData.renderedPages = {}; // Cache for rendered page canvases
+    book.userData.isLoadingPdf = false; // Clear loading flag
+    book.userData.pdfDataUrl = dataUrl; // Keep the data URL
+
+    // Update pages if book is open
+    if (book.userData.isOpen) {
+      await updateBookPagesWithPDF(book);
+    }
+  } catch (error) {
+    console.error('Error loading PDF from data URL:', error);
+    book.userData.isLoadingPdf = false;
+  }
 }
 
 // Render a PDF page to a canvas
@@ -6312,6 +6368,9 @@ function updateBookPages(book) {
   const margin = 160;
   const lineHeight = 112;
 
+  // Check if PDF is loading - show animated ellipsis
+  const isLoading = book.userData.isLoadingPdf;
+
   // Create page texture for left page
   if (leftPage && book.userData.totalPages > 0) {
     const canvas = document.createElement('canvas');
@@ -6350,28 +6409,46 @@ function updateBookPages(book) {
       ? book.userData.pdfPath.split('/').pop() || book.userData.pdfPath.split('\\').pop()
       : null;
 
-    const contentLines = pdfFileName ? [
-      `📄 ${pdfFileName}`,
-      '',
-      'PDF file needs to be',
-      're-selected after reload.',
-      '',
-      'Right-click the book and',
-      'choose the PDF file again',
-      'to display content.',
-      '',
-      `Pages ${pageNum + 1}-${pageNum + 2}`,
-      '← / → to turn pages'
-    ] : [
-      'No PDF loaded',
-      '',
-      'Right-click to open',
-      'customization panel,',
-      'then select PDF file.',
-      '',
-      'Content will appear',
-      'once a PDF is selected.'
-    ];
+    // Show loading animation if PDF is loading
+    let contentLines;
+    if (isLoading) {
+      // Get animated ellipsis based on time
+      const dots = '.'.repeat((Math.floor(Date.now() / 500) % 3) + 1);
+      contentLines = [
+        'Loading PDF' + dots,
+        '',
+        pdfFileName ? `📄 ${pdfFileName}` : '',
+        '',
+        'Please wait while the',
+        'PDF content is being',
+        'rendered...'
+      ].filter(line => line !== '' || contentLines);
+    } else if (pdfFileName) {
+      contentLines = [
+        `📄 ${pdfFileName}`,
+        '',
+        'PDF will be displayed',
+        'once loaded.',
+        '',
+        'If content is not showing,',
+        'right-click the book and',
+        're-select the PDF file.',
+        '',
+        `Pages ${pageNum + 1}-${pageNum + 2}`,
+        '← / → to turn pages'
+      ];
+    } else {
+      contentLines = [
+        'No PDF loaded',
+        '',
+        'Right-click to open',
+        'customization panel,',
+        'then select PDF file.',
+        '',
+        'Content will appear',
+        'once a PDF is selected.'
+      ];
+    }
 
     contentLines.forEach((line, i) => {
       ctx.fillText(line, margin, 480 + i * lineHeight);
@@ -7758,6 +7835,11 @@ async function saveState() {
           data.bookTitle = obj.userData.bookTitle;
           data.titleColor = obj.userData.titleColor;
           data.pdfPath = obj.userData.pdfPath;
+          // Save PDF data URL for persistence across reloads
+          if (obj.userData.pdfDataUrl) {
+            data.pdfDataUrl = obj.userData.pdfDataUrl;
+          }
+          data.currentPage = obj.userData.currentPage || 0;
           break;
         case 'coffee':
           data.drinkType = obj.userData.drinkType;
@@ -7889,6 +7971,7 @@ async function loadState() {
                 if (objData.bookTitle) obj.userData.bookTitle = objData.bookTitle;
                 if (objData.titleColor) obj.userData.titleColor = objData.titleColor;
                 if (objData.pdfPath) obj.userData.pdfPath = objData.pdfPath;
+                if (objData.currentPage !== undefined) obj.userData.currentPage = objData.currentPage;
                 // Regenerate title texture with saved title (uses userData.titleColor internally)
                 if (objData.bookTitle && obj.userData.createTitleTexture) {
                   const newCoverTexture = obj.userData.createTitleTexture(
@@ -7901,6 +7984,11 @@ async function loadState() {
                       child.material.needsUpdate = true;
                     }
                   });
+                }
+                // Restore PDF from data URL if available
+                if (objData.pdfDataUrl) {
+                  obj.userData.pdfDataUrl = objData.pdfDataUrl;
+                  loadPDFFromDataUrl(obj, objData.pdfDataUrl);
                 }
                 break;
               case 'coffee':
@@ -8292,6 +8380,15 @@ function animate() {
       } else {
         const steam = obj.getObjectByName('steam');
         if (steam) steam.visible = false;
+      }
+    }
+
+    // Book loading animation - update every 500ms
+    if (obj.userData.type === 'books' && obj.userData.isLoadingPdf && obj.userData.isOpen) {
+      // Track last update time for animation
+      if (!obj.userData.lastLoadingAnimUpdate || Date.now() - obj.userData.lastLoadingAnimUpdate > 500) {
+        obj.userData.lastLoadingAnimUpdate = Date.now();
+        updateBookPages(obj);
       }
     }
   });
