@@ -5043,8 +5043,9 @@ function setupBookCustomizationHandlers(object) {
       resolutionSlider.addEventListener('change', (e) => {
         const newRes = parseInt(e.target.value);
         object.userData.pdfResolution = newRes;
-        // Clear cached rendered pages so they re-render at new resolution
+        // Clear cached rendered pages and textures so they re-render at new resolution
         object.userData.renderedPages = {};
+        object.userData.pageTextures = {};
         // Re-render current pages if book is open
         if (object.userData.isOpen && object.userData.pdfDocument) {
           updateBookPagesWithPDF(object);
@@ -5138,8 +5139,9 @@ function setupBookCustomizationHandlers(object) {
             object.userData.firstPageAsCover = true;
             // Reset to page 0 and update content (which now skips page 1)
             object.userData.currentPage = 0;
-            // Clear cached pages to force re-render with offset
+            // Clear cached pages and textures to force re-render with offset
             object.userData.renderedPages = {};
+            object.userData.pageTextures = {};
             if (object.userData.isOpen) {
               updateBookPagesWithPDF(object);
             }
@@ -5171,8 +5173,9 @@ function setupBookCustomizationHandlers(object) {
         object.userData.originalCoverMaterial = null;
         // Also clear the first page as cover flag
         object.userData.firstPageAsCover = false;
-        // Clear cached pages to force re-render without offset
+        // Clear cached pages and textures to force re-render without offset
         object.userData.renderedPages = {};
+        object.userData.pageTextures = {};
         if (object.userData.isOpen) {
           updateBookPagesWithPDF(object);
         }
@@ -6722,6 +6725,7 @@ async function loadPDFToBook(book, file) {
       book.userData.totalPages = pdfDoc.numPages;
       book.userData.currentPage = 0;
       book.userData.renderedPages = {}; // Cache for rendered page canvases
+      book.userData.pageTextures = {}; // Cache for THREE.Texture objects
       book.userData.isLoadingPdf = false; // Clear loading flag
 
       // Update book thickness based on page count
@@ -6810,6 +6814,7 @@ async function loadPDFFromDataUrl(book, dataUrl) {
     book.userData.totalPages = pdfDoc.numPages;
     book.userData.currentPage = book.userData.currentPage || 0;
     book.userData.renderedPages = {}; // Cache for rendered page canvases
+    book.userData.pageTextures = {}; // Cache for THREE.Texture objects
     book.userData.isLoadingPdf = false; // Clear loading flag
     book.userData.loadingProgress = 100; // Mark as complete
     book.userData.pdfDataUrl = dataUrl; // Keep the data URL
@@ -6895,24 +6900,37 @@ async function updateBookPagesWithPDF(book) {
   // Page offset: if first page is used as cover, skip it in content
   const pageOffset = book.userData.firstPageAsCover ? 1 : 0;
 
+  // Initialize texture cache if needed
+  if (!book.userData.pageTextures) {
+    book.userData.pageTextures = {};
+  }
+
   // Render left page (current page)
   const leftPageNum = book.userData.currentPage * 2 + 1 + pageOffset; // 1-indexed with offset
   if (leftPage && leftPageNum <= pdfDoc.numPages) {
-    let canvas = book.userData.renderedPages[leftPageNum];
-    if (!canvas) {
-      canvas = await renderPDFPageToCanvas(pdfDoc, leftPageNum, canvasWidth, canvasHeight);
+    // Check if we already have a cached texture for this page
+    let texture = book.userData.pageTextures[leftPageNum];
+    if (!texture) {
+      let canvas = book.userData.renderedPages[leftPageNum];
+      if (!canvas) {
+        canvas = await renderPDFPageToCanvas(pdfDoc, leftPageNum, canvasWidth, canvasHeight);
+        if (canvas) {
+          book.userData.renderedPages[leftPageNum] = canvas;
+        }
+      }
+
       if (canvas) {
-        book.userData.renderedPages[leftPageNum] = canvas;
+        texture = new THREE.CanvasTexture(canvas);
+        texture.anisotropy = 16;
+        // Use LinearFilter for crisp PDF rendering (no mipmap blur)
+        texture.minFilter = THREE.LinearFilter;
+        texture.magFilter = THREE.LinearFilter;
+        texture.generateMipmaps = false;
+        book.userData.pageTextures[leftPageNum] = texture;
       }
     }
 
-    if (canvas) {
-      const texture = new THREE.CanvasTexture(canvas);
-      texture.anisotropy = 16;
-      // Use LinearFilter for crisp PDF rendering (no mipmap blur)
-      texture.minFilter = THREE.LinearFilter;
-      texture.magFilter = THREE.LinearFilter;
-      texture.generateMipmaps = false;
+    if (texture && leftPage.material.map !== texture) {
       leftPage.material.map = texture;
       leftPage.material.needsUpdate = true;
     }
@@ -6924,21 +6942,29 @@ async function updateBookPagesWithPDF(book) {
   // Render right page (current page + 1)
   const rightPageNum = book.userData.currentPage * 2 + 2 + pageOffset; // 1-indexed with offset
   if (rightPage && rightPageNum <= pdfDoc.numPages) {
-    let canvas = book.userData.renderedPages[rightPageNum];
-    if (!canvas) {
-      canvas = await renderPDFPageToCanvas(pdfDoc, rightPageNum, canvasWidth, canvasHeight);
+    // Check if we already have a cached texture for this page
+    let texture = book.userData.pageTextures[rightPageNum];
+    if (!texture) {
+      let canvas = book.userData.renderedPages[rightPageNum];
+      if (!canvas) {
+        canvas = await renderPDFPageToCanvas(pdfDoc, rightPageNum, canvasWidth, canvasHeight);
+        if (canvas) {
+          book.userData.renderedPages[rightPageNum] = canvas;
+        }
+      }
+
       if (canvas) {
-        book.userData.renderedPages[rightPageNum] = canvas;
+        texture = new THREE.CanvasTexture(canvas);
+        texture.anisotropy = 16;
+        // Use LinearFilter for crisp PDF rendering (no mipmap blur)
+        texture.minFilter = THREE.LinearFilter;
+        texture.magFilter = THREE.LinearFilter;
+        texture.generateMipmaps = false;
+        book.userData.pageTextures[rightPageNum] = texture;
       }
     }
 
-    if (canvas) {
-      const texture = new THREE.CanvasTexture(canvas);
-      texture.anisotropy = 16;
-      // Use LinearFilter for crisp PDF rendering (no mipmap blur)
-      texture.minFilter = THREE.LinearFilter;
-      texture.magFilter = THREE.LinearFilter;
-      texture.generateMipmaps = false;
+    if (texture && rightPage.material.map !== texture) {
       rightPage.material.map = texture;
       rightPage.material.needsUpdate = true;
     }
