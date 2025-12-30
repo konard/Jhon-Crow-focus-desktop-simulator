@@ -5174,8 +5174,22 @@ function loadPDFToBook(book, file) {
     book.userData.totalPages = 10; // Placeholder
     book.userData.currentPage = 0;
 
+    // Automatically open the book to show the PDF content
+    if (!book.userData.isOpen) {
+      toggleBookOpen(book);
+    }
+
     // Update the page surfaces with a "PDF loaded" texture
     updateBookPages(book);
+
+    // Refresh the modal to show the PDF content immediately
+    const content = document.getElementById('interaction-content');
+    if (content && interactionObject === book) {
+      content.innerHTML = getInteractionContent(book);
+      setupBookHandlers(book);
+    }
+
+    saveState();
   };
   reader.readAsArrayBuffer(file);
 }
