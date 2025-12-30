@@ -1015,18 +1015,20 @@ function createCoffeeMug(options = {}) {
   // - Endpoints attach to mug at top and bottom (vertically separated)
   // - Arc bulges outward from mug body (in +X direction when mug at origin)
   //
-  // To achieve this:
-  // 1. rotation.z = PI/2 rotates the arc so endpoints are vertical at (0, ±r, 0)
-  //    and peak moves to (r, 0, 0) extending outward
-  // 2. Position handle at mug's outer edge
+  // To achieve this we need TWO rotations:
+  // 1. rotation.z = PI/2 rotates the arc so endpoints are vertical
+  //    (endpoints move to (0, ±r, 0), peak moves to (-r, 0, 0))
+  // 2. rotation.y = PI flips the handle so peak points outward (+X instead of -X)
+  // Combined effect: endpoints at (0, ±r, 0), peak at (+r, 0, 0) - proper D-shape
   const handleGeometry = new THREE.TorusGeometry(0.05, 0.015, 8, 16, Math.PI);
   const handleMaterial = new THREE.MeshStandardMaterial({
     color: new THREE.Color(group.userData.mainColor),
     roughness: 0.4
   });
   const handle = new THREE.Mesh(handleGeometry, handleMaterial);
-  // Rotate around Z axis to make endpoints vertical
-  handle.rotation.set(0, 0, Math.PI / 2);
+  // Apply rotations: Z to make endpoints vertical, Y to flip arc outward
+  // Note: Three.js applies rotations in XYZ order, so we set all at once
+  handle.rotation.set(0, Math.PI, Math.PI / 2);
   // Position at mug edge (radius ~0.11), vertically centered on mug (y=0.1)
   handle.position.set(0.11, 0.1, 0);
   handle.castShadow = true;
