@@ -1299,6 +1299,7 @@ function createBooks(options = {}) {
     isOpen: false, // Whether book is open
     openAngle: 0, // Animation angle
     bookTitle: options.bookTitle || 'My Book',
+    titleColor: options.titleColor || '#ffffff', // Title text color
     pdfPath: null, // Path to PDF file
     currentPage: 0, // Current page index
     totalPages: 0, // Total number of pages
@@ -1346,7 +1347,8 @@ function createBooks(options = {}) {
   closedGroup.add(spine);
 
   // Title on cover (rendered as texture with actual text)
-  const createTitleTexture = (title, width, height, fontSize, isSpine = false) => {
+  // Font size increased from 24 to 32 for better readability
+  const createTitleTexture = (title, width, height, fontSize) => {
     const canvas = document.createElement('canvas');
     canvas.width = width;
     canvas.height = height;
@@ -1357,31 +1359,23 @@ function createBooks(options = {}) {
     ctx.fillStyle = accentHex;
     ctx.fillRect(0, 0, width, height);
 
-    // Text styling
-    ctx.fillStyle = '#ffffff';
+    // Text styling - use configurable title color
+    ctx.fillStyle = group.userData.titleColor || '#ffffff';
     ctx.font = `bold ${fontSize}px Arial, sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
 
-    if (isSpine) {
-      // Rotate text for spine (vertical)
-      ctx.save();
-      ctx.translate(width / 2, height / 2);
-      ctx.rotate(-Math.PI / 2);
-      ctx.fillText(title, 0, 0);
-      ctx.restore();
-    } else {
-      ctx.fillText(title, width / 2, height / 2);
-    }
+    // Draw title text (centered)
+    ctx.fillText(title, width / 2, height / 2);
 
     const texture = new THREE.CanvasTexture(canvas);
     texture.needsUpdate = true;
     return texture;
   };
 
-  // Cover title
-  const coverTitleGeometry = new THREE.PlaneGeometry(0.18, 0.06);
-  const coverTitleTexture = createTitleTexture(group.userData.bookTitle, 256, 86, 24, false);
+  // Cover title - increased font size from 24 to 32 for better readability
+  const coverTitleGeometry = new THREE.PlaneGeometry(0.22, 0.08);
+  const coverTitleTexture = createTitleTexture(group.userData.bookTitle, 320, 116, 32);
   const coverTitleMaterial = new THREE.MeshStandardMaterial({
     map: coverTitleTexture,
     roughness: 0.5
@@ -1392,18 +1386,7 @@ function createBooks(options = {}) {
   coverTitle.name = 'coverTitle';
   closedGroup.add(coverTitle);
 
-  // Spine title
-  const spineTitleGeometry = new THREE.PlaneGeometry(0.015, 0.32);
-  const spineTitleTexture = createTitleTexture(group.userData.bookTitle, 48, 256, 12, true);
-  const spineTitleMaterial = new THREE.MeshStandardMaterial({
-    map: spineTitleTexture,
-    roughness: 0.5
-  });
-  const spineTitle = new THREE.Mesh(spineTitleGeometry, spineTitleMaterial);
-  spineTitle.rotation.y = -Math.PI / 2;
-  spineTitle.position.set(-0.141, 0.02, 0);
-  spineTitle.name = 'spineTitle';
-  closedGroup.add(spineTitle);
+  // Spine title removed per user feedback - spine is now plain accent color
 
   // Store the createTitleTexture function for later updates
   group.userData.createTitleTexture = createTitleTexture;
@@ -3438,6 +3421,14 @@ function updateCustomizationPanel(object) {
                  style="width: 100%; padding: 10px; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; color: #fff; margin-top: 8px;">
         </div>
         <div class="customization-group" style="margin-top: 15px;">
+          <label>Title Color</label>
+          <div style="display: flex; align-items: center; gap: 10px; margin-top: 8px;">
+            <input type="color" id="book-title-color-edit" value="${object.userData.titleColor || '#ffffff'}"
+                   style="width: 40px; height: 30px; border: none; cursor: pointer; border-radius: 4px;">
+            <span style="color: rgba(255,255,255,0.7);">${object.userData.titleColor || '#ffffff'}</span>
+          </div>
+        </div>
+        <div class="customization-group" style="margin-top: 15px;">
           <label>PDF File</label>
           <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 8px;">
             <label style="display: inline-block; padding: 10px 15px; background: rgba(79, 70, 229, 0.3); border: 1px solid rgba(79, 70, 229, 0.5); border-radius: 8px; color: #fff; cursor: pointer; text-align: center;">
@@ -3609,26 +3600,23 @@ function setupPhotoFrameCustomizationHandlers(object) {
 function setupBookCustomizationHandlers(object) {
   setTimeout(() => {
     const titleInput = document.getElementById('book-title-edit');
+    const titleColorInput = document.getElementById('book-title-color-edit');
     const pdfInput = document.getElementById('book-pdf-edit');
     const clearBtn = document.getElementById('book-pdf-clear-edit');
 
     // Helper to update book title textures
-    const updateBookTitleTextures = (newTitle) => {
+    const updateBookTitleTextures = () => {
       if (object.userData.createTitleTexture) {
         const closedGroup = object.getObjectByName('closedBook');
         if (closedGroup) {
           const coverTitle = closedGroup.getObjectByName('coverTitle');
-          const spineTitle = closedGroup.getObjectByName('spineTitle');
           if (coverTitle) {
-            const newCoverTexture = object.userData.createTitleTexture(newTitle, 256, 86, 24, false);
+            // Use larger font size (32) for cover title
+            const newCoverTexture = object.userData.createTitleTexture(object.userData.bookTitle, 320, 116, 32);
             coverTitle.material.map = newCoverTexture;
             coverTitle.material.needsUpdate = true;
           }
-          if (spineTitle) {
-            const newSpineTexture = object.userData.createTitleTexture(newTitle, 48, 256, 12, true);
-            spineTitle.material.map = newSpineTexture;
-            spineTitle.material.needsUpdate = true;
-          }
+          // Spine title removed - no longer updated
         }
       }
     };
@@ -3636,13 +3624,24 @@ function setupBookCustomizationHandlers(object) {
     if (titleInput) {
       titleInput.addEventListener('change', (e) => {
         object.userData.bookTitle = e.target.value;
-        updateBookTitleTextures(e.target.value);
+        updateBookTitleTextures();
         saveState();
       });
       titleInput.addEventListener('blur', (e) => {
         object.userData.bookTitle = e.target.value;
-        updateBookTitleTextures(e.target.value);
+        updateBookTitleTextures();
         saveState();
+      });
+    }
+
+    if (titleColorInput) {
+      titleColorInput.addEventListener('change', (e) => {
+        object.userData.titleColor = e.target.value;
+        updateBookTitleTextures();
+        saveState();
+        // Update the color display text
+        const colorSpan = titleColorInput.parentElement.querySelector('span');
+        if (colorSpan) colorSpan.textContent = e.target.value;
       });
     }
 
@@ -5016,21 +5015,16 @@ function setupBookHandlers(object) {
   if (titleInput) {
     titleInput.addEventListener('change', (e) => {
       object.userData.bookTitle = e.target.value;
-      // Update title textures on cover and spine
+      // Update title texture on cover (spine no longer has title)
       if (object.userData.createTitleTexture) {
         const closedGroup = object.getObjectByName('closedBook');
         if (closedGroup) {
           const coverTitle = closedGroup.getObjectByName('coverTitle');
-          const spineTitle = closedGroup.getObjectByName('spineTitle');
           if (coverTitle) {
-            const newCoverTexture = object.userData.createTitleTexture(e.target.value, 256, 86, 24, false);
+            // Use larger font size (32) for cover title
+            const newCoverTexture = object.userData.createTitleTexture(e.target.value, 320, 116, 32);
             coverTitle.material.map = newCoverTexture;
             coverTitle.material.needsUpdate = true;
-          }
-          if (spineTitle) {
-            const newSpineTexture = object.userData.createTitleTexture(e.target.value, 48, 256, 12, true);
-            spineTitle.material.map = newSpineTexture;
-            spineTitle.material.needsUpdate = true;
           }
         }
       }
@@ -5723,6 +5717,7 @@ async function saveState() {
           break;
         case 'books':
           data.bookTitle = obj.userData.bookTitle;
+          data.titleColor = obj.userData.titleColor;
           data.pdfPath = obj.userData.pdfPath;
           break;
         case 'coffee':
@@ -5821,6 +5816,7 @@ async function loadState() {
                 break;
               case 'books':
                 if (objData.bookTitle) obj.userData.bookTitle = objData.bookTitle;
+                if (objData.titleColor) obj.userData.titleColor = objData.titleColor;
                 if (objData.pdfPath) obj.userData.pdfPath = objData.pdfPath;
                 break;
               case 'coffee':
