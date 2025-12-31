@@ -121,11 +121,33 @@ function getSharedAudioContext() {
   return sharedAudioCtx;
 }
 
-// Robust audio decoding function with fallback methods and timeout
-async function decodeAudioBuffer(arrayBuffer) {
-  const audioCtx = getSharedAudioContext();
+// List of audio formats NOT supported by Chromium/Electron's Web Audio API
+// These formats will cause decodeAudioData to hang or fail
+const UNSUPPORTED_AUDIO_FORMATS = ['wma', 'wv', 'ape', 'ra', 'ram', 'mid', 'midi', 'amr', 'mka'];
 
-  console.log('decodeAudioBuffer: Starting decode, buffer size:', arrayBuffer.byteLength, 'AudioContext state:', audioCtx.state);
+// List of audio formats that are known to work well with Web Audio API
+const SUPPORTED_AUDIO_FORMATS = ['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a', 'webm', 'opus'];
+
+// Robust audio decoding function with fallback methods and timeout
+async function decodeAudioBuffer(arrayBuffer, fileName = '') {
+  const audioCtx = getSharedAudioContext();
+  const bufferSize = arrayBuffer.byteLength;
+
+  console.log('decodeAudioBuffer: Starting decode, buffer size:', bufferSize, 'AudioContext state:', audioCtx.state);
+
+  // Check for unsupported format by filename extension
+  if (fileName) {
+    const extension = fileName.split('.').pop().toLowerCase();
+    if (UNSUPPORTED_AUDIO_FORMATS.includes(extension)) {
+      throw new Error(`The "${extension.toUpperCase()}" format is not supported by the browser. Please convert your audio file to MP3, WAV, or OGG format.`);
+    }
+  }
+
+  // Warn about large files (>5MB) that may cause issues
+  const MAX_RECOMMENDED_SIZE = 5 * 1024 * 1024; // 5MB
+  if (bufferSize > MAX_RECOMMENDED_SIZE) {
+    console.warn('decodeAudioBuffer: Large file detected (' + (bufferSize / (1024 * 1024)).toFixed(2) + 'MB). This may take a while or fail.');
+  }
 
   // Ensure audio context is running
   if (audioCtx.state === 'suspended') {
@@ -141,11 +163,19 @@ async function decodeAudioBuffer(arrayBuffer) {
   const bufferCopy = arrayBuffer.slice(0);
   console.log('decodeAudioBuffer: Buffer copied, calling decodeAudioData...');
 
+  // Use a shorter timeout for better UX (10 seconds)
+  const DECODE_TIMEOUT_MS = 10000;
+  let timeoutId = null;
+  let isTimedOut = false;
+
   // Create a timeout promise to prevent indefinite hangs
+  // Use a separate function to ensure the timeout runs even if the main thread is busy
   const timeoutPromise = new Promise((_, reject) => {
-    setTimeout(() => {
-      reject(new Error('Audio decoding timed out after 30 seconds. The file may be too large or in an unsupported format. Try a smaller file or convert to MP3.'));
-    }, 30000);
+    timeoutId = setTimeout(() => {
+      isTimedOut = true;
+      console.error('decodeAudioBuffer: Timeout after', DECODE_TIMEOUT_MS, 'ms');
+      reject(new Error(`Audio decoding timed out after ${DECODE_TIMEOUT_MS / 1000} seconds. The file may be corrupted or in an unsupported format. Try converting to MP3 (128kbps) or WAV (16-bit PCM).`));
+    }, DECODE_TIMEOUT_MS);
   });
 
   // Create the decode promise
@@ -153,46 +183,52 @@ async function decodeAudioBuffer(arrayBuffer) {
     let handled = false;
 
     const handleSuccess = (decodedBuffer) => {
-      if (handled) return;
+      if (handled || isTimedOut) return;
       handled = true;
+      if (timeoutId) clearTimeout(timeoutId);
       console.log('Audio decoded successfully, duration:', decodedBuffer.duration, 'channels:', decodedBuffer.numberOfChannels);
       resolve(decodedBuffer);
     };
 
     const handleError = (err) => {
-      if (handled) return;
+      if (handled || isTimedOut) return;
       handled = true;
+      if (timeoutId) clearTimeout(timeoutId);
       console.error('decodeAudioData error:', err);
-      reject(new Error('Unable to decode audio file. The file format may not be supported by your browser. Try converting to a standard format like MP3 (128kbps) or WAV (16-bit PCM).'));
+      reject(new Error('Unable to decode audio file. The file format may not be supported by your browser. Try converting to MP3 (128kbps) or WAV (16-bit PCM).'));
     };
 
-    try {
-      // Use callback form for maximum compatibility
-      // Note: Some Electron versions may hang on decodeAudioData for certain files
-      const result = audioCtx.decodeAudioData(bufferCopy, handleSuccess, handleError);
+    // Use requestAnimationFrame to ensure async execution
+    // This helps prevent the main thread from blocking before the timeout can fire
+    requestAnimationFrame(() => {
+      try {
+        // Use callback form for maximum compatibility
+        // Note: Some Electron versions may hang on decodeAudioData for certain files
+        const result = audioCtx.decodeAudioData(bufferCopy, handleSuccess, handleError);
 
-      // Modern browsers return a promise from decodeAudioData
-      // Handle this as a fallback in case callbacks aren't called
-      if (result && typeof result.then === 'function') {
-        result
-          .then((buffer) => {
-            if (!handled) {
-              console.log('decodeAudioData resolved via promise');
-              handleSuccess(buffer);
-            }
-          })
-          .catch((err) => {
-            if (!handled) {
-              console.log('decodeAudioData rejected via promise');
-              handleError(err);
-            }
-          });
+        // Modern browsers return a promise from decodeAudioData
+        // Handle this as a fallback in case callbacks aren't called
+        if (result && typeof result.then === 'function') {
+          result
+            .then((buffer) => {
+              if (!handled && !isTimedOut) {
+                console.log('decodeAudioData resolved via promise');
+                handleSuccess(buffer);
+              }
+            })
+            .catch((err) => {
+              if (!handled && !isTimedOut) {
+                console.log('decodeAudioData rejected via promise');
+                handleError(err);
+              }
+            });
+        }
+      } catch (e) {
+        // Some browsers throw synchronously instead of calling the error callback
+        console.error('decodeAudioData sync error:', e);
+        handleError(e);
       }
-    } catch (e) {
-      // Some browsers throw synchronously instead of calling the error callback
-      console.error('decodeAudioData sync error:', e);
-      handleError(e);
-    }
+    });
   });
 
   // Race between decode and timeout
@@ -202,6 +238,12 @@ async function decodeAudioBuffer(arrayBuffer) {
 // Safe wrapper for loading audio files from File objects
 async function loadAudioFromFile(file) {
   console.log('loadAudioFromFile:', file.name, 'type:', file.type, 'size:', file.size);
+
+  // Early check for unsupported formats
+  const extension = file.name.split('.').pop().toLowerCase();
+  if (UNSUPPORTED_AUDIO_FORMATS.includes(extension)) {
+    throw new Error(`The "${extension.toUpperCase()}" format is not supported by the browser. Please convert your audio file to MP3, WAV, or OGG format.`);
+  }
 
   // Read file as ArrayBuffer
   const arrayBuffer = await new Promise((resolve, reject) => {
@@ -213,8 +255,8 @@ async function loadAudioFromFile(file) {
 
   console.log('File read complete, buffer size:', arrayBuffer.byteLength);
 
-  // Decode the audio
-  const audioBuffer = await decodeAudioBuffer(arrayBuffer);
+  // Decode the audio (pass filename for additional format checks)
+  const audioBuffer = await decodeAudioBuffer(arrayBuffer, file.name);
 
   // Also create data URL for persistence
   const dataUrl = await new Promise((resolve, reject) => {
@@ -7027,24 +7069,43 @@ function setupMetronomeCustomizationHandlers(object) {
     const customSoundInput = document.getElementById('metronome-custom-sound');
     if (customSoundInput) {
       customSoundInput.addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        // Check if file is audio by MIME type or extension (some files may not have proper MIME type in Electron)
+        const isAudioByType = file.type.startsWith('audio/');
+        const extension = file.name.split('.').pop().toLowerCase();
+
+        // First, check for explicitly unsupported formats
+        if (UNSUPPORTED_AUDIO_FORMATS.includes(extension)) {
+          console.log('Metronome file rejected - unsupported format:', file.name);
+          alert(`The "${extension.toUpperCase()}" format is not supported.\n\nPlease convert your audio file to MP3, WAV, or OGG format.`);
+          e.target.value = '';
+          return;
+        }
+
+        const isAudioByExtension = SUPPORTED_AUDIO_FORMATS.includes(extension);
+
+        if (!isAudioByType && !isAudioByExtension) {
+          console.log('File rejected - not recognized as audio:', file.name, 'type:', file.type);
+          alert('Please select an audio file (MP3, WAV, OGG, etc.)');
+          e.target.value = '';
+          return;
+        }
+
+        console.log('Loading metronome custom sound:', file.name);
+
+        // Show loading indicator
+        const uploadBtn = document.querySelector('#metronome-custom-sound + .upload-btn') ||
+                         document.querySelector('.upload-btn');
+        const originalBtnText = uploadBtn ? uploadBtn.textContent : '';
+        if (uploadBtn) {
+          uploadBtn.textContent = 'Loading...';
+          uploadBtn.style.opacity = '0.7';
+          uploadBtn.style.pointerEvents = 'none';
+        }
+
         try {
-          const file = e.target.files[0];
-          if (!file) return;
-
-          // Check if file is audio by MIME type or extension (some files may not have proper MIME type in Electron)
-          const isAudioByType = file.type.startsWith('audio/');
-          const extension = file.name.split('.').pop().toLowerCase();
-          const audioExtensions = ['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a', 'webm'];
-          const isAudioByExtension = audioExtensions.includes(extension);
-
-          if (!isAudioByType && !isAudioByExtension) {
-            console.log('File rejected - not recognized as audio:', file.name, 'type:', file.type);
-            alert('Please select an audio file (MP3, WAV, OGG, etc.)');
-            return;
-          }
-
-          console.log('Loading metronome custom sound:', file.name);
-
           // Use the robust audio loading helper
           const { audioBuffer, dataUrl } = await loadAudioFromFile(file);
 
@@ -7059,9 +7120,15 @@ function setupMetronomeCustomizationHandlers(object) {
           updateCustomizationPanel(object);
         } catch (err) {
           console.error('Error loading metronome custom sound:', err);
-          alert('Could not load audio file: ' + (err.message || 'Unknown error') + '\nPlease try a different file format.');
+          alert('Could not load audio file:\n\n' + (err.message || 'Unknown error'));
           // Reset the file input
           e.target.value = '';
+          // Restore upload button
+          if (uploadBtn) {
+            uploadBtn.textContent = originalBtnText;
+            uploadBtn.style.opacity = '';
+            uploadBtn.style.pointerEvents = '';
+          }
         }
       });
     }
@@ -8543,24 +8610,42 @@ function setupTimerHandlers() {
   const customSoundInput = document.getElementById('timer-custom-sound');
   if (customSoundInput) {
     customSoundInput.addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      // Check if file is audio by MIME type or extension (some files may not have proper MIME type in Electron)
+      const isAudioByType = file.type.startsWith('audio/');
+      const extension = file.name.split('.').pop().toLowerCase();
+
+      // First, check for explicitly unsupported formats
+      if (UNSUPPORTED_AUDIO_FORMATS.includes(extension)) {
+        console.log('Timer file rejected - unsupported format:', file.name);
+        alert(`The "${extension.toUpperCase()}" format is not supported.\n\nPlease convert your audio file to MP3, WAV, or OGG format.`);
+        e.target.value = '';
+        return;
+      }
+
+      const isAudioByExtension = SUPPORTED_AUDIO_FORMATS.includes(extension);
+
+      if (!isAudioByType && !isAudioByExtension) {
+        console.log('Timer file rejected - not recognized as audio:', file.name, 'type:', file.type);
+        alert('Please select an audio file (MP3, WAV, OGG, etc.)');
+        e.target.value = '';
+        return;
+      }
+
+      console.log('Loading timer custom sound:', file.name);
+
+      // Show loading indicator
+      const uploadBtn = document.querySelector('.upload-btn');
+      const originalBtnText = uploadBtn ? uploadBtn.textContent : '';
+      if (uploadBtn) {
+        uploadBtn.textContent = 'Loading...';
+        uploadBtn.style.opacity = '0.7';
+        uploadBtn.style.pointerEvents = 'none';
+      }
+
       try {
-        const file = e.target.files[0];
-        if (!file) return;
-
-        // Check if file is audio by MIME type or extension (some files may not have proper MIME type in Electron)
-        const isAudioByType = file.type.startsWith('audio/');
-        const extension = file.name.split('.').pop().toLowerCase();
-        const audioExtensions = ['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a', 'webm'];
-        const isAudioByExtension = audioExtensions.includes(extension);
-
-        if (!isAudioByType && !isAudioByExtension) {
-          console.log('Timer file rejected - not recognized as audio:', file.name, 'type:', file.type);
-          alert('Please select an audio file (MP3, WAV, OGG, etc.)');
-          return;
-        }
-
-        console.log('Loading timer custom sound:', file.name);
-
         // Use the robust audio loading helper
         const { audioBuffer, dataUrl } = await loadAudioFromFile(file);
 
@@ -8578,9 +8663,15 @@ function setupTimerHandlers() {
         }
       } catch (err) {
         console.error('Error loading timer custom sound:', err);
-        alert('Could not load audio file: ' + (err.message || 'Unknown error') + '\nPlease try a different file format.');
+        alert('Could not load audio file:\n\n' + (err.message || 'Unknown error'));
         // Reset the file input
         e.target.value = '';
+        // Restore upload button
+        if (uploadBtn) {
+          uploadBtn.textContent = originalBtnText;
+          uploadBtn.style.opacity = '';
+          uploadBtn.style.pointerEvents = '';
+        }
       }
     });
   }
