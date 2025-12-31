@@ -4927,6 +4927,25 @@ function updateObjectColor(object, colorType, colorValue) {
       typeSpecificData.tickSound = object.userData.tickSound;
       typeSpecificData.tickSoundType = object.userData.tickSoundType;
       typeSpecificData.isRunning = object.userData.isRunning;
+      typeSpecificData.volume = object.userData.volume;
+      typeSpecificData.tickPitch = object.userData.tickPitch;
+      typeSpecificData.customSoundDataUrl = object.userData.customSoundDataUrl;
+      // Preserve pitch curve settings
+      typeSpecificData.pitchCurveEnabled = object.userData.pitchCurveEnabled;
+      typeSpecificData.pitchCurveType = object.userData.pitchCurveType;
+      typeSpecificData.pitchCurveStart = object.userData.pitchCurveStart;
+      typeSpecificData.pitchCurveEnd = object.userData.pitchCurveEnd;
+      typeSpecificData.pitchCurveDuration = object.userData.pitchCurveDuration;
+      typeSpecificData.pitchCurveLoop = object.userData.pitchCurveLoop;
+      typeSpecificData.pitchCurvePoints = object.userData.pitchCurvePoints;
+      // Preserve tempo curve settings
+      typeSpecificData.tempoCurveEnabled = object.userData.tempoCurveEnabled;
+      typeSpecificData.tempoCurveType = object.userData.tempoCurveType;
+      typeSpecificData.tempoCurveStart = object.userData.tempoCurveStart;
+      typeSpecificData.tempoCurveEnd = object.userData.tempoCurveEnd;
+      typeSpecificData.tempoCurveDuration = object.userData.tempoCurveDuration;
+      typeSpecificData.tempoCurveLoop = object.userData.tempoCurveLoop;
+      typeSpecificData.tempoCurvePoints = object.userData.tempoCurvePoints;
       break;
     case 'photo-frame':
       typeSpecificData.photoDataUrl = object.userData.photoDataUrl;
@@ -15585,6 +15604,13 @@ async function saveStateImmediate() {
           if (obj.userData.tempoCurveLoop !== undefined) {
             data.tempoCurveLoop = obj.userData.tempoCurveLoop;
           }
+          // Save curve points arrays for FL Studio-style automation curves
+          if (obj.userData.pitchCurvePoints && obj.userData.pitchCurvePoints.length > 0) {
+            data.pitchCurvePoints = obj.userData.pitchCurvePoints;
+          }
+          if (obj.userData.tempoCurvePoints && obj.userData.tempoCurvePoints.length > 0) {
+            data.tempoCurvePoints = obj.userData.tempoCurvePoints;
+          }
           // Save running state and pendulum phase for persistence
           if (obj.userData.isRunning !== undefined) {
             data.isRunning = obj.userData.isRunning;
@@ -16015,6 +16041,13 @@ async function loadState() {
                 if (objData.tempoCurveEnd !== undefined) obj.userData.tempoCurveEnd = objData.tempoCurveEnd;
                 if (objData.tempoCurveDuration !== undefined) obj.userData.tempoCurveDuration = objData.tempoCurveDuration;
                 if (objData.tempoCurveLoop !== undefined) obj.userData.tempoCurveLoop = objData.tempoCurveLoop;
+                // Restore curve points arrays for FL Studio-style automation curves
+                if (objData.pitchCurvePoints && objData.pitchCurvePoints.length > 0) {
+                  obj.userData.pitchCurvePoints = objData.pitchCurvePoints;
+                }
+                if (objData.tempoCurvePoints && objData.tempoCurvePoints.length > 0) {
+                  obj.userData.tempoCurvePoints = objData.tempoCurvePoints;
+                }
                 // Restore running state and pendulum phase
                 if (objData.isRunning !== undefined) obj.userData.isRunning = objData.isRunning;
                 if (objData.pendulumAngle !== undefined) obj.userData.pendulumAngle = objData.pendulumAngle;
