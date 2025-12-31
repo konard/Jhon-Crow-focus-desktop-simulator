@@ -2270,6 +2270,14 @@ function createMetronome(options = {}) {
     customSoundDataUrl: null, // Custom sound file data URL
     pendulumAngle: 0,
     pendulumDirection: 1,
+    // Pitch curve settings - allows pitch to change over time
+    pitchCurveEnabled: options.pitchCurveEnabled !== undefined ? options.pitchCurveEnabled : false,
+    pitchCurveType: options.pitchCurveType || 'linear', // 'linear', 'ease-in', 'ease-out', 'sine'
+    pitchCurveStart: options.pitchCurveStart !== undefined ? options.pitchCurveStart : 100, // Start pitch %
+    pitchCurveEnd: options.pitchCurveEnd !== undefined ? options.pitchCurveEnd : 100, // End pitch %
+    pitchCurveDuration: options.pitchCurveDuration !== undefined ? options.pitchCurveDuration : 60, // Duration in seconds
+    pitchCurveLoop: options.pitchCurveLoop !== undefined ? options.pitchCurveLoop : false, // Loop the curve
+    pitchCurveStartTime: 0, // Timestamp when curve started
     mainColor: options.mainColor || '#8b4513',
     accentColor: options.accentColor || '#ffd700'
   };
@@ -5758,6 +5766,7 @@ function onMouseWheel(event) {
     // Shift+scroll scales object - should work even when modal is open
     if (event.shiftKey) {
       event.preventDefault();
+      event.stopPropagation(); // Prevent modal from capturing this event
       // Scale object (preserving proportions) with Shift+scroll
       const scaleDelta = event.deltaY > 0 ? 0.95 : 1.05;
       const minScale = 0.3;
@@ -6063,6 +6072,12 @@ function updateCustomizationPanel(object) {
     case 'metronome':
       const volumePercent = Math.round((object.userData.volume || 0.5) * 100);
       const pitchPercent = object.userData.tickPitch || 100;
+      const pitchCurveEnabled = object.userData.pitchCurveEnabled || false;
+      const pitchCurveType = object.userData.pitchCurveType || 'linear';
+      const pitchCurveStart = object.userData.pitchCurveStart || 100;
+      const pitchCurveEnd = object.userData.pitchCurveEnd || 100;
+      const pitchCurveDuration = object.userData.pitchCurveDuration || 60;
+      const pitchCurveLoop = object.userData.pitchCurveLoop || false;
       dynamicOptions.innerHTML = `
         <div class="customization-group" style="margin-top: 20px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.1);">
           <label>BPM: <span id="bpm-display">${object.userData.bpm}</span></label>
@@ -6079,6 +6094,50 @@ function updateCustomizationPanel(object) {
           <input type="range" id="metronome-pitch-edit" min="50" max="200" value="${pitchPercent}"
                  style="width: 100%; margin-top: 8px; accent-color: #4f46e5;">
         </div>
+
+        <!-- Pitch Curve Accordion -->
+        <div class="customization-group" style="margin-top: 15px;">
+          <div id="pitch-curve-toggle" style="display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; cursor: pointer;">
+            <span style="color: rgba(255,255,255,0.8); font-size: 12px;">Pitch Curve Over Time</span>
+            <span id="pitch-curve-arrow" style="color: rgba(255,255,255,0.5); font-size: 12px;">▼</span>
+          </div>
+          <div id="pitch-curve-content" style="display: none; padding: 12px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); border-top: none; border-radius: 0 0 8px 8px;">
+            <div style="margin-bottom: 12px;">
+              <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                <input type="checkbox" id="pitch-curve-enabled" ${pitchCurveEnabled ? 'checked' : ''} style="width: 16px; height: 16px; accent-color: #4f46e5;">
+                Enable Pitch Curve
+              </label>
+            </div>
+            <div style="margin-bottom: 12px;">
+              <label style="display: block; color: rgba(255,255,255,0.7); font-size: 11px; margin-bottom: 6px;">Curve Type</label>
+              <select id="pitch-curve-type" style="width: 100%; padding: 8px; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); border-radius: 6px; color: #fff;">
+                <option value="linear" ${pitchCurveType === 'linear' ? 'selected' : ''}>Linear</option>
+                <option value="ease-in" ${pitchCurveType === 'ease-in' ? 'selected' : ''}>Ease In (Slow Start)</option>
+                <option value="ease-out" ${pitchCurveType === 'ease-out' ? 'selected' : ''}>Ease Out (Slow End)</option>
+                <option value="sine" ${pitchCurveType === 'sine' ? 'selected' : ''}>Sine Wave</option>
+              </select>
+            </div>
+            <div style="margin-bottom: 12px;">
+              <label style="display: block; color: rgba(255,255,255,0.7); font-size: 11px; margin-bottom: 6px;">Start Pitch: <span id="pitch-curve-start-display">${pitchCurveStart}%</span></label>
+              <input type="range" id="pitch-curve-start" min="50" max="200" value="${pitchCurveStart}" style="width: 100%; accent-color: #4f46e5;">
+            </div>
+            <div style="margin-bottom: 12px;">
+              <label style="display: block; color: rgba(255,255,255,0.7); font-size: 11px; margin-bottom: 6px;">End Pitch: <span id="pitch-curve-end-display">${pitchCurveEnd}%</span></label>
+              <input type="range" id="pitch-curve-end" min="50" max="200" value="${pitchCurveEnd}" style="width: 100%; accent-color: #4f46e5;">
+            </div>
+            <div style="margin-bottom: 12px;">
+              <label style="display: block; color: rgba(255,255,255,0.7); font-size: 11px; margin-bottom: 6px;">Duration: <span id="pitch-curve-duration-display">${pitchCurveDuration}s</span></label>
+              <input type="range" id="pitch-curve-duration" min="5" max="300" value="${pitchCurveDuration}" style="width: 100%; accent-color: #4f46e5;">
+            </div>
+            <div>
+              <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                <input type="checkbox" id="pitch-curve-loop" ${pitchCurveLoop ? 'checked' : ''} style="width: 16px; height: 16px; accent-color: #4f46e5;">
+                Loop Curve
+              </label>
+            </div>
+          </div>
+        </div>
+
         <div class="customization-group" style="margin-top: 15px;">
           <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
             <input type="checkbox" id="tick-sound" ${object.userData.tickSound ? 'checked' : ''} style="width: 18px; height: 18px; accent-color: #4f46e5;">
@@ -6561,6 +6620,86 @@ function setupMetronomeCustomizationHandlers(object) {
       addScrollToSlider(pitchSlider);
     }
 
+    // Pitch Curve accordion toggle
+    const pitchCurveToggle = document.getElementById('pitch-curve-toggle');
+    const pitchCurveContent = document.getElementById('pitch-curve-content');
+    const pitchCurveArrow = document.getElementById('pitch-curve-arrow');
+    if (pitchCurveToggle && pitchCurveContent) {
+      pitchCurveToggle.addEventListener('click', () => {
+        const isOpen = pitchCurveContent.style.display !== 'none';
+        pitchCurveContent.style.display = isOpen ? 'none' : 'block';
+        pitchCurveArrow.textContent = isOpen ? '▼' : '▲';
+        pitchCurveToggle.style.borderRadius = isOpen ? '8px' : '8px 8px 0 0';
+      });
+    }
+
+    // Pitch Curve enabled checkbox
+    const pitchCurveEnabledCheckbox = document.getElementById('pitch-curve-enabled');
+    if (pitchCurveEnabledCheckbox) {
+      pitchCurveEnabledCheckbox.addEventListener('change', (e) => {
+        object.userData.pitchCurveEnabled = e.target.checked;
+        // Reset curve start time when enabling
+        if (e.target.checked) {
+          object.userData.pitchCurveStartTime = Date.now();
+        }
+        saveState();
+      });
+    }
+
+    // Pitch Curve type dropdown
+    const pitchCurveTypeSelect = document.getElementById('pitch-curve-type');
+    if (pitchCurveTypeSelect) {
+      pitchCurveTypeSelect.addEventListener('change', (e) => {
+        object.userData.pitchCurveType = e.target.value;
+        saveState();
+      });
+    }
+
+    // Pitch Curve start slider
+    const pitchCurveStartSlider = document.getElementById('pitch-curve-start');
+    const pitchCurveStartDisplay = document.getElementById('pitch-curve-start-display');
+    if (pitchCurveStartSlider) {
+      pitchCurveStartSlider.addEventListener('input', (e) => {
+        object.userData.pitchCurveStart = parseInt(e.target.value);
+        pitchCurveStartDisplay.textContent = e.target.value + '%';
+        saveState();
+      });
+      addScrollToSlider(pitchCurveStartSlider);
+    }
+
+    // Pitch Curve end slider
+    const pitchCurveEndSlider = document.getElementById('pitch-curve-end');
+    const pitchCurveEndDisplay = document.getElementById('pitch-curve-end-display');
+    if (pitchCurveEndSlider) {
+      pitchCurveEndSlider.addEventListener('input', (e) => {
+        object.userData.pitchCurveEnd = parseInt(e.target.value);
+        pitchCurveEndDisplay.textContent = e.target.value + '%';
+        saveState();
+      });
+      addScrollToSlider(pitchCurveEndSlider);
+    }
+
+    // Pitch Curve duration slider
+    const pitchCurveDurationSlider = document.getElementById('pitch-curve-duration');
+    const pitchCurveDurationDisplay = document.getElementById('pitch-curve-duration-display');
+    if (pitchCurveDurationSlider) {
+      pitchCurveDurationSlider.addEventListener('input', (e) => {
+        object.userData.pitchCurveDuration = parseInt(e.target.value);
+        pitchCurveDurationDisplay.textContent = e.target.value + 's';
+        saveState();
+      });
+      addScrollToSlider(pitchCurveDurationSlider);
+    }
+
+    // Pitch Curve loop checkbox
+    const pitchCurveLoopCheckbox = document.getElementById('pitch-curve-loop');
+    if (pitchCurveLoopCheckbox) {
+      pitchCurveLoopCheckbox.addEventListener('change', (e) => {
+        object.userData.pitchCurveLoop = e.target.checked;
+        saveState();
+      });
+    }
+
     const tickCheckbox = document.getElementById('tick-sound');
     if (tickCheckbox) {
       tickCheckbox.addEventListener('change', (e) => {
@@ -6653,38 +6792,39 @@ function setupMetronomeCustomizationHandlers(object) {
 }
 
 // Preload custom sound for metronome to avoid delay on first play
-function preloadMetronomeCustomSound(object) {
+async function preloadMetronomeCustomSound(object) {
   if (!object.userData.customSoundDataUrl) return;
 
   try {
     const audioCtx = getSharedAudioContext();
     // Resume audio context if suspended (browsers require user interaction)
     if (audioCtx.state === 'suspended') {
-      audioCtx.resume();
-    }
-    // Convert data URL to array buffer
-    const base64 = object.userData.customSoundDataUrl.split(',')[1];
-    const binary = atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
+      await audioCtx.resume();
     }
 
-    // Create a proper copy of the ArrayBuffer for decodeAudioData
-    const arrayBuffer = bytes.buffer.slice(0);
-    audioCtx.decodeAudioData(arrayBuffer, (buffer) => {
+    // Use fetch to convert data URL to ArrayBuffer more reliably
+    // This works better for both .wav and .mp3 files
+    const response = await fetch(object.userData.customSoundDataUrl);
+    const arrayBuffer = await response.arrayBuffer();
+
+    // Use the promise-based decodeAudioData
+    try {
+      const buffer = await audioCtx.decodeAudioData(arrayBuffer);
       object.userData.customSoundBuffer = buffer;
       // Automatically switch to custom sound when loaded successfully
       object.userData.tickSoundType = 'custom';
       console.log('Metronome custom sound loaded successfully');
       saveState();
-    }, (err) => {
-      console.error('Error decoding custom sound:', err);
+    } catch (decodeErr) {
+      console.error('Error decoding custom sound:', decodeErr);
       // Reset custom sound state on error
       object.userData.customSoundBuffer = null;
-    });
+      object.userData.customSoundDataUrl = null;
+      alert('Could not decode audio file. Please try a different file format.');
+    }
   } catch (e) {
     console.error('Error preloading custom sound:', e);
+    object.userData.customSoundBuffer = null;
   }
 }
 
@@ -8041,6 +8181,48 @@ function setupTimerHandlers() {
     });
   }
 
+  // Add real-time alarm hand preview when changing alarm time inputs
+  const alarmHoursInput = document.getElementById('alarm-hours');
+  const alarmMinutesInput = document.getElementById('alarm-minutes');
+
+  const updateAlarmHandPreview = () => {
+    const hours = parseInt(alarmHoursInput?.value) || 0;
+    const minutes = parseInt(alarmMinutesInput?.value) || 0;
+    // Update preview on all clocks by temporarily setting the values
+    const prevHours = timerState.alarmHours;
+    const prevMinutes = timerState.alarmMinutes;
+    const wasEnabled = timerState.alarmEnabled;
+
+    // Temporarily enable and set values for preview
+    timerState.alarmHours = hours;
+    timerState.alarmMinutes = minutes;
+    timerState.alarmEnabled = true;
+    updateAlarmHandsOnAllClocks();
+
+    // Restore previous enabled state but keep the new time values
+    // This way the hand shows the preview position but the alarm isn't actually set
+    if (!wasEnabled) {
+      // Keep showing the preview even if not enabled yet
+      // The hand will remain visible as a preview
+    }
+  };
+
+  if (alarmHoursInput) {
+    alarmHoursInput.addEventListener('input', updateAlarmHandPreview);
+    alarmHoursInput.addEventListener('wheel', (e) => {
+      // Let the wheel event happen first, then update preview
+      setTimeout(updateAlarmHandPreview, 0);
+    });
+  }
+
+  if (alarmMinutesInput) {
+    alarmMinutesInput.addEventListener('input', updateAlarmHandPreview);
+    alarmMinutesInput.addEventListener('wheel', (e) => {
+      // Let the wheel event happen first, then update preview
+      setTimeout(updateAlarmHandPreview, 0);
+    });
+  }
+
   // Setup sound settings accordion
   const soundSettingsToggle = document.getElementById('sound-settings-toggle');
   const soundSettingsContent = document.getElementById('sound-settings-content');
@@ -8150,35 +8332,36 @@ function setupScrollInputs() {
 }
 
 // Preload custom sound for timer to avoid delay
-function preloadTimerCustomSound() {
+async function preloadTimerCustomSound() {
   if (!timerState.customSoundDataUrl) return;
 
   try {
     const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     // Resume audio context if suspended (browsers require user interaction)
     if (audioCtx.state === 'suspended') {
-      audioCtx.resume();
-    }
-    const base64 = timerState.customSoundDataUrl.split(',')[1];
-    const binary = atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
+      await audioCtx.resume();
     }
 
-    // Create a proper copy of the ArrayBuffer for decodeAudioData
-    const arrayBuffer = bytes.buffer.slice(0);
-    audioCtx.decodeAudioData(arrayBuffer, (buffer) => {
+    // Use fetch to convert data URL to ArrayBuffer more reliably
+    // This works better for both .wav and .mp3 files
+    const response = await fetch(timerState.customSoundDataUrl);
+    const arrayBuffer = await response.arrayBuffer();
+
+    // Use the promise-based decodeAudioData
+    try {
+      const buffer = await audioCtx.decodeAudioData(arrayBuffer);
       timerState.customSoundBuffer = buffer;
       // Automatically enable custom sound when loaded successfully
       timerState.useCustomSound = true;
-      console.log('Custom sound loaded successfully');
-    }, (err) => {
-      console.error('Error decoding custom sound:', err);
+      console.log('Timer custom sound loaded successfully');
+    } catch (decodeErr) {
+      console.error('Error decoding custom sound:', decodeErr);
       // Reset custom sound state on error
       timerState.customSoundBuffer = null;
+      timerState.customSoundDataUrl = null;
       timerState.useCustomSound = false;
-    });
+      alert('Could not decode audio file. Please try a different file format.');
+    }
   } catch (e) {
     console.error('Error preloading custom sound:', e);
     timerState.customSoundBuffer = null;
@@ -8870,6 +9053,8 @@ function setupMetronomeHandlers(object) {
   toggleBtn.addEventListener('click', () => {
     object.userData.isRunning = !object.userData.isRunning;
     if (object.userData.isRunning) {
+      // Reset pitch curve start time when starting
+      object.userData.pitchCurveStartTime = Date.now();
       status.textContent = 'RUNNING';
       status.classList.add('running');
       toggleBtn.textContent = 'Stop';
@@ -9895,7 +10080,10 @@ function performQuickInteraction(object, clickedMesh = null) {
     case 'metronome':
       // Toggle metronome on/off with middle-click
       object.userData.isRunning = !object.userData.isRunning;
-      if (!object.userData.isRunning) {
+      if (object.userData.isRunning) {
+        // Reset pitch curve start time when starting
+        object.userData.pitchCurveStartTime = Date.now();
+      } else {
         // Reset pendulum when stopped
         object.userData.pendulumAngle = 0;
         const pendulum = object.getObjectByName('pendulum');
@@ -13190,7 +13378,46 @@ function animate() {
               const audioCtx = getSharedAudioContext();
               const currentTime = audioCtx.currentTime;
               const volume = obj.userData.volume !== undefined ? obj.userData.volume : 0.5;
-              const pitchMultiplier = (obj.userData.tickPitch || 100) / 100; // Convert percentage to multiplier
+
+              // Calculate pitch multiplier - use pitch curve if enabled
+              let pitchMultiplier = (obj.userData.tickPitch || 100) / 100;
+
+              if (obj.userData.pitchCurveEnabled) {
+                // Calculate current pitch based on curve
+                const curveStartTime = obj.userData.pitchCurveStartTime || Date.now();
+                const elapsed = (Date.now() - curveStartTime) / 1000; // seconds
+                const duration = obj.userData.pitchCurveDuration || 60;
+                let progress = elapsed / duration;
+
+                // Handle looping
+                if (obj.userData.pitchCurveLoop) {
+                  progress = progress % 1; // Wrap around for looping
+                } else {
+                  progress = Math.min(progress, 1); // Clamp at 1 for non-looping
+                }
+
+                // Apply easing based on curve type
+                let easedProgress = progress;
+                const curveType = obj.userData.pitchCurveType || 'linear';
+                switch (curveType) {
+                  case 'ease-in':
+                    easedProgress = progress * progress; // Quadratic ease-in
+                    break;
+                  case 'ease-out':
+                    easedProgress = 1 - (1 - progress) * (1 - progress); // Quadratic ease-out
+                    break;
+                  case 'sine':
+                    // Sine wave: goes from start to end and back
+                    easedProgress = (Math.sin(progress * Math.PI * 2 - Math.PI / 2) + 1) / 2;
+                    break;
+                  // 'linear' uses progress as-is
+                }
+
+                // Interpolate between start and end pitch
+                const startPitch = (obj.userData.pitchCurveStart || 100) / 100;
+                const endPitch = (obj.userData.pitchCurveEnd || 100) / 100;
+                pitchMultiplier = startPitch + (endPitch - startPitch) * easedProgress;
+              }
 
               if (obj.userData.tickSoundType === 'custom' && obj.userData.customSoundBuffer) {
                 // Play custom sound with pitch adjustment
