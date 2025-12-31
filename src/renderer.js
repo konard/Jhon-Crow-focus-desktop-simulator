@@ -6899,26 +6899,34 @@ function setupMetronomeCustomizationHandlers(object) {
         const file = e.target.files[0];
         if (file && file.type.startsWith('audio/')) {
           try {
-            // Read directly as ArrayBuffer for efficient audio decoding
+            // First convert to data URL for persistence (do this before arrayBuffer to avoid issues)
+            const dataUrlPromise = new Promise((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = (event) => resolve(event.target.result);
+              reader.onerror = reject;
+              reader.readAsDataURL(file);
+            });
+
+            // Read as ArrayBuffer for audio decoding
             const arrayBuffer = await file.arrayBuffer();
 
-            // Decode the audio immediately
+            // Make a copy of the ArrayBuffer since decodeAudioData detaches the original
+            const arrayBufferCopy = arrayBuffer.slice(0);
+
+            // Decode the audio
             const audioCtx = getSharedAudioContext();
             if (audioCtx.state === 'suspended') {
               await audioCtx.resume();
             }
 
-            const buffer = await audioCtx.decodeAudioData(arrayBuffer);
+            const buffer = await audioCtx.decodeAudioData(arrayBufferCopy);
             object.userData.customSoundBuffer = buffer;
             object.userData.tickSoundType = 'custom';
 
-            // Also store as data URL for persistence (but do this asynchronously to not block)
-            const dataUrlReader = new FileReader();
-            dataUrlReader.onload = (event) => {
-              object.userData.customSoundDataUrl = event.target.result;
-              saveState();
-            };
-            dataUrlReader.readAsDataURL(file);
+            // Wait for data URL and save it
+            const dataUrl = await dataUrlPromise;
+            object.userData.customSoundDataUrl = dataUrl;
+            saveState();
 
             console.log('Metronome custom sound loaded successfully');
 
@@ -6965,20 +6973,24 @@ async function preloadMetronomeCustomSound(object) {
     const response = await fetch(object.userData.customSoundDataUrl);
     const arrayBuffer = await response.arrayBuffer();
 
+    // Make a copy of the ArrayBuffer since decodeAudioData detaches the original
+    const arrayBufferCopy = arrayBuffer.slice(0);
+
     // Use the promise-based decodeAudioData
     try {
-      const buffer = await audioCtx.decodeAudioData(arrayBuffer);
+      const buffer = await audioCtx.decodeAudioData(arrayBufferCopy);
       object.userData.customSoundBuffer = buffer;
       // Automatically switch to custom sound when loaded successfully
       object.userData.tickSoundType = 'custom';
       console.log('Metronome custom sound loaded successfully');
-      saveState();
+      // Don't call saveState() here - this function is called during loading
+      // and calling saveState during load causes race conditions
     } catch (decodeErr) {
       console.error('Error decoding custom sound:', decodeErr);
-      // Reset custom sound state on error
+      // Reset custom sound state on error - but don't show alert during preload
+      // as this could be triggered during page load
       object.userData.customSoundBuffer = null;
       object.userData.customSoundDataUrl = null;
-      alert('Could not decode audio file. Please try a different file format.');
     }
   } catch (e) {
     console.error('Error preloading custom sound:', e);
@@ -8424,25 +8436,33 @@ function setupTimerHandlers() {
       const file = e.target.files[0];
       if (file && file.type.startsWith('audio/')) {
         try {
-          // Read directly as ArrayBuffer for efficient audio decoding
+          // First convert to data URL for persistence (do this before arrayBuffer to avoid issues)
+          const dataUrlPromise = new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = (event) => resolve(event.target.result);
+            reader.onerror = reject;
+            reader.readAsDataURL(file);
+          });
+
+          // Read as ArrayBuffer for audio decoding
           const arrayBuffer = await file.arrayBuffer();
 
-          // Decode the audio immediately
+          // Make a copy of the ArrayBuffer since decodeAudioData detaches the original
+          const arrayBufferCopy = arrayBuffer.slice(0);
+
+          // Decode the audio
           const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
           if (audioCtx.state === 'suspended') {
             await audioCtx.resume();
           }
 
-          const buffer = await audioCtx.decodeAudioData(arrayBuffer);
+          const buffer = await audioCtx.decodeAudioData(arrayBufferCopy);
           timerState.customSoundBuffer = buffer;
           timerState.useCustomSound = true;
 
-          // Also store as data URL for persistence (but do this asynchronously to not block)
-          const dataUrlReader = new FileReader();
-          dataUrlReader.onload = (event) => {
-            timerState.customSoundDataUrl = event.target.result;
-          };
-          dataUrlReader.readAsDataURL(file);
+          // Wait for data URL and save it
+          const dataUrl = await dataUrlPromise;
+          timerState.customSoundDataUrl = dataUrl;
 
           console.log('Timer custom sound loaded successfully');
 
@@ -8525,20 +8545,23 @@ async function preloadTimerCustomSound() {
     const response = await fetch(timerState.customSoundDataUrl);
     const arrayBuffer = await response.arrayBuffer();
 
+    // Make a copy of the ArrayBuffer since decodeAudioData detaches the original
+    const arrayBufferCopy = arrayBuffer.slice(0);
+
     // Use the promise-based decodeAudioData
     try {
-      const buffer = await audioCtx.decodeAudioData(arrayBuffer);
+      const buffer = await audioCtx.decodeAudioData(arrayBufferCopy);
       timerState.customSoundBuffer = buffer;
       // Automatically enable custom sound when loaded successfully
       timerState.useCustomSound = true;
       console.log('Timer custom sound loaded successfully');
     } catch (decodeErr) {
       console.error('Error decoding custom sound:', decodeErr);
-      // Reset custom sound state on error
+      // Reset custom sound state on error - but don't show alert during preload
+      // as this could be triggered during page load
       timerState.customSoundBuffer = null;
       timerState.customSoundDataUrl = null;
       timerState.useCustomSound = false;
-      alert('Could not decode audio file. Please try a different file format.');
     }
   } catch (e) {
     console.error('Error preloading custom sound:', e);
