@@ -5407,6 +5407,12 @@ function enterPenDrawingMode() {
   // Use the pen's line width setting
   penDrawingMode.lineWidth = penDrawingMode.heldPen.userData.lineWidth || 2;
 
+  // Stop normal dragging - pen is now attached to cursor in drawing mode
+  if (isDragging && selectedObject === penDrawingMode.heldPen) {
+    isDragging = false;
+    selectedObject = null;
+  }
+
   // Show drawing mode indicator
   showDrawingModeIndicator(true);
 
@@ -5417,9 +5423,15 @@ function enterPenDrawingMode() {
 function exitPenDrawingMode() {
   penDrawingMode.active = false;
 
-  // Reset pen to vertical if still held
+  // Drop the pen (make it lie flat on the desk)
   if (penDrawingMode.heldPen) {
-    makePenVertical(penDrawingMode.heldPen);
+    makePenFlat(penDrawingMode.heldPen);
+    // Calculate proper drop height
+    const dropY = calculateStackingY(penDrawingMode.heldPen);
+    penDrawingMode.heldPen.userData.originalY = dropY;
+    penDrawingMode.heldPen.userData.targetY = dropY;
+    penDrawingMode.heldPen.userData.isLifted = false;
+    penDrawingMode.heldPen = null;
   }
 
   // Save any drawing on the current target object
@@ -8278,15 +8290,21 @@ function onMouseDown(event) {
 
   if (event.button !== 0) return; // Left click only
 
-  // If in drawing mode and already dragging a pen, start a stroke
-  if (penDrawingMode.active && isDragging && selectedObject === penDrawingMode.heldPen) {
-    penDrawingMode.isStrokeActive = true;
-    penDrawingMode.drawingPath = [];
-    // Add first point
-    const penWorldPos = new THREE.Vector3();
-    penDrawingMode.heldPen.getWorldPosition(penWorldPos);
-    addDrawingPoint(penWorldPos);
-    // Don't return - allow normal processing to continue
+  // If in drawing mode, LMB starts drawing instead of dragging objects
+  if (penDrawingMode.active && penDrawingMode.heldPen) {
+    // Check if there's a drawable surface under the pen
+    const target = findDrawableObjectUnderPen();
+    if (target) {
+      // Start a new stroke
+      penDrawingMode.isStrokeActive = true;
+      penDrawingMode.drawingPath = [];
+      // Add first point
+      const penWorldPos = new THREE.Vector3();
+      penDrawingMode.heldPen.getWorldPosition(penWorldPos);
+      addDrawingPoint(penWorldPos);
+    }
+    // In drawing mode, don't allow picking up/dragging other objects - return early
+    return;
   }
 
   // If in book reading mode, LMB click exits reading mode
@@ -8645,6 +8663,55 @@ function onMouseMove(event) {
   previousMousePosition = { x: event.clientX, y: event.clientY };
 
   updateMousePosition(event);
+
+  // In drawing mode, pen follows cursor (attached to cursor at pen tip)
+  if (penDrawingMode.active && penDrawingMode.heldPen) {
+    // Calculate pen position based on cursor/crosshair
+    const halfWidth = CONFIG.desk.width / 2 - 0.2;
+    const halfDepth = CONFIG.desk.depth / 2 - 0.2;
+
+    let targetX, targetZ;
+
+    if (pointerLockState.isLocked) {
+      // When pointer is locked, use crosshair (screen center)
+      const centerMouse = new THREE.Vector2(0, 0);
+      raycaster.setFromCamera(centerMouse, camera);
+      const intersects = raycaster.intersectObject(dragPlane);
+
+      if (intersects.length > 0) {
+        const point = intersects[0].point;
+        targetX = Math.max(-halfWidth, Math.min(halfWidth, point.x));
+        targetZ = Math.max(-halfDepth, Math.min(halfDepth, point.z));
+      }
+    } else {
+      // When pointer is not locked, use mouse position
+      raycaster.setFromCamera(mouse, camera);
+      const intersects = raycaster.intersectObject(dragPlane);
+
+      if (intersects.length > 0) {
+        const point = intersects[0].point;
+        targetX = Math.max(-halfWidth, Math.min(halfWidth, point.x));
+        targetZ = Math.max(-halfDepth, Math.min(halfDepth, point.z));
+      }
+    }
+
+    // Move pen to follow cursor
+    if (targetX !== undefined && targetZ !== undefined) {
+      penDrawingMode.heldPen.position.x = targetX;
+      penDrawingMode.heldPen.position.z = targetZ;
+
+      // Keep pen at a fixed height above the desk (pen tip close to surface)
+      const penTipHeight = CONFIG.desk.surfaceY + 0.03; // Slightly above desk surface
+      penDrawingMode.heldPen.position.y = penTipHeight;
+
+      // If stroke is active, add drawing point
+      if (penDrawingMode.isStrokeActive) {
+        const penWorldPos = new THREE.Vector3();
+        penDrawingMode.heldPen.getWorldPosition(penWorldPos);
+        addDrawingPoint(penWorldPos);
+      }
+    }
+  }
 
   if (isDragging && selectedObject) {
     // Clamp to desk bounds
