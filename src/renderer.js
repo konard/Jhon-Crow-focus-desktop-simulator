@@ -14306,13 +14306,13 @@ function navigatePlayerButtons(direction) {
   if (newIndex === -1) {
     // Front view mode - camera faces the player screen directly
     // Mini player: needs to be closer for better visibility
-    // Big player: slightly farther for better overview (0.28 vs 0.25)
-    const viewDistance = isBigPlayer ? 0.28 * playerScale : 0.08 * playerScale;
+    // Big player: farther for better overview (0.32 vs 0.28, increased per feedback)
+    const viewDistance = isBigPlayer ? 0.32 * playerScale : 0.08 * playerScale;
     // Camera height: position to see buttons and screen
     const cameraHeight = isBigPlayer ? 0.06 * playerScale : 0.04 * playerScale;
     // Tilt angle for front view (big player uses same as button view for consistency)
-    // Big player: -0.278 radians (raised 1 degree from -0.295)
-    const frontViewTilt = isBigPlayer ? -0.278 : 0;
+    // Big player: -0.261 radians (raised 1 degree from -0.278)
+    const frontViewTilt = isBigPlayer ? -0.261 : 0;
 
     // Calculate target position in front of the player (accounting for player rotation)
     const targetCameraPos = new THREE.Vector3(
@@ -14343,9 +14343,9 @@ function navigatePlayerButtons(direction) {
         const viewDistance = isBigPlayer ? 0.25 * playerScale : 0.08 * playerScale;
         const cameraHeight = isBigPlayer ? 0.06 * playerScale : 0.08 * playerScale;
         // Tilt angles for button visibility (different for each player type)
-        // Big player: -0.278 radians (front-facing buttons, raised 1 degree from -0.295)
+        // Big player: -0.261 radians (front-facing buttons, raised 1 degree from -0.278)
         // Mini player: -0.805 radians (top-edge buttons)
-        const buttonTilt = isBigPlayer ? -0.278 : -0.805;
+        const buttonTilt = isBigPlayer ? -0.261 : -0.805;
 
         const targetCameraPos = new THREE.Vector3(
           buttonWorldPos.x + Math.sin(playerRotationY) * viewDistance,
