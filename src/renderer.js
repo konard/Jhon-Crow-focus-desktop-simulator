@@ -4065,13 +4065,29 @@ function createDictaphone(options = {}) {
 
 // Toggle dictaphone recording
 async function toggleDictaphoneRecording(object) {
-  if (!object || object.userData.type !== 'dictaphone') return;
+  if (!object || object.userData.type !== 'dictaphone') {
+    console.log('toggleDictaphoneRecording: invalid object or not a dictaphone', object?.userData?.type);
+    return;
+  }
 
-  if (object.userData.isRecording) {
+  // Use both object.userData.isRecording AND dictaphoneState.isRecording for robustness
+  // This handles cases where state might get out of sync
+  const isRecordingLocal = object.userData.isRecording;
+  const isRecordingGlobal = dictaphoneState.isRecording && dictaphoneState.currentRecorderId === object.userData.id;
+
+  console.log('toggleDictaphoneRecording called:');
+  console.log('  - object.userData.isRecording:', isRecordingLocal);
+  console.log('  - dictaphoneState.isRecording:', dictaphoneState.isRecording);
+  console.log('  - dictaphoneState.currentRecorderId:', dictaphoneState.currentRecorderId);
+  console.log('  - object.userData.id:', object.userData.id);
+
+  if (isRecordingLocal || isRecordingGlobal) {
     // Stop recording
+    console.log('Stopping recording...');
     await stopDictaphoneRecording(object);
   } else {
     // Start recording
+    console.log('Starting recording...');
     await startDictaphoneRecording(object);
   }
 }
@@ -4190,14 +4206,30 @@ async function startDictaphoneRecording(object) {
 
 // Stop recording
 async function stopDictaphoneRecording(object) {
-  if (!object || !object.userData.isRecording) return;
+  console.log('stopDictaphoneRecording called:');
+  console.log('  - object?.userData?.id:', object?.userData?.id);
+  console.log('  - object?.userData?.isRecording:', object?.userData?.isRecording);
+  console.log('  - dictaphoneState.isRecording:', dictaphoneState.isRecording);
+  console.log('  - dictaphoneState.pcmChunks.length:', dictaphoneState.pcmChunks?.length);
+
+  // Check both local and global state to be robust
+  const isRecordingLocal = object?.userData?.isRecording;
+  const isRecordingGlobal = dictaphoneState.isRecording;
+
+  if (!object || (!isRecordingLocal && !isRecordingGlobal)) {
+    console.log('stopDictaphoneRecording: early return - object invalid or not recording');
+    return;
+  }
 
   try {
+    console.log('Stopping script processor...');
     // Stop script processor (PCM recording)
     if (dictaphoneState.scriptProcessor) {
       try {
         dictaphoneState.scriptProcessor.disconnect();
-      } catch (e) {}
+      } catch (e) {
+        console.log('Error disconnecting script processor:', e);
+      }
       dictaphoneState.scriptProcessor = null;
     }
 
@@ -4236,6 +4268,8 @@ async function stopDictaphoneRecording(object) {
 
 // Save recording to file
 async function saveDictaphoneRecording(object) {
+  console.log('saveDictaphoneRecording called, pcmChunks:', dictaphoneState.pcmChunks.length, 'folderPath:', object?.userData?.recordingsFolderPath);
+
   if (dictaphoneState.pcmChunks.length === 0) {
     console.log('No recording data to save');
     return;
@@ -12942,6 +12976,7 @@ function performQuickInteraction(object, clickedMesh = null) {
       break;
 
     case 'dictaphone':
+      console.log('Dictaphone quick interaction, object.userData.isRecording:', object.userData.isRecording, 'id:', object.userData.id);
       // Handle button clicks on the dictaphone
       if (clickedMesh && clickedMesh.userData && clickedMesh.userData.buttonType) {
         handleDictaphoneButtonClick(object, clickedMesh.userData.buttonType);
