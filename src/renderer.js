@@ -2764,24 +2764,38 @@ function updateObjectColor(object, colorType, colorValue) {
 // Using predefined values avoids expensive recursive bounding box calculations
 // that can cause stack overflow with complex objects (e.g., PDFs with many pages)
 // Values are smaller than visual geometry to allow objects to touch before colliding
-const OBJECT_COLLISION_RADII = {
-  'clock': 0.15,       // Clock stand is thin, body is tall not wide
-  'lamp': 0.12,        // Base radius ~0.25, but use smaller collision
-  'plant': 0.1,        // Pot radius 0.18, use half
-  'coffee': 0.08,      // Mug radius 0.12, use smaller
-  'laptop': 0.2,       // Base is 0.8 x 0.5, use ~quarter for stacking detection
-  'notebook': 0.15,    // BoxGeometry 0.4 x 0.55, use small radius
-  'pen-holder': 0.08,  // CylinderGeometry radius 0.12
-  'pen': 0.05,         // Small, lying flat
-  'books': 0.12,       // BoxGeometry 0.28 x 0.38
-  'magazine': 0.1,     // BoxGeometry 0.22 x 0.30
-  'photo-frame': 0.1,  // Photo frame is thin
-  'globe': 0.12,       // Base radius 0.18
-  'trophy': 0.08,      // BoxGeometry 0.2 x 0.2
-  'hourglass': 0.08,   // CylinderGeometry radius 0.12
-  'paper': 0.12,       // BoxGeometry 0.28 x 0.4
-  'metronome': 0.1     // Base radius 0.15
+// Collision radii can be adjusted using collisionRadiusMultiplier setting (default 1.0)
+// These are base values that get multiplied by the global multiplier
+const OBJECT_COLLISION_RADII_BASE = {
+  'clock': 0.1,        // Clock stand is thin, body is tall not wide
+  'lamp': 0.08,        // Base radius ~0.25, but use smaller collision
+  'plant': 0.08,       // Pot radius 0.18, use small
+  'coffee': 0.06,      // Mug radius 0.12, use smaller
+  'laptop': 0.15,      // Base is 0.8 x 0.5, use smaller for stacking detection
+  'notebook': 0.1,     // BoxGeometry 0.4 x 0.55, use small radius
+  'pen-holder': 0.06,  // CylinderGeometry radius 0.12
+  'pen': 0.04,         // Small, lying flat
+  'books': 0.08,       // BoxGeometry 0.28 x 0.38, reduced to allow closer placement
+  'magazine': 0.07,    // BoxGeometry 0.22 x 0.30
+  'photo-frame': 0.07, // Photo frame is thin
+  'globe': 0.08,       // Base radius 0.18
+  'trophy': 0.06,      // BoxGeometry 0.2 x 0.2
+  'hourglass': 0.06,   // CylinderGeometry radius 0.12
+  'paper': 0.08,       // BoxGeometry 0.28 x 0.4
+  'metronome': 0.07    // Base radius 0.15
 };
+
+// Global collision radius multiplier (adjustable in settings, 0.5 to 2.0)
+let collisionRadiusMultiplier = 1.0;
+
+// Get the adjusted collision radii
+function getObjectCollisionRadii() {
+  const adjusted = {};
+  for (const [type, radius] of Object.entries(OBJECT_COLLISION_RADII_BASE)) {
+    adjusted[type] = radius * collisionRadiusMultiplier;
+  }
+  return adjusted;
+}
 
 // Stacking radii for all object types (used for stacking detection)
 // These values match the actual footprint of objects for proper overlap detection
@@ -2806,7 +2820,7 @@ const OBJECT_STACKING_RADII = {
 };
 
 // Default collision radius for unknown object types
-const DEFAULT_COLLISION_RADIUS = 0.15;
+const DEFAULT_COLLISION_RADIUS_BASE = 0.1;
 
 // Default stacking radius for unknown object types
 const DEFAULT_STACKING_RADIUS = 0.25;
@@ -2815,15 +2829,16 @@ function getObjectBounds(object) {
   const type = object.userData.type;
   const scale = object.scale?.x || 1;
 
-  // Use predefined collision radius if available
-  if (OBJECT_COLLISION_RADII[type] !== undefined) {
-    return OBJECT_COLLISION_RADII[type] * scale;
+  // Use predefined collision radius if available (with multiplier applied)
+  const baseRadius = OBJECT_COLLISION_RADII_BASE[type];
+  if (baseRadius !== undefined) {
+    return baseRadius * collisionRadiusMultiplier * scale;
   }
 
   // For unknown types, use default radius
   // This avoids expensive recursive setFromObject() calls that can cause
   // stack overflow with complex objects like PDFs with many pages
-  return DEFAULT_COLLISION_RADIUS * scale;
+  return DEFAULT_COLLISION_RADIUS_BASE * collisionRadiusMultiplier * scale;
 }
 
 // Get stacking radius for an object (used for overlap detection when stacking)
@@ -3135,6 +3150,98 @@ function moveStackedObjects(baseObject, deltaX, deltaZ, dragSpeed) {
     // Recursively move objects stacked on top of this one
     moveStackedObjects(topObj, moveX, moveZ, dragSpeed * movementTransfer);
   });
+}
+
+// Check if an object has lost its support and should fall
+// Called when an object is pulled from under another (isPullingOut mode)
+// Returns true if the object has no support and should drop to desk level
+function checkAndDropUnsupportedObjects(pulledObject) {
+  const deskSurfaceY = getDeskSurfaceY();
+
+  // Find all objects that might have been resting on the pulled object
+  deskObjects.forEach(obj => {
+    if (obj === pulledObject) return;
+    if (obj.userData.isFallen) return;
+    if (obj.userData.isLifted) return;
+    if (obj.userData.isExamining || obj.userData.isReturning) return;
+
+    const objPhysics = getObjectPhysics(obj);
+    const objBottom = obj.position.y;
+
+    // Skip objects that are already at desk level
+    if (Math.abs(objBottom - deskSurfaceY) < 0.05) return;
+
+    // Check if this object was on top of the pulled object (or would be now)
+    // Use stacking radius for overlap detection
+    const pulledRadius = getStackingRadius(pulledObject);
+    const objRadius = getStackingRadius(obj);
+
+    const dx = obj.position.x - pulledObject.position.x;
+    const dz = obj.position.z - pulledObject.position.z;
+    const horizontalDist = Math.sqrt(dx * dx + dz * dz);
+
+    // Check if objects horizontally overlap (this object was likely on the pulled one)
+    // and if the pulled object has moved enough to remove support
+    const overlapThreshold = (pulledRadius + objRadius) * 0.5; // Objects no longer overlap
+
+    if (horizontalDist > overlapThreshold) {
+      // The pulled object has moved far enough - check if top object still has support
+      const newSupportY = findSupportingY(obj, obj.position.x, obj.position.z);
+
+      // If new support is lower than current position, drop to it
+      if (newSupportY < objBottom - 0.02) {
+        initPhysicsForObject(obj);
+
+        // Set target Y to new support position
+        const baseOffset = OBJECT_PHYSICS[obj.userData.type]?.baseOffset || 0;
+        const scale = obj.userData.scale || obj.scale.x || 1.0;
+        const newY = newSupportY + baseOffset * scale;
+
+        obj.userData.originalY = newY;
+        obj.userData.targetY = newY;
+
+        // Give a small velocity for smooth falling animation
+        const vel = physicsState.velocities.get(obj.userData.id);
+        if (vel) {
+          // Add slight random horizontal drift during fall
+          vel.x += (Math.random() - 0.5) * 0.01;
+          vel.z += (Math.random() - 0.5) * 0.01;
+        }
+      }
+    }
+  });
+}
+
+// Find the Y position of the nearest supporting surface below an object
+// Used when an object loses its current support
+function findSupportingY(object, x, z) {
+  const deskSurfaceY = getDeskSurfaceY();
+  let highestSupportY = deskSurfaceY;
+
+  const objRadius = getStackingRadius(object);
+
+  deskObjects.forEach(other => {
+    if (other === object) return;
+    if (other.userData.isFallen) return;
+    if (other.userData.isLifted) return;
+
+    const otherPhysics = getObjectPhysics(other);
+    const otherRadius = getStackingRadius(other);
+    const otherTop = other.position.y + otherPhysics.height;
+
+    // Check horizontal overlap
+    const dx = x - other.position.x;
+    const dz = z - other.position.z;
+    const horizontalDist = Math.sqrt(dx * dx + dz * dz);
+    const overlapThreshold = (objRadius + otherRadius) * 0.7;
+
+    // Check if this object could support the falling one
+    if (horizontalDist < overlapThreshold && otherTop > highestSupportY && otherTop < object.position.y) {
+      highestSupportY = otherTop;
+    }
+  });
+
+  return highestSupportY;
 }
 
 // Calculate the additional drag resistance from objects stacked on top
@@ -4084,6 +4191,33 @@ function setupEventListeners() {
     });
   }
 
+  // Collision radius slider
+  const collisionRadiusSlider = document.getElementById('collision-radius-slider');
+  const collisionRadiusValue = document.getElementById('collision-radius-value');
+  if (collisionRadiusSlider && collisionRadiusValue) {
+    // Load saved value from localStorage
+    const savedMultiplier = localStorage.getItem('collisionRadiusMultiplier');
+    if (savedMultiplier !== null) {
+      collisionRadiusMultiplier = parseFloat(savedMultiplier);
+      collisionRadiusSlider.value = collisionRadiusMultiplier * 100;
+      collisionRadiusValue.textContent = Math.round(collisionRadiusMultiplier * 100) + '%';
+    }
+
+    collisionRadiusSlider.addEventListener('input', (e) => {
+      const percentage = parseInt(e.target.value);
+      collisionRadiusMultiplier = percentage / 100;
+      collisionRadiusValue.textContent = percentage + '%';
+
+      // Save to localStorage
+      localStorage.setItem('collisionRadiusMultiplier', collisionRadiusMultiplier.toString());
+
+      // Update collision debug visualization if enabled
+      if (debugState.showCollisionRadii) {
+        updateCollisionDebugHelpers();
+      }
+    });
+  }
+
   // Color swatches
   document.querySelectorAll('#main-colors .color-swatch').forEach(swatch => {
     swatch.addEventListener('click', () => {
@@ -4690,6 +4824,9 @@ function onMouseMove(event) {
       // Don't lift - this allows sliding out horizontally from under objects
       // The Y position stays at the original position on the desk surface
       selectedObject.userData.targetY = selectedObject.userData.originalY;
+
+      // Check if objects on top have lost their support and should fall
+      checkAndDropUnsupportedObjects(selectedObject);
     } else {
       // Normal dragging - ride on top of other objects
       // This allows the dragged object to "ride" on top of static objects
