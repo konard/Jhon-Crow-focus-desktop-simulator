@@ -2890,45 +2890,58 @@ function getStackingRadius(object) {
 }
 
 // Get additional collision points for objects with complex shapes (e.g., laptop monitor)
-// Returns array of { x, z, radius, height } relative to object position
+// Returns array of { x, z, radius, height, rotation } relative to object position
 // These represent multiple small collision zones for more realistic collision detection
+// The rotation field contains the object's Y rotation so collision detection can rotate points
 function getExtraCollisionPoints(object) {
   const type = object.userData.type;
   const scale = object.scale?.x || 1;
+  const objectRotationY = object.rotation?.y || 0;
 
-  // Laptop has multiple collision points along the tilted monitor edge
+  // Laptop has multiple collision points along the tilted monitor screen
   if (type === 'laptop') {
     const points = [];
     // The laptop screen is at (0, 0.28, -0.23) rotated -PI/6 (30 deg backward)
     // Screen is 0.78 wide (x) and 0.5 tall (y before rotation)
-    // After rotation, the top edge of the screen extends backward (negative Z) and upward
+    // After rotation, the screen extends backward (negative Z) and upward
     const screenTilt = Math.PI / 6; // 30 degrees
     const screenHeight = 0.5;
     const screenWidth = 0.78;
     const screenCenterY = 0.28;
     const screenCenterZ = -0.23;
 
-    // Calculate the top edge of the tilted screen
-    // Top edge is at screenHeight/2 from center, rotated by screenTilt
+    // Calculate the bottom and top edges of the tilted screen
+    // Bottom edge is at -screenHeight/2 from center, rotated by screenTilt
+    const bottomEdgeY = screenCenterY - (screenHeight / 2) * Math.cos(screenTilt);
+    const bottomEdgeZ = screenCenterZ + (screenHeight / 2) * Math.sin(screenTilt);
+    // Top edge is at +screenHeight/2 from center, rotated by screenTilt
     const topEdgeY = screenCenterY + (screenHeight / 2) * Math.cos(screenTilt);
     const topEdgeZ = screenCenterZ - (screenHeight / 2) * Math.sin(screenTilt);
 
-    // Create 5 small collision cylinders along the top edge of the monitor
+    // Create 5 small collision cylinders spread across the screen width
+    // Each cylinder extends from keyboard level to top of screen
     const numPoints = 5;
     const collisionRadius = 0.04; // Small radius for each collision point
-    const collisionHeight = 0.25; // Tall collision for the screen edge
+
+    // Collision should start from keyboard level (y=0.03) and extend to top of screen
+    const keyboardLevel = 0.03;
+    const collisionHeight = topEdgeY - keyboardLevel; // From keyboard to top of screen
 
     for (let i = 0; i < numPoints; i++) {
       // Spread points along the X axis (screen width)
       const t = (i / (numPoints - 1)) - 0.5; // -0.5 to 0.5
       const xOffset = t * (screenWidth - 0.1); // Leave small margin at edges
 
+      // Position collision cylinder at the center Z of the screen (between bottom and top edges)
+      const centerZ = (bottomEdgeZ + topEdgeZ) / 2;
+
       points.push({
         x: xOffset * scale,
-        z: topEdgeZ * scale,
+        z: centerZ * scale,
         radius: collisionRadius * scale,
         height: collisionHeight * scale,
-        baseY: topEdgeY * scale // Y position of this collision point
+        baseY: keyboardLevel * scale, // Start from keyboard level
+        rotation: objectRotationY // Store object's Y rotation for collision detection
       });
     }
 
@@ -3098,8 +3111,9 @@ function createCollisionHelper(object) {
     helperGroup.add(extraRingMesh);
   });
 
-  // Position helper at the object's position
+  // Position and rotate helper to match the object
   helperGroup.position.copy(object.position);
+  helperGroup.rotation.y = object.rotation.y; // Match Y rotation for collision visualization
 
   return helperGroup;
 }
@@ -3130,7 +3144,7 @@ function updateCollisionDebugHelpers() {
   });
 }
 
-// Update positions of debug helpers each frame
+// Update positions and rotations of debug helpers each frame
 function updateCollisionDebugPositions() {
   if (!debugState.showCollisionRadii) return;
 
@@ -3139,6 +3153,7 @@ function updateCollisionDebugPositions() {
     const targetObject = deskObjects.find(obj => obj.userData.id === targetId);
     if (targetObject) {
       helper.position.copy(targetObject.position);
+      helper.rotation.y = targetObject.rotation.y; // Match Y rotation for collision visualization
     }
   });
 }
@@ -3432,9 +3447,19 @@ function checkExtraCollisionPoints(pointX, pointZ, pointRadius, pointY, targetOb
   if (extraPoints.length === 0) return null;
 
   for (const point of extraPoints) {
+    // Apply rotation to transform local collision point to world space
+    // Use the stored rotation from the point (which is the object's Y rotation)
+    const rotation = point.rotation || 0;
+    const cosR = Math.cos(rotation);
+    const sinR = Math.sin(rotation);
+
+    // Rotate the local x,z offset by the object's Y rotation
+    const rotatedX = point.x * cosR - point.z * sinR;
+    const rotatedZ = point.x * sinR + point.z * cosR;
+
     // Calculate world position of this collision point
-    const collisionX = targetObj.position.x + point.x;
-    const collisionZ = targetObj.position.z + point.z;
+    const collisionX = targetObj.position.x + rotatedX;
+    const collisionZ = targetObj.position.z + rotatedZ;
     const collisionY = targetObj.position.y + point.baseY;
 
     // Check horizontal distance
