@@ -279,8 +279,9 @@ const physicsState = {
 // baseOffset is the distance from the object's origin to its bottom (for Y position correction when scaling)
 // friction: coefficient of friction (0-1) - how grippy the object's surface is
 //           Higher = more friction = objects on top stay in place better when moving
+// noStackingOnTop: if true, objects cannot be stacked on top of this object (e.g., round/unstable surfaces)
 const OBJECT_PHYSICS = {
-  'clock': { weight: 0.5, stability: 0.5, height: 0.6, baseOffset: 0.35, friction: 0.4 },      // Light, tall, smooth plastic
+  'clock': { weight: 0.5, stability: 0.5, height: 0.6, baseOffset: 0.35, friction: 0.4, noStackingOnTop: true },      // Round clock face - objects slide off
   'lamp': { weight: 1.2, stability: 0.85, height: 0.9, baseOffset: 0, friction: 0.5 },         // Heavy base, metal/ceramic
   'plant': { weight: 1.4, stability: 0.9, height: 0.5, baseOffset: 0, friction: 0.6 },         // Heavy pot, ceramic
   'coffee': { weight: 0.4, stability: 0.6, height: 0.3, baseOffset: 0, friction: 0.5 },        // Ceramic mug
@@ -290,7 +291,7 @@ const OBJECT_PHYSICS = {
   'pen': { weight: 0.05, stability: 0.2, height: 0.35, baseOffset: 0, friction: 0.3 },         // Smooth plastic, slides easily
   'books': { weight: 0.8, stability: 0.9, height: 0.15, baseOffset: 0, friction: 0.75 },       // Paper/cardboard, very grippy
   'magazine': { weight: 0.3, stability: 0.95, height: 0.02, baseOffset: 0, friction: 0.65 },   // Glossy paper, still grippy
-  'photo-frame': { weight: 0.3, stability: 0.35, height: 0.5, baseOffset: 0.25, friction: 0.4 },// Smooth glass/wood
+  'photo-frame': { weight: 0.3, stability: 0.35, height: 0.5, baseOffset: 0.25, friction: 0.4, noStackingOnTop: true },// Tilted frame - objects slide off
   'globe': { weight: 1.0, stability: 0.7, height: 0.5, baseOffset: 0.025, friction: 0.45 },    // Smooth plastic base
   'trophy': { weight: 0.9, stability: 0.6, height: 0.4, baseOffset: 0, friction: 0.5 },        // Metal/marble base
   'hourglass': { weight: 0.5, stability: 0.45, height: 0.35, baseOffset: 0.015, friction: 0.4 },// Smooth glass/wood
@@ -2888,6 +2889,69 @@ function getStackingRadius(object) {
   return DEFAULT_STACKING_RADIUS * scale;
 }
 
+// Get additional collision points for objects with complex shapes (e.g., laptop monitor)
+// Returns array of { x, z, radius, height, rotation } relative to object position
+// These represent multiple small collision zones for more realistic collision detection
+// The rotation field contains the object's Y rotation so collision detection can rotate points
+function getExtraCollisionPoints(object) {
+  const type = object.userData.type;
+  const scale = object.scale?.x || 1;
+  const objectRotationY = object.rotation?.y || 0;
+
+  // Laptop has multiple collision points along the tilted monitor screen
+  if (type === 'laptop') {
+    const points = [];
+    // The laptop screen is at (0, 0.28, -0.23) rotated -PI/6 (30 deg backward)
+    // Screen is 0.78 wide (x) and 0.5 tall (y before rotation)
+    // After rotation, the screen extends backward (negative Z) and upward
+    const screenTilt = Math.PI / 6; // 30 degrees
+    const screenHeight = 0.5;
+    const screenWidth = 0.78;
+    const screenCenterY = 0.28;
+    const screenCenterZ = -0.23;
+
+    // Calculate the bottom and top edges of the tilted screen
+    // Bottom edge is at -screenHeight/2 from center, rotated by screenTilt
+    const bottomEdgeY = screenCenterY - (screenHeight / 2) * Math.cos(screenTilt);
+    const bottomEdgeZ = screenCenterZ + (screenHeight / 2) * Math.sin(screenTilt);
+    // Top edge is at +screenHeight/2 from center, rotated by screenTilt
+    const topEdgeY = screenCenterY + (screenHeight / 2) * Math.cos(screenTilt);
+    const topEdgeZ = screenCenterZ - (screenHeight / 2) * Math.sin(screenTilt);
+
+    // Create 5 small collision cylinders spread across the screen width
+    // Each cylinder extends from keyboard level to top of screen
+    const numPoints = 5;
+    const collisionRadius = 0.04; // Small radius for each collision point
+
+    // Collision should start from keyboard level (y=0.03) and extend to top of screen
+    const keyboardLevel = 0.03;
+    const collisionHeight = topEdgeY - keyboardLevel; // From keyboard to top of screen
+
+    for (let i = 0; i < numPoints; i++) {
+      // Spread points along the X axis (screen width)
+      const t = (i / (numPoints - 1)) - 0.5; // -0.5 to 0.5
+      const xOffset = t * (screenWidth - 0.1); // Leave small margin at edges
+
+      // Position collision cylinder at the center Z of the screen (between bottom and top edges)
+      const centerZ = (bottomEdgeZ + topEdgeZ) / 2;
+
+      points.push({
+        x: xOffset * scale,
+        z: centerZ * scale,
+        radius: collisionRadius * scale,
+        height: collisionHeight * scale,
+        baseY: keyboardLevel * scale, // Start from keyboard level
+        rotation: objectRotationY // Store object's Y rotation for collision detection
+      });
+    }
+
+    return points;
+  }
+
+  // No extra collision points for other objects
+  return [];
+}
+
 // Get collision height for an object (used for vertical overlap check)
 // Objects only collide horizontally when their vertical ranges overlap
 function getCollisionHeight(object) {
@@ -3017,8 +3081,39 @@ function createCollisionHelper(object) {
   stackingRingMesh.position.y = 0.02;
   helperGroup.add(stackingRingMesh);
 
-  // Position helper at the object's position
+  // Add extra collision points visualization (green - for complex shapes like laptop monitor)
+  const extraPoints = getExtraCollisionPoints(object);
+  extraPoints.forEach(point => {
+    const extraGeometry = new THREE.CylinderGeometry(point.radius, point.radius, point.height, 8, 1, true);
+    const extraMaterial = new THREE.MeshBasicMaterial({
+      color: 0x00ff00,
+      transparent: true,
+      opacity: 0.4,
+      side: THREE.DoubleSide,
+      depthWrite: false
+    });
+    const extraHelper = new THREE.Mesh(extraGeometry, extraMaterial);
+    extraHelper.position.set(point.x, point.baseY + point.height / 2, point.z);
+    helperGroup.add(extraHelper);
+
+    // Add ring at base of extra collision point
+    const extraRing = new THREE.RingGeometry(point.radius - 0.005, point.radius + 0.005, 16);
+    const extraRingMaterial = new THREE.MeshBasicMaterial({
+      color: 0x00ff00,
+      transparent: true,
+      opacity: 0.6,
+      side: THREE.DoubleSide,
+      depthWrite: false
+    });
+    const extraRingMesh = new THREE.Mesh(extraRing, extraRingMaterial);
+    extraRingMesh.rotation.x = -Math.PI / 2;
+    extraRingMesh.position.set(point.x, point.baseY + 0.01, point.z);
+    helperGroup.add(extraRingMesh);
+  });
+
+  // Position and rotate helper to match the object
   helperGroup.position.copy(object.position);
+  helperGroup.rotation.y = object.rotation.y; // Match Y rotation for collision visualization
 
   return helperGroup;
 }
@@ -3049,7 +3144,7 @@ function updateCollisionDebugHelpers() {
   });
 }
 
-// Update positions of debug helpers each frame
+// Update positions and rotations of debug helpers each frame
 function updateCollisionDebugPositions() {
   if (!debugState.showCollisionRadii) return;
 
@@ -3058,6 +3153,7 @@ function updateCollisionDebugPositions() {
     const targetObject = deskObjects.find(obj => obj.userData.id === targetId);
     if (targetObject) {
       helper.position.copy(targetObject.position);
+      helper.rotation.y = targetObject.rotation.y; // Match Y rotation for collision visualization
     }
   });
 }
@@ -3088,6 +3184,10 @@ function findObjectsOnTop(baseObject) {
   if (!baseObject || baseObject.userData.isFallen) return [];
 
   const basePhysics = getObjectPhysics(baseObject);
+
+  // Objects that don't allow stacking have no objects on top
+  if (basePhysics.noStackingOnTop) return [];
+
   // Use stacking radius (actual object footprint) for overlap detection
   const baseRadius = getStackingRadius(baseObject);
   const baseTop = baseObject.position.y + basePhysics.height;
@@ -3340,6 +3440,57 @@ function calculateStackedResistance(baseObject) {
   return resistance;
 }
 
+// Helper function to check collision between a point and an object's extra collision points
+// Returns the collision info if collision detected, null otherwise
+function checkExtraCollisionPoints(pointX, pointZ, pointRadius, pointY, targetObj) {
+  const extraPoints = getExtraCollisionPoints(targetObj);
+  if (extraPoints.length === 0) return null;
+
+  for (const point of extraPoints) {
+    // Apply rotation to transform local collision point to world space
+    // Use the stored rotation from the point (which is the object's Y rotation)
+    const rotation = point.rotation || 0;
+    const cosR = Math.cos(rotation);
+    const sinR = Math.sin(rotation);
+
+    // Rotate the local x,z offset by the object's Y rotation
+    const rotatedX = point.x * cosR - point.z * sinR;
+    const rotatedZ = point.x * sinR + point.z * cosR;
+
+    // Calculate world position of this collision point
+    const collisionX = targetObj.position.x + rotatedX;
+    const collisionZ = targetObj.position.z + rotatedZ;
+    const collisionY = targetObj.position.y + point.baseY;
+
+    // Check horizontal distance
+    const dx = pointX - collisionX;
+    const dz = pointZ - collisionZ;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    const minDist = pointRadius + point.radius;
+
+    // Check if collision occurs
+    if (dist < minDist && dist > 0.01) {
+      // Check vertical overlap - the extra collision point extends from baseY upward
+      const pointBottom = pointY;
+      const pointTop = pointY + 0.1; // Approximate height of dragged object check
+      const collisionTop = collisionY + point.height;
+
+      // Vertical overlap check
+      if (pointBottom < collisionTop && pointTop > collisionY) {
+        return {
+          dx: dx,
+          dz: dz,
+          dist: dist,
+          minDist: minDist,
+          collisionX: collisionX,
+          collisionZ: collisionZ
+        };
+      }
+    }
+  }
+  return null;
+}
+
 // Lightweight drag collision check (runs every frame during drag for responsiveness)
 function updateDragCollisions() {
   if (!isDragging || !selectedObject) return;
@@ -3360,6 +3511,41 @@ function updateDragCollisions() {
     // Skip collision if objects don't overlap vertically (one is above the other)
     // This allows stacking objects on top of each other without pushing
     if (!objectsOverlapVertically(selectedObject, draggedPhysics, obj, otherPhysics)) {
+      // Still check extra collision points (like laptop monitor) which have their own height
+      const extraCollision = checkExtraCollisionPoints(
+        selectedObject.position.x,
+        selectedObject.position.z,
+        draggedRadius,
+        selectedObject.position.y,
+        obj
+      );
+      if (!extraCollision) return;
+
+      // Handle collision with extra collision point
+      const { dx, dz, dist, minDist } = extraCollision;
+      const normalX = -dx / dist;
+      const normalZ = -dz / dist;
+
+      const dragSpeed = Math.sqrt(
+        physicsState.dragVelocity.x * physicsState.dragVelocity.x +
+        physicsState.dragVelocity.z * physicsState.dragVelocity.z
+      );
+
+      const speedMultiplier = Math.max(0, Math.min(1, (dragSpeed - physicsState.minPushSpeed) / 0.1));
+      const weightRatio = draggedPhysics.weight / otherPhysics.weight;
+      const pushMultiplier = Math.min(weightRatio * 1.5, 3.0) * speedMultiplier;
+
+      const pushX = normalX * physicsState.pushForce * pushMultiplier;
+      const pushZ = normalZ * physicsState.pushForce * pushMultiplier;
+
+      const vel = physicsState.velocities.get(obj.userData.id);
+      vel.x += pushX;
+      vel.z += pushZ;
+
+      // Separate objects to prevent overlap
+      const overlap = minDist - dist;
+      obj.position.x += normalX * overlap * 0.5;
+      obj.position.z += normalZ * overlap * 0.5;
       return;
     }
 
@@ -5306,6 +5492,9 @@ function calculateDragStackingY(draggedObject, posX, posZ) {
     const otherRadius = getStackingRadius(obj);
     const otherPhysics = getObjectPhysics(obj);
 
+    // Skip objects that don't allow stacking on top (e.g., round clock, tilted photo frame)
+    if (otherPhysics.noStackingOnTop) return;
+
     // Calculate horizontal distance
     const dx = posX - obj.position.x;
     const dz = posZ - obj.position.z;
@@ -5379,6 +5568,9 @@ function calculateStackingY(droppedObject) {
     // Use stacking radius for the other object too
     const otherRadius = getStackingRadius(obj);
     const otherPhysics = getObjectPhysics(obj);
+
+    // Skip objects that don't allow stacking on top (e.g., round clock, tilted photo frame)
+    if (otherPhysics.noStackingOnTop) return;
 
     // Calculate horizontal distance
     const dx = droppedObject.position.x - obj.position.x;
