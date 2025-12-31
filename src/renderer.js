@@ -690,13 +690,13 @@ let playerModeState = {
   // Button navigation state (left/right arrows)
   currentButtonIndex: -1, // -1 = front view (no button selected), 0-3 = button index
   // Button order is player-type specific (set when entering player mode)
-  // Mini player (cassette-player): buttons on top edge in different layout
-  // Big player (big-cassette-player): buttons on front face in order: prev, play, stop, next (left to right)
+  // Mini player (cassette-player): buttons on top edge, order: play → stop → prev → next → (front view) → play ...
+  // Big player (big-cassette-player): buttons on front face in order: prev → play → stop → next (left to right)
   buttonNames: ['prevButton', 'playButton', 'stopButton', 'nextButton'], // Default for big player (left to right order)
   buttonTypes: ['prev', 'play', 'stop', 'next'],
-  // Mini player button order (different physical layout)
-  miniPlayerButtonNames: ['prevButton', 'playButton', 'stopButton', 'nextButton'],
-  miniPlayerButtonTypes: ['prev', 'play', 'stop', 'next'],
+  // Mini player button order: play → stop → prev → next → (front view) → play ...
+  miniPlayerButtonNames: ['playButton', 'stopButton', 'prevButton', 'nextButton'],
+  miniPlayerButtonTypes: ['play', 'stop', 'prev', 'next'],
   // Big player button order: prev → play → stop → next → (front view) → prev ...
   bigPlayerButtonNames: ['prevButton', 'playButton', 'stopButton', 'nextButton'],
   bigPlayerButtonTypes: ['prev', 'play', 'stop', 'next']
@@ -3478,8 +3478,9 @@ function createBigCassettePlayer(options = {}) {
   group.add(reelGroup);
 
   // Display screen for track name (LCD-style)
+  // Screen is on TOP of the body, facing UP (rotated 90 degrees around X axis)
   const screenWidth = bodyWidth * 0.7;
-  const screenHeight = 0.035;
+  const screenHeight = 0.06; // Increased height for better visibility
   const screenBackGeometry = new THREE.PlaneGeometry(screenWidth, screenHeight);
   const screenBackMaterial = new THREE.MeshStandardMaterial({
     color: 0x2d4a3e, // Dark green LCD background
@@ -3487,7 +3488,10 @@ function createBigCassettePlayer(options = {}) {
     metalness: 0.0
   });
   const screenBack = new THREE.Mesh(screenBackGeometry, screenBackMaterial);
-  screenBack.position.set(0, bodyHeight / 2 - 0.035, bodyDepth / 2 + 0.011);
+  // Position on top of body, toward the front
+  screenBack.position.set(0, bodyHeight + 0.001, bodyDepth * 0.1);
+  // Rotate to face UP (-90 degrees around X axis)
+  screenBack.rotation.x = -Math.PI / 2;
   screenBack.name = 'screen';
   group.add(screenBack);
 
@@ -3519,7 +3523,10 @@ function createBigCassettePlayer(options = {}) {
     new THREE.PlaneGeometry(screenWidth * 0.95, screenHeight * 0.85),
     screenDisplayMaterial
   );
-  screenDisplay.position.set(0, bodyHeight / 2 - 0.035, bodyDepth / 2 + 0.012);
+  // Position on top of body, toward the front (slightly above background)
+  screenDisplay.position.set(0, bodyHeight + 0.002, bodyDepth * 0.1);
+  // Rotate to face UP (-90 degrees around X axis)
+  screenDisplay.rotation.x = -Math.PI / 2;
   screenDisplay.name = 'screenDisplay';
   group.add(screenDisplay);
 
@@ -14316,10 +14323,10 @@ function navigatePlayerButtons(direction) {
         // - Big player (big-cassette-player): buttons on FRONT FACE, look more level
         const viewDistance = isBigPlayer ? 0.25 * playerScale : 0.08 * playerScale;
         const cameraHeight = isBigPlayer ? 0.06 * playerScale : 0.08 * playerScale;
-        // Increased tilt for better button visibility
-        // Mini player: -0.67 radians (original -0.6 + ~4 degrees = ~0.07 radians more)
-        // Big player: -0.4 radians (looking more level at front-facing buttons)
-        const buttonTilt = isBigPlayer ? -0.4 : -0.67;
+        // Tilt angles for button visibility (different for each player type)
+        // Big player: -0.4 radians (front-facing buttons, more level view)
+        // Mini player: -0.84 radians (top-edge buttons, tilted 10 degrees more forward)
+        const buttonTilt = isBigPlayer ? -0.4 : -0.84;
 
         const targetCameraPos = new THREE.Vector3(
           buttonWorldPos.x + Math.sin(playerRotationY) * viewDistance,
