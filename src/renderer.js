@@ -3418,6 +3418,9 @@ function createSaturationCurve(amount) {
 }
 
 // Show track name overlay (AIMP style - top of screen, semi-transparent)
+// Uses same font style as the clock display (#clock-display in index.html) but larger and bolder
+// The clock uses: font-size: 24px, font-weight: 300, letter-spacing: 2px
+// We use larger, bolder, and 60-70% opacity as requested
 function showTrackNameOverlay(trackName) {
   // Remove any existing overlay
   const existingOverlay = document.getElementById('track-name-overlay');
@@ -3433,13 +3436,12 @@ function showTrackNameOverlay(trackName) {
     top: 60px;
     left: 50%;
     transform: translateX(-50%);
-    padding: 12px 24px;
-    background: rgba(0, 0, 0, 0.65);
-    color: #fff;
-    font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
-    font-size: 18px;
+    padding: 15px 30px;
+    color: rgba(255, 255, 255, 0.65);
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    font-size: 32px;
     font-weight: 600;
-    border-radius: 8px;
+    letter-spacing: 2px;
     z-index: 10000;
     pointer-events: none;
     opacity: 0;
@@ -3449,7 +3451,7 @@ function showTrackNameOverlay(trackName) {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5);
+    text-shadow: 0 2px 15px rgba(0, 0, 0, 0.5);
   `;
   overlay.textContent = trackName;
   document.body.appendChild(overlay);
