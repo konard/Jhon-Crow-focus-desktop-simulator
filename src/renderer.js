@@ -6923,7 +6923,7 @@ function setupMetronomeCustomizationHandlers(object) {
             console.log('Metronome custom sound loaded successfully');
 
             // Refresh the customization panel to show the new buttons
-            openCustomizationPanel(object);
+            updateCustomizationPanel(object);
           } catch (err) {
             console.error('Error loading custom sound:', err);
             alert('Could not load audio file. Please try a different file format.');
@@ -6943,7 +6943,7 @@ function setupMetronomeCustomizationHandlers(object) {
         }
         saveState();
         // Refresh the customization panel
-        openCustomizationPanel(object);
+        updateCustomizationPanel(object);
       });
     }
   }, 0);
@@ -7087,7 +7087,7 @@ function setupLaptopCustomizationHandlers(object) {
             img.src = imageUrl;
             saveState();
             // Refresh the panel to update button text
-            showCustomizationPanel(object);
+            updateCustomizationPanel(object);
           };
           reader.readAsDataURL(file);
         }
@@ -7104,7 +7104,7 @@ function setupLaptopCustomizationHandlers(object) {
         }
         saveState();
         // Refresh the panel to update button text
-        showCustomizationPanel(object);
+        updateCustomizationPanel(object);
       });
     }
 
@@ -7136,7 +7136,7 @@ function setupLaptopCustomizationHandlers(object) {
         object.userData.bootScreenDataUrl = null;
         saveState();
         // Refresh the panel to update button text
-        showCustomizationPanel(object);
+        updateCustomizationPanel(object);
       });
     }
   }, 0);
@@ -13030,6 +13030,20 @@ async function saveStateImmediate() {
           if (obj.userData.tempoCurveLoop !== undefined) {
             data.tempoCurveLoop = obj.userData.tempoCurveLoop;
           }
+          // Save running state and pendulum phase for persistence
+          if (obj.userData.isRunning !== undefined) {
+            data.isRunning = obj.userData.isRunning;
+          }
+          if (obj.userData.pendulumAngle !== undefined) {
+            data.pendulumAngle = obj.userData.pendulumAngle;
+          }
+          if (obj.userData.pendulumDirection !== undefined) {
+            data.pendulumDirection = obj.userData.pendulumDirection;
+          }
+          if (obj.userData.lastTickTime !== undefined) {
+            // Store relative time offset from now for restoration
+            data.lastTickTimeOffset = Date.now() - obj.userData.lastTickTime;
+          }
           break;
         case 'laptop':
           data.bootTime = obj.userData.bootTime;
@@ -13422,6 +13436,14 @@ async function loadState() {
                 if (objData.tempoCurveEnd !== undefined) obj.userData.tempoCurveEnd = objData.tempoCurveEnd;
                 if (objData.tempoCurveDuration !== undefined) obj.userData.tempoCurveDuration = objData.tempoCurveDuration;
                 if (objData.tempoCurveLoop !== undefined) obj.userData.tempoCurveLoop = objData.tempoCurveLoop;
+                // Restore running state and pendulum phase
+                if (objData.isRunning !== undefined) obj.userData.isRunning = objData.isRunning;
+                if (objData.pendulumAngle !== undefined) obj.userData.pendulumAngle = objData.pendulumAngle;
+                if (objData.pendulumDirection !== undefined) obj.userData.pendulumDirection = objData.pendulumDirection;
+                if (objData.lastTickTimeOffset !== undefined) {
+                  // Restore lastTickTime relative to current time
+                  obj.userData.lastTickTime = Date.now() - objData.lastTickTimeOffset;
+                }
                 break;
               case 'laptop':
                 if (objData.bootTime) obj.userData.bootTime = objData.bootTime;
