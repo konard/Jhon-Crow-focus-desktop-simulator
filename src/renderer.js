@@ -686,7 +686,11 @@ let playerModeState = {
   panOffsetX: 0,      // Pan offset left/right (A/D keys)
   panOffsetY: 0,      // Pan offset up/down (W/S keys)
   // Cached player world position to avoid recalculating on every keypress
-  playerWorldPos: null
+  playerWorldPos: null,
+  // Button navigation state (left/right arrows)
+  currentButtonIndex: -1, // -1 = front view (no button selected), 0-3 = button index
+  buttonNames: ['playButton', 'stopButton', 'prevButton', 'nextButton'],
+  buttonTypes: ['play', 'stop', 'prev', 'next']
 };
 
 // Double-click tracking for laptop desktop
@@ -5720,6 +5724,15 @@ function setupEventListeners() {
       }
     }
 
+    // Arrow keys for player mode - button navigation with camera centering
+    if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !e.altKey && !e.ctrlKey) {
+      if (playerModeState.active && playerModeState.player) {
+        e.preventDefault();
+        navigatePlayerButtons(e.key === 'ArrowRight' ? 1 : -1);
+        return;
+      }
+    }
+
     // Arrow keys for book - page navigation in reading mode, or when aimed at book
     if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown') && !e.altKey && !e.ctrlKey) {
       // In reading mode, ArrowLeft/Right turn pages, ArrowUp/Down pan vertically
@@ -5853,6 +5866,12 @@ function setupEventListeners() {
       // In player mode, WASD is used for panning the view
       if (playerModeState.active && playerModeState.player && playerModeState.playerWorldPos) {
         e.preventDefault();
+
+        // Reset button navigation when using WASD for manual panning
+        if (playerModeState.currentButtonIndex !== -1) {
+          playerModeState.currentButtonIndex = -1;
+        }
+
         const panSpeed = 0.03; // Smaller pan speed for player (it's smaller object)
         // Use cached player position to avoid recalculating on every keypress
         const playerWorldPos = playerModeState.playerWorldPos;
@@ -5864,9 +5883,10 @@ function setupEventListeners() {
         if (wasdKey === 'KeyA') playerModeState.panOffsetX -= panSpeed;
         if (wasdKey === 'KeyD') playerModeState.panOffsetX += panSpeed;
 
-        // Clamp pan offsets to reasonable limits
+        // Clamp pan offsets - X is limited, Y allows going above the player
         playerModeState.panOffsetX = Math.max(-0.5, Math.min(0.5, playerModeState.panOffsetX));
-        playerModeState.panOffsetY = Math.max(-0.5, Math.min(0.5, playerModeState.panOffsetY));
+        // Y offset has higher upper limit to allow viewing from above
+        playerModeState.panOffsetY = Math.max(-0.3, Math.min(1.0, playerModeState.panOffsetY));
 
         // Update camera position - pan left/right and up/down
         camera.position.set(
@@ -6345,7 +6365,7 @@ function onMouseDown(event) {
   }
 
   // If in player mode:
-  // - LMB clicking on the player does nothing (use MMB for button interaction)
+  // - LMB clicking on the player interacts with buttons (same as MMB)
   // - LMB clicking outside the player exits player mode
   if (playerModeState.active && playerModeState.player) {
     updateMousePosition(event);
@@ -6353,7 +6373,9 @@ function onMouseDown(event) {
     const intersects = raycaster.intersectObjects([playerModeState.player], true);
 
     if (intersects.length > 0) {
-      // Clicked on the player - do nothing (use MMB quick click for button interaction)
+      // Clicked on the player - handle button interaction (same as MMB click)
+      const clickedMesh = intersects[0].object;
+      performQuickInteraction(playerModeState.player, clickedMesh);
       return;
     } else {
       // Clicked outside the player - exit player mode
@@ -7289,6 +7311,11 @@ function onMouseWheel(event) {
   // If in player mode: scroll zooms in/out on the player (no rotation)
   if (playerModeState.active && playerModeState.player && playerModeState.playerWorldPos) {
     event.preventDefault();
+
+    // If in button navigation mode (not front view), scroll resets to front view for zooming
+    if (playerModeState.currentButtonIndex !== -1) {
+      playerModeState.currentButtonIndex = -1;
+    }
 
     // Zoom: scroll up = zoom in (closer), scroll down = zoom out (further)
     const zoomDelta = event.deltaY > 0 ? 0.05 : -0.05;
@@ -13735,6 +13762,7 @@ function enterPlayerMode(player) {
   playerModeState.zoomDistance = 0.25;
   playerModeState.panOffsetX = 0;
   playerModeState.panOffsetY = 0;
+  playerModeState.currentButtonIndex = -1; // Start with front view
 
   // Store original camera state
   playerModeState.originalCameraPos = camera.position.clone();
@@ -13821,6 +13849,114 @@ function exitPlayerMode() {
 
   playerModeState.player = null;
   playerModeState.playerWorldPos = null;
+  playerModeState.currentButtonIndex = -1;
+}
+
+// Navigate between player buttons with arrow keys
+// direction: 1 for right (next button), -1 for left (previous button or front view)
+function navigatePlayerButtons(direction) {
+  if (!playerModeState.active || !playerModeState.player) return;
+
+  const player = playerModeState.player;
+  const numButtons = playerModeState.buttonNames.length; // 4 buttons
+
+  // Calculate new index: -1 = front view, 0-3 = buttons
+  let newIndex = playerModeState.currentButtonIndex + direction;
+
+  // Wrap around: -1 -> front view, beyond last button -> front view
+  if (newIndex < -1) newIndex = numButtons - 1;
+  if (newIndex >= numButtons) newIndex = -1;
+
+  playerModeState.currentButtonIndex = newIndex;
+
+  // Get player world position
+  const playerWorldPos = new THREE.Vector3();
+  player.getWorldPosition(playerWorldPos);
+  const playerScale = player.scale.x || 1;
+
+  // Get player's rotation to calculate correct button positions
+  const playerRotationY = player.rotation.y;
+
+  if (newIndex === -1) {
+    // Front view mode - camera faces the player screen directly
+    const viewDistance = 0.15 * playerScale;
+
+    // Calculate target position in front of the player (accounting for player rotation)
+    const targetCameraPos = new THREE.Vector3(
+      playerWorldPos.x + Math.sin(playerRotationY) * viewDistance,
+      playerWorldPos.y + 0.04 * playerScale, // Slightly above center to see screen
+      playerWorldPos.z + Math.cos(playerRotationY) * viewDistance
+    );
+
+    // Animate camera to front view
+    animateCameraToPosition(targetCameraPos, playerWorldPos, 0, 250);
+  } else {
+    // Button view mode - camera centers on the selected button
+    const buttonName = playerModeState.buttonNames[newIndex];
+    const buttonsGroup = player.getObjectByName('buttons');
+
+    if (buttonsGroup) {
+      const button = buttonsGroup.getObjectByName(buttonName);
+
+      if (button) {
+        // Get button position in world coordinates
+        const buttonWorldPos = new THREE.Vector3();
+        button.getWorldPosition(buttonWorldPos);
+
+        // Position camera above and angled to see the button on top edge
+        // Buttons are on top of the player, so camera should be above looking down
+        const viewDistance = 0.08 * playerScale;
+        const cameraHeight = 0.06 * playerScale;
+
+        const targetCameraPos = new THREE.Vector3(
+          buttonWorldPos.x + Math.sin(playerRotationY) * viewDistance,
+          buttonWorldPos.y + cameraHeight,
+          buttonWorldPos.z + Math.cos(playerRotationY) * viewDistance
+        );
+
+        // Look at the button with a slight downward angle
+        const lookAtPos = buttonWorldPos.clone();
+
+        animateCameraToPosition(targetCameraPos, lookAtPos, -0.3, 200);
+      }
+    }
+  }
+}
+
+// Helper function to animate camera to a position with look target
+function animateCameraToPosition(targetPos, lookAtPos, targetPitch, duration) {
+  const startPos = camera.position.clone();
+  const startPitch = cameraLookState.pitch;
+  const startTime = Date.now();
+
+  // Calculate target yaw from look direction
+  const lookDir = new THREE.Vector3().subVectors(lookAtPos, targetPos);
+  const targetYaw = Math.atan2(lookDir.x, lookDir.z);
+  const startYaw = cameraLookState.yaw;
+
+  function animateCamera() {
+    const elapsed = Date.now() - startTime;
+    const progress = Math.min(elapsed / duration, 1);
+    const eased = 1 - Math.pow(1 - progress, 3); // Ease out cubic
+
+    camera.position.lerpVectors(startPos, targetPos, eased);
+
+    cameraLookState.pitch = startPitch + (targetPitch - startPitch) * eased;
+    cameraLookState.yaw = startYaw + (targetYaw - startYaw) * eased;
+    updateCameraLook();
+
+    if (progress < 1) {
+      requestAnimationFrame(animateCamera);
+    } else {
+      // Update player mode offsets to match new position
+      if (playerModeState.playerWorldPos) {
+        playerModeState.panOffsetX = targetPos.x - playerModeState.playerWorldPos.x;
+        playerModeState.panOffsetY = targetPos.y - playerModeState.playerWorldPos.y;
+      }
+    }
+  }
+
+  animateCamera();
 }
 
 // Create laptop desktop texture with Obsidian icon
