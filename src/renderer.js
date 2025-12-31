@@ -4,6 +4,17 @@
 // Includes pixel art post-processing effect (Signalis-style)
 
 // ============================================================================
+// GLOBAL ERROR HANDLERS (for debugging)
+// ============================================================================
+window.addEventListener('error', (event) => {
+  console.error('Uncaught error:', event.error || event.message);
+});
+
+window.addEventListener('unhandledrejection', (event) => {
+  console.error('Unhandled promise rejection:', event.reason);
+});
+
+// ============================================================================
 // CONFIGURATION
 // ============================================================================
 const CONFIG = {
@@ -110,14 +121,17 @@ function getSharedAudioContext() {
   return sharedAudioCtx;
 }
 
-// Robust audio decoding function with fallback methods
+// Robust audio decoding function with fallback methods and timeout
 async function decodeAudioBuffer(arrayBuffer) {
   const audioCtx = getSharedAudioContext();
+
+  console.log('decodeAudioBuffer: Starting decode, buffer size:', arrayBuffer.byteLength, 'AudioContext state:', audioCtx.state);
 
   // Ensure audio context is running
   if (audioCtx.state === 'suspended') {
     try {
       await audioCtx.resume();
+      console.log('decodeAudioBuffer: AudioContext resumed');
     } catch (e) {
       console.warn('Could not resume audio context:', e);
     }
@@ -125,14 +139,23 @@ async function decodeAudioBuffer(arrayBuffer) {
 
   // Make a copy of the buffer since decodeAudioData can detach it
   const bufferCopy = arrayBuffer.slice(0);
+  console.log('decodeAudioBuffer: Buffer copied, calling decodeAudioData...');
 
-  return new Promise((resolve, reject) => {
+  // Create a timeout promise to prevent indefinite hangs
+  const timeoutPromise = new Promise((_, reject) => {
+    setTimeout(() => {
+      reject(new Error('Audio decoding timed out after 30 seconds. The file may be too large or in an unsupported format. Try a smaller file or convert to MP3.'));
+    }, 30000);
+  });
+
+  // Create the decode promise
+  const decodePromise = new Promise((resolve, reject) => {
     let handled = false;
 
     const handleSuccess = (decodedBuffer) => {
       if (handled) return;
       handled = true;
-      console.log('Audio decoded successfully, duration:', decodedBuffer.duration);
+      console.log('Audio decoded successfully, duration:', decodedBuffer.duration, 'channels:', decodedBuffer.numberOfChannels);
       resolve(decodedBuffer);
     };
 
@@ -145,13 +168,35 @@ async function decodeAudioBuffer(arrayBuffer) {
 
     try {
       // Use callback form for maximum compatibility
-      audioCtx.decodeAudioData(bufferCopy, handleSuccess, handleError);
+      // Note: Some Electron versions may hang on decodeAudioData for certain files
+      const result = audioCtx.decodeAudioData(bufferCopy, handleSuccess, handleError);
+
+      // Modern browsers return a promise from decodeAudioData
+      // Handle this as a fallback in case callbacks aren't called
+      if (result && typeof result.then === 'function') {
+        result
+          .then((buffer) => {
+            if (!handled) {
+              console.log('decodeAudioData resolved via promise');
+              handleSuccess(buffer);
+            }
+          })
+          .catch((err) => {
+            if (!handled) {
+              console.log('decodeAudioData rejected via promise');
+              handleError(err);
+            }
+          });
+      }
     } catch (e) {
       // Some browsers throw synchronously instead of calling the error callback
       console.error('decodeAudioData sync error:', e);
       handleError(e);
     }
   });
+
+  // Race between decode and timeout
+  return Promise.race([decodePromise, timeoutPromise]);
 }
 
 // Safe wrapper for loading audio files from File objects
