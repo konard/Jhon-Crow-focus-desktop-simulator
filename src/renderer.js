@@ -4,6 +4,17 @@
 // Includes pixel art post-processing effect (Signalis-style)
 
 // ============================================================================
+// GLOBAL ERROR HANDLERS (for debugging)
+// ============================================================================
+window.addEventListener('error', (event) => {
+  console.error('Uncaught error:', event.error || event.message);
+});
+
+window.addEventListener('unhandledrejection', (event) => {
+  console.error('Unhandled promise rejection:', event.reason);
+});
+
+// ============================================================================
 // CONFIGURATION
 // ============================================================================
 const CONFIG = {
@@ -85,7 +96,16 @@ let timerState = {
   intervalId: null,
   alertAudioCtx: null,
   alertOscillator: null,
-  isAlerting: false
+  isAlerting: false,
+  // Alarm settings
+  alarmEnabled: false,
+  alarmHours: 0,
+  alarmMinutes: 0,
+  alarmTriggered: false,
+  // Sound settings
+  alertVolume: 0.5, // 0-1
+  alertPitch: 800, // Hz (default 800Hz)
+  customSoundDataUrl: null // Custom sound file data URL
 };
 
 // Shared audio context for metronome (reuse to avoid lag)
@@ -99,6 +119,498 @@ function getSharedAudioContext() {
     sharedAudioCtx.resume();
   }
   return sharedAudioCtx;
+}
+
+// ============================================================================
+// AUDIO LOADING OVERLAY
+// ============================================================================
+// State for cancellable audio loading
+let audioLoadingCancelled = false;
+let audioLoadingResolve = null;
+
+function showAudioLoadingOverlay() {
+  audioLoadingCancelled = false;
+  const overlay = document.getElementById('audio-loading-overlay');
+  if (overlay) {
+    overlay.classList.add('visible');
+    // Setup cancel button handler
+    const cancelBtn = document.getElementById('audio-loading-cancel');
+    if (cancelBtn) {
+      cancelBtn.onclick = () => {
+        audioLoadingCancelled = true;
+        hideAudioLoadingOverlay();
+        console.log('Audio loading cancelled by user');
+        // If there's a pending promise, reject it
+        if (audioLoadingResolve) {
+          audioLoadingResolve.reject(new Error('Audio loading cancelled by user'));
+          audioLoadingResolve = null;
+        }
+      };
+    }
+  }
+}
+
+function hideAudioLoadingOverlay() {
+  const overlay = document.getElementById('audio-loading-overlay');
+  if (overlay) {
+    overlay.classList.remove('visible');
+  }
+}
+
+// Pre-validate audio file using HTML5 Audio element
+// This is much faster and won't hang the browser
+async function preValidateAudioFile(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const audio = new Audio();
+    let timeout = null;
+    let handled = false;
+
+    const cleanup = () => {
+      if (timeout) clearTimeout(timeout);
+      URL.revokeObjectURL(url);
+      audio.src = '';
+    };
+
+    const handleError = (msg) => {
+      if (handled) return;
+      handled = true;
+      cleanup();
+      reject(new Error(msg));
+    };
+
+    const handleSuccess = () => {
+      if (handled) return;
+      handled = true;
+      cleanup();
+      resolve(true);
+    };
+
+    // Timeout after 3 seconds - if it takes longer, file is probably problematic
+    timeout = setTimeout(() => {
+      handleError('Audio file validation timed out. The file may be corrupted or in an unsupported format.');
+    }, 3000);
+
+    audio.onerror = () => {
+      handleError('Unable to load audio file. The file may be corrupted or in an unsupported format.');
+    };
+
+    // canplaythrough means the file can be played
+    audio.oncanplaythrough = () => {
+      handleSuccess();
+    };
+
+    // For short files, loadedmetadata may fire before canplaythrough
+    audio.onloadedmetadata = () => {
+      // Give it a bit more time for canplaythrough, but consider it valid
+      setTimeout(() => {
+        if (!handled) handleSuccess();
+      }, 500);
+    };
+
+    audio.src = url;
+    audio.load();
+  });
+}
+
+// List of audio formats NOT supported by Chromium/Electron's Web Audio API
+// These formats will cause decodeAudioData to hang or fail
+const UNSUPPORTED_AUDIO_FORMATS = ['wma', 'wv', 'ape', 'ra', 'ram', 'mid', 'midi', 'amr', 'mka'];
+
+// List of audio formats that are known to work well with Web Audio API
+const SUPPORTED_AUDIO_FORMATS = ['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a', 'webm', 'opus'];
+
+// Robust audio decoding function with fallback methods and timeout
+async function decodeAudioBuffer(arrayBuffer, fileName = '') {
+  const audioCtx = getSharedAudioContext();
+  const bufferSize = arrayBuffer.byteLength;
+
+  console.log('decodeAudioBuffer: Starting decode, buffer size:', bufferSize, 'AudioContext state:', audioCtx.state);
+
+  // Check for unsupported format by filename extension
+  if (fileName) {
+    const extension = fileName.split('.').pop().toLowerCase();
+    if (UNSUPPORTED_AUDIO_FORMATS.includes(extension)) {
+      throw new Error(`The "${extension.toUpperCase()}" format is not supported by the browser. Please convert your audio file to MP3, WAV, or OGG format.`);
+    }
+  }
+
+  // Warn about large files (>2MB) that may cause issues
+  const MAX_RECOMMENDED_SIZE = 2 * 1024 * 1024; // 2MB
+  if (bufferSize > MAX_RECOMMENDED_SIZE) {
+    console.warn('decodeAudioBuffer: Large file detected (' + (bufferSize / (1024 * 1024)).toFixed(2) + 'MB). This may take a while or fail.');
+  }
+
+  // Ensure audio context is running
+  if (audioCtx.state === 'suspended') {
+    try {
+      await audioCtx.resume();
+      console.log('decodeAudioBuffer: AudioContext resumed');
+    } catch (e) {
+      console.warn('Could not resume audio context:', e);
+    }
+  }
+
+  // Make a copy of the buffer since decodeAudioData can detach it
+  const bufferCopy = arrayBuffer.slice(0);
+  console.log('decodeAudioBuffer: Buffer copied, calling decodeAudioData...');
+
+  // Use a 5 second timeout - if it takes longer, it's likely hung
+  const DECODE_TIMEOUT_MS = 5000;
+  let timeoutId = null;
+  let isTimedOut = false;
+
+  // Create a timeout promise to prevent indefinite hangs
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      isTimedOut = true;
+      console.error('decodeAudioBuffer: Timeout after', DECODE_TIMEOUT_MS, 'ms');
+      reject(new Error(`Audio decoding timed out after ${DECODE_TIMEOUT_MS / 1000} seconds. The file may be corrupted or in an unsupported format. Try converting to MP3 (128kbps) or WAV (16-bit PCM).`));
+    }, DECODE_TIMEOUT_MS);
+  });
+
+  // Create the decode promise
+  const decodePromise = new Promise((resolve, reject) => {
+    let handled = false;
+
+    const handleSuccess = (decodedBuffer) => {
+      if (handled || isTimedOut || audioLoadingCancelled) return;
+      handled = true;
+      if (timeoutId) clearTimeout(timeoutId);
+      console.log('Audio decoded successfully, duration:', decodedBuffer.duration, 'channels:', decodedBuffer.numberOfChannels);
+      resolve(decodedBuffer);
+    };
+
+    const handleError = (err) => {
+      if (handled || isTimedOut) return;
+      handled = true;
+      if (timeoutId) clearTimeout(timeoutId);
+      console.error('decodeAudioData error:', err);
+      reject(new Error('Unable to decode audio file. The file format may not be supported by your browser. Try converting to MP3 (128kbps) or WAV (16-bit PCM).'));
+    };
+
+    // Check if already cancelled
+    if (audioLoadingCancelled) {
+      if (timeoutId) clearTimeout(timeoutId);
+      reject(new Error('Audio loading cancelled by user'));
+      return;
+    }
+
+    // Use setTimeout(0) to yield to the event loop before starting decode
+    // This allows the loading overlay to render before we start the potentially blocking operation
+    setTimeout(() => {
+      if (audioLoadingCancelled) {
+        if (timeoutId) clearTimeout(timeoutId);
+        reject(new Error('Audio loading cancelled by user'));
+        return;
+      }
+
+      try {
+        // Use callback form for maximum compatibility
+        // Note: Some Electron versions may hang on decodeAudioData for certain files
+        const result = audioCtx.decodeAudioData(bufferCopy, handleSuccess, handleError);
+
+        // Modern browsers return a promise from decodeAudioData
+        // Handle this as a fallback in case callbacks aren't called
+        if (result && typeof result.then === 'function') {
+          result
+            .then((buffer) => {
+              if (!handled && !isTimedOut && !audioLoadingCancelled) {
+                console.log('decodeAudioData resolved via promise');
+                handleSuccess(buffer);
+              }
+            })
+            .catch((err) => {
+              if (!handled && !isTimedOut) {
+                console.log('decodeAudioData rejected via promise');
+                handleError(err);
+              }
+            });
+        }
+      } catch (e) {
+        // Some browsers throw synchronously instead of calling the error callback
+        console.error('decodeAudioData sync error:', e);
+        handleError(e);
+      }
+    }, 0);
+  });
+
+  // Race between decode and timeout
+  return Promise.race([decodePromise, timeoutPromise]);
+}
+
+// ============================================================================
+// AUDIO TRANSCODING TO WAV PCM
+// ============================================================================
+// This converts any decoded audio to a standard 16-bit PCM WAV format
+// which is universally supported by all browsers and Electron versions.
+// This solves issues with various audio formats (especially MP3s with
+// unusual bit rates or WAV files with non-standard encoding).
+
+/**
+ * Encode an AudioBuffer to WAV format (16-bit PCM)
+ * @param {AudioBuffer} audioBuffer - The decoded audio buffer
+ * @returns {ArrayBuffer} - WAV file as ArrayBuffer
+ */
+function encodeAudioBufferToWav(audioBuffer) {
+  const numChannels = Math.min(audioBuffer.numberOfChannels, 2); // Limit to stereo
+  const sampleRate = audioBuffer.sampleRate;
+  const bitsPerSample = 16;
+  const bytesPerSample = bitsPerSample / 8;
+  const blockAlign = numChannels * bytesPerSample;
+  const numSamples = audioBuffer.length;
+  const dataSize = numSamples * blockAlign;
+  const fileSize = 44 + dataSize; // 44 bytes for WAV header
+
+  // Create buffer for the WAV file
+  const buffer = new ArrayBuffer(fileSize);
+  const view = new DataView(buffer);
+
+  // Helper to write a string
+  const writeString = (offset, str) => {
+    for (let i = 0; i < str.length; i++) {
+      view.setUint8(offset + i, str.charCodeAt(i));
+    }
+  };
+
+  // Write WAV header
+  writeString(0, 'RIFF');                         // ChunkID
+  view.setUint32(4, fileSize - 8, true);          // ChunkSize
+  writeString(8, 'WAVE');                         // Format
+  writeString(12, 'fmt ');                        // Subchunk1ID
+  view.setUint32(16, 16, true);                   // Subchunk1Size (16 for PCM)
+  view.setUint16(20, 1, true);                    // AudioFormat (1 = PCM)
+  view.setUint16(22, numChannels, true);          // NumChannels
+  view.setUint32(24, sampleRate, true);           // SampleRate
+  view.setUint32(28, sampleRate * blockAlign, true); // ByteRate
+  view.setUint16(32, blockAlign, true);           // BlockAlign
+  view.setUint16(34, bitsPerSample, true);        // BitsPerSample
+  writeString(36, 'data');                        // Subchunk2ID
+  view.setUint32(40, dataSize, true);             // Subchunk2Size
+
+  // Get channel data
+  const channels = [];
+  for (let c = 0; c < numChannels; c++) {
+    channels.push(audioBuffer.getChannelData(c));
+  }
+
+  // Interleave and write sample data
+  let offset = 44;
+  for (let i = 0; i < numSamples; i++) {
+    for (let c = 0; c < numChannels; c++) {
+      // Convert float (-1 to 1) to 16-bit integer (-32768 to 32767)
+      let sample = channels[c][i];
+      // Clamp to prevent overflow
+      sample = Math.max(-1, Math.min(1, sample));
+      // Convert to 16-bit signed integer
+      const intSample = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
+      view.setInt16(offset, intSample, true);
+      offset += 2;
+    }
+  }
+
+  return buffer;
+}
+
+/**
+ * Convert ArrayBuffer to data URL
+ * @param {ArrayBuffer} arrayBuffer - The data
+ * @param {string} mimeType - MIME type for the data URL
+ * @returns {string} - Data URL
+ */
+function arrayBufferToDataUrl(arrayBuffer, mimeType = 'audio/wav') {
+  const uint8Array = new Uint8Array(arrayBuffer);
+  let binary = '';
+  for (let i = 0; i < uint8Array.length; i++) {
+    binary += String.fromCharCode(uint8Array[i]);
+  }
+  return `data:${mimeType};base64,${btoa(binary)}`;
+}
+
+/**
+ * Trim an AudioBuffer to a maximum duration
+ * @param {AudioBuffer} audioBuffer - The original audio buffer
+ * @param {number} maxDuration - Maximum duration in seconds
+ * @returns {AudioBuffer} - Trimmed audio buffer (or original if shorter)
+ */
+function trimAudioBuffer(audioBuffer, maxDuration) {
+  if (audioBuffer.duration <= maxDuration) {
+    return audioBuffer;
+  }
+
+  console.log('trimAudioBuffer: Trimming audio from', audioBuffer.duration, 'to', maxDuration, 'seconds');
+
+  const audioCtx = getSharedAudioContext();
+  const numChannels = audioBuffer.numberOfChannels;
+  const sampleRate = audioBuffer.sampleRate;
+  const maxSamples = Math.floor(maxDuration * sampleRate);
+
+  // Create a new, shorter buffer
+  const trimmedBuffer = audioCtx.createBuffer(numChannels, maxSamples, sampleRate);
+
+  // Copy the data
+  for (let c = 0; c < numChannels; c++) {
+    const sourceData = audioBuffer.getChannelData(c);
+    const destData = trimmedBuffer.getChannelData(c);
+    destData.set(sourceData.subarray(0, maxSamples));
+  }
+
+  return trimmedBuffer;
+}
+
+/**
+ * Transcode audio file to WAV PCM format
+ * This decodes the audio and re-encodes it as WAV PCM,
+ * ensuring universal compatibility.
+ * For metronome/timer sounds, we limit to 10 seconds to keep file size reasonable.
+ * @param {ArrayBuffer} inputBuffer - The input audio file
+ * @param {string} fileName - File name for logging/error messages
+ * @param {number} maxDuration - Maximum duration in seconds (default: 10)
+ * @returns {Promise<{audioBuffer: AudioBuffer, wavDataUrl: string}>}
+ */
+async function transcodeToWav(inputBuffer, fileName = '', maxDuration = 10) {
+  console.log('transcodeToWav: Starting transcode for', fileName || 'audio file');
+
+  // First, decode the original audio
+  let audioBuffer = await decodeAudioBuffer(inputBuffer, fileName);
+
+  console.log('transcodeToWav: Audio decoded, duration:', audioBuffer.duration,
+              'channels:', audioBuffer.numberOfChannels,
+              'sampleRate:', audioBuffer.sampleRate);
+
+  // Trim to max duration if needed (to keep file size reasonable)
+  if (audioBuffer.duration > maxDuration) {
+    console.log('transcodeToWav: Audio is longer than', maxDuration, 'seconds, trimming...');
+    audioBuffer = trimAudioBuffer(audioBuffer, maxDuration);
+  }
+
+  // Encode to WAV PCM
+  const wavBuffer = encodeAudioBufferToWav(audioBuffer);
+  console.log('transcodeToWav: WAV encoded, size:', (wavBuffer.byteLength / 1024).toFixed(1), 'KB');
+
+  // Warn if resulting file is very large
+  const MAX_REASONABLE_SIZE = 2 * 1024 * 1024; // 2MB
+  if (wavBuffer.byteLength > MAX_REASONABLE_SIZE) {
+    console.warn('transcodeToWav: Warning - transcoded file is large:',
+                 (wavBuffer.byteLength / (1024 * 1024)).toFixed(2), 'MB');
+  }
+
+  // Convert to data URL
+  const wavDataUrl = arrayBufferToDataUrl(wavBuffer);
+  console.log('transcodeToWav: Data URL created, length:', wavDataUrl.length);
+
+  return { audioBuffer, wavDataUrl };
+}
+
+// Safe wrapper for loading audio files from File objects
+// This uses a simple, reliable approach:
+// 1. Validate using HTML5 Audio element (fast, won't hang)
+// 2. Read file as data URL
+// 3. Return dataUrl for HTML5 Audio playback (no decodeAudioData which can hang)
+//
+// This approach avoids the Web Audio API's decodeAudioData which can hang
+// indefinitely on certain audio files in Electron, causing a grey screen.
+async function loadAudioFromFile(file) {
+  console.log('loadAudioFromFile:', file.name, 'type:', file.type, 'size:', file.size);
+
+  // Early check for completely unsupported formats
+  const extension = file.name.split('.').pop().toLowerCase();
+  if (UNSUPPORTED_AUDIO_FORMATS.includes(extension)) {
+    throw new Error(`The "${extension.toUpperCase()}" format is not supported. Please convert your audio file to MP3, WAV, or OGG format.`);
+  }
+
+  // File size limits
+  const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB absolute max
+  const WARN_FILE_SIZE = 2 * 1024 * 1024; // 2MB warning threshold
+
+  if (file.size > MAX_FILE_SIZE) {
+    throw new Error(`File is too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Please use a file smaller than 10MB.`);
+  }
+
+  if (file.size > WARN_FILE_SIZE) {
+    console.warn('loadAudioFromFile: Large file detected:', (file.size / 1024 / 1024).toFixed(2), 'MB');
+  }
+
+  // Show loading overlay
+  showAudioLoadingOverlay();
+
+  try {
+    // Step 1: Validate the audio file using HTML5 Audio element
+    // This is fast, won't hang, and confirms the browser can play it
+    console.log('Validating audio file with HTML5 Audio...');
+    try {
+      await preValidateAudioFile(file);
+      console.log('Audio file validation passed');
+    } catch (validationError) {
+      // If HTML5 Audio can't play it, the file is likely corrupted or unsupported
+      throw new Error(`Cannot load audio file: ${validationError.message}`);
+    }
+
+    // Check if cancelled
+    if (audioLoadingCancelled) {
+      throw new Error('Audio loading cancelled by user');
+    }
+
+    // Step 2: Read file as data URL for HTML5 Audio playback
+    // This avoids decodeAudioData which can hang on certain files
+    console.log('Reading file as data URL...');
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('Failed to read audio file'));
+      reader.readAsDataURL(file);
+    });
+
+    console.log('File read complete, dataUrl length:', dataUrl.length);
+
+    // Check if cancelled
+    if (audioLoadingCancelled) {
+      throw new Error('Audio loading cancelled by user');
+    }
+
+    // Return just the dataUrl - no audioBuffer needed
+    // The playback code will use HTML5 Audio element instead of Web Audio API BufferSource
+    hideAudioLoadingOverlay();
+    return { audioBuffer: null, dataUrl };
+
+  } finally {
+    // Always hide the overlay when done (success or failure)
+    hideAudioLoadingOverlay();
+  }
+}
+
+// Convert ArrayBuffer to base64 string
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+// Convert base64 string to ArrayBuffer
+function base64ToArrayBuffer(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes.buffer;
+}
+
+// Safe wrapper for loading audio from data URL (for preloading saved sounds)
+async function loadAudioFromDataUrl(dataUrl) {
+  console.log('loadAudioFromDataUrl, dataUrl length:', dataUrl.length);
+
+  // Convert data URL to ArrayBuffer using fetch
+  const response = await fetch(dataUrl);
+  const arrayBuffer = await response.arrayBuffer();
+
+  console.log('DataURL converted to ArrayBuffer, size:', arrayBuffer.byteLength);
+
+  // Decode the audio
+  return await decodeAudioBuffer(arrayBuffer);
 }
 
 // Drag-and-drop state for menu items
@@ -831,6 +1343,35 @@ function createClock(options = {}) {
   secondHand.position.y = 0.13; // Half the length
   secondPivot.add(secondHand);
   group.add(secondPivot);
+
+  // Alarm hand - pivot group (red, positioned behind second hand, initially hidden)
+  const alarmPivot = new THREE.Group();
+  alarmPivot.name = 'alarmHand';
+  alarmPivot.position.z = 0.055; // Behind other hands
+  alarmPivot.visible = false; // Hidden by default until alarm is set
+
+  const alarmMaterial = new THREE.MeshStandardMaterial({
+    color: 0xff4444, // Bright red
+    roughness: 0.3,
+    metalness: 0.5,
+    emissive: 0xff2222,
+    emissiveIntensity: 0.3
+  });
+
+  // Alarm hand geometry - triangular/arrow shape pointing to alarm time
+  const alarmGeometry = new THREE.BoxGeometry(0.04, 0.18, 0.01);
+  const alarmHand = new THREE.Mesh(alarmGeometry, alarmMaterial);
+  alarmHand.position.y = 0.09; // Half the length
+  alarmPivot.add(alarmHand);
+
+  // Small circle at the tip to make it distinctive
+  const alarmTipGeometry = new THREE.CircleGeometry(0.02, 8);
+  const alarmTip = new THREE.Mesh(alarmTipGeometry, alarmMaterial);
+  alarmTip.position.y = 0.18;
+  alarmTip.position.z = 0.005;
+  alarmPivot.add(alarmTip);
+
+  group.add(alarmPivot);
 
   // Center dot (covers pivot point)
   const centerGeometry = new THREE.SphereGeometry(0.035, 16, 16);
@@ -2228,8 +2769,26 @@ function createMetronome(options = {}) {
     volume: options.volume !== undefined ? options.volume : 0.5, // Volume 0-1
     tickSound: true, // Tick sound ON by default (strike sound)
     tickSoundType: 'strike', // 'strike' (default) or 'beep'
+    tickPitch: options.tickPitch !== undefined ? options.tickPitch : 100, // Pitch percentage (100 = normal)
+    customSoundDataUrl: null, // Custom sound file data URL
     pendulumAngle: 0,
     pendulumDirection: 1,
+    // Pitch curve settings - allows pitch to change over time
+    pitchCurveEnabled: options.pitchCurveEnabled !== undefined ? options.pitchCurveEnabled : false,
+    pitchCurveType: options.pitchCurveType || 'linear', // 'linear', 'ease-in', 'ease-out', 'sine'
+    pitchCurveStart: options.pitchCurveStart !== undefined ? options.pitchCurveStart : 100, // Start pitch %
+    pitchCurveEnd: options.pitchCurveEnd !== undefined ? options.pitchCurveEnd : 100, // End pitch %
+    pitchCurveDuration: options.pitchCurveDuration !== undefined ? options.pitchCurveDuration : 60, // Duration in seconds
+    pitchCurveLoop: options.pitchCurveLoop !== undefined ? options.pitchCurveLoop : false, // Loop the curve
+    pitchCurveStartTime: 0, // Timestamp when curve started
+    // Tempo curve settings - allows BPM to change over time
+    tempoCurveEnabled: options.tempoCurveEnabled !== undefined ? options.tempoCurveEnabled : false,
+    tempoCurveType: options.tempoCurveType || 'linear', // 'linear', 'ease-in', 'ease-out', 'sine'
+    tempoCurveStart: options.tempoCurveStart !== undefined ? options.tempoCurveStart : 60, // Start BPM
+    tempoCurveEnd: options.tempoCurveEnd !== undefined ? options.tempoCurveEnd : 120, // End BPM
+    tempoCurveDuration: options.tempoCurveDuration !== undefined ? options.tempoCurveDuration : 60, // Duration in seconds
+    tempoCurveLoop: options.tempoCurveLoop !== undefined ? options.tempoCurveLoop : false, // Loop the curve
+    tempoCurveStartTime: 0, // Timestamp when curve started
     mainColor: options.mainColor || '#8b4513',
     accentColor: options.accentColor || '#ffd700'
   };
@@ -3955,6 +4514,27 @@ function updateClock() {
   const seconds = now.getSeconds().toString().padStart(2, '0');
 
   document.getElementById('clock-display').textContent = `${hours}:${minutes}:${seconds}`;
+
+  // Check if alarm should trigger
+  if (timerState.alarmEnabled && !timerState.alarmTriggered && !timerState.isAlerting) {
+    const currentHours = now.getHours();
+    const currentMinutes = now.getMinutes();
+
+    if (currentHours === timerState.alarmHours && currentMinutes === timerState.alarmMinutes) {
+      // Trigger the alarm
+      timerState.alarmTriggered = true;
+      playTimerAlert();
+    }
+  }
+
+  // Reset alarm triggered flag when time changes past the alarm minute
+  if (timerState.alarmTriggered) {
+    const currentHours = now.getHours();
+    const currentMinutes = now.getMinutes();
+    if (currentHours !== timerState.alarmHours || currentMinutes !== timerState.alarmMinutes) {
+      timerState.alarmTriggered = false;
+    }
+  }
 
   // Update 3D clock objects
   deskObjects.forEach(obj => {
@@ -5687,19 +6267,17 @@ function onMouseWheel(event) {
   }
 
   // If in examine mode: scroll rotates object, LMB held + scroll UP exits, Shift+scroll scales
-  if (examineState.active && examineState.object) {
-    event.preventDefault();
+  // Check if modal is open - Shift+scroll for scaling should work even with modal open
+  const modal = document.getElementById('interaction-modal');
+  const isModalOpen = modal && modal.classList.contains('open');
 
+  if (examineState.active && examineState.object) {
     const object = examineState.object;
 
-    // Scroll UP (deltaY < 0) with LMB held exits examine mode
-    // This prevents accidental exits
-    if (event.deltaY < 0 && !event.shiftKey && event.buttons === 1) {
-      exitExamineMode();
-      return;
-    }
-
+    // Shift+scroll scales object - should work even when modal is open
     if (event.shiftKey) {
+      event.preventDefault();
+      event.stopPropagation(); // Prevent modal from capturing this event
       // Scale object (preserving proportions) with Shift+scroll
       const scaleDelta = event.deltaY > 0 ? 0.95 : 1.05;
       const minScale = 0.3;
@@ -5727,14 +6305,29 @@ function onMouseWheel(event) {
         adjustObjectYForScale(object, oldScale, newScale);
         saveState();
       }
-    } else {
-      // Scroll (both UP and DOWN) rotates object around Y axis
-      // Scroll DOWN (deltaY > 0) rotates clockwise, scroll UP (deltaY < 0) rotates counter-clockwise
-      const rotationDelta = event.deltaY > 0 ? 0.15 : -0.15;
-      object.rotation.y += rotationDelta;
-      object.userData.rotationY = object.rotation.y;
-      saveState();
+      return;
     }
+
+    // Skip rotation/exit controls if modal is open (don't interfere with modal scrolling)
+    if (isModalOpen) {
+      return;
+    }
+
+    event.preventDefault();
+
+    // Scroll UP (deltaY < 0) with LMB held exits examine mode
+    // This prevents accidental exits
+    if (event.deltaY < 0 && !event.shiftKey && event.buttons === 1) {
+      exitExamineMode();
+      return;
+    }
+
+    // Scroll (both UP and DOWN) rotates object around Y axis
+    // Scroll DOWN (deltaY > 0) rotates clockwise, scroll UP (deltaY < 0) rotates counter-clockwise
+    const rotationDelta = event.deltaY > 0 ? 0.15 : -0.15;
+    object.rotation.y += rotationDelta;
+    object.userData.rotationY = object.rotation.y;
+    saveState();
     return;
   }
 
@@ -5989,6 +6582,20 @@ function updateCustomizationPanel(object) {
 
     case 'metronome':
       const volumePercent = Math.round((object.userData.volume || 0.5) * 100);
+      const pitchPercent = object.userData.tickPitch || 100;
+      const pitchCurveEnabled = object.userData.pitchCurveEnabled || false;
+      const pitchCurveType = object.userData.pitchCurveType || 'linear';
+      const pitchCurveStart = object.userData.pitchCurveStart || 100;
+      const pitchCurveEnd = object.userData.pitchCurveEnd || 100;
+      const pitchCurveDuration = object.userData.pitchCurveDuration || 60;
+      const pitchCurveLoop = object.userData.pitchCurveLoop || false;
+      // Tempo curve settings
+      const tempoCurveEnabled = object.userData.tempoCurveEnabled || false;
+      const tempoCurveType = object.userData.tempoCurveType || 'linear';
+      const tempoCurveStart = object.userData.tempoCurveStart || 60;
+      const tempoCurveEnd = object.userData.tempoCurveEnd || 120;
+      const tempoCurveDuration = object.userData.tempoCurveDuration || 60;
+      const tempoCurveLoop = object.userData.tempoCurveLoop || false;
       dynamicOptions.innerHTML = `
         <div class="customization-group" style="margin-top: 20px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.1);">
           <label>BPM: <span id="bpm-display">${object.userData.bpm}</span></label>
@@ -6001,6 +6608,98 @@ function updateCustomizationPanel(object) {
                  style="width: 100%; margin-top: 8px; accent-color: #4f46e5;">
         </div>
         <div class="customization-group" style="margin-top: 15px;">
+          <label>Pitch: <span id="pitch-display">${pitchPercent}%</span></label>
+          <input type="range" id="metronome-pitch-edit" min="50" max="200" value="${pitchPercent}"
+                 style="width: 100%; margin-top: 8px; accent-color: #4f46e5;">
+        </div>
+
+        <!-- Pitch Curve Accordion -->
+        <div class="customization-group" style="margin-top: 15px;">
+          <div id="pitch-curve-toggle" style="display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; cursor: pointer;">
+            <span style="color: rgba(255,255,255,0.8); font-size: 12px;">Pitch Curve Over Time</span>
+            <span id="pitch-curve-arrow" style="color: rgba(255,255,255,0.5); font-size: 12px;">▼</span>
+          </div>
+          <div id="pitch-curve-content" style="display: none; padding: 12px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); border-top: none; border-radius: 0 0 8px 8px;">
+            <div style="margin-bottom: 12px;">
+              <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                <input type="checkbox" id="pitch-curve-enabled" ${pitchCurveEnabled ? 'checked' : ''} style="width: 16px; height: 16px; accent-color: #4f46e5;">
+                Enable Pitch Curve
+              </label>
+            </div>
+            <div style="margin-bottom: 12px;">
+              <label style="display: block; color: rgba(255,255,255,0.7); font-size: 11px; margin-bottom: 6px;">Curve Type</label>
+              <select id="pitch-curve-type" style="width: 100%; padding: 8px; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); border-radius: 6px; color: #fff;">
+                <option value="linear" ${pitchCurveType === 'linear' ? 'selected' : ''}>Linear</option>
+                <option value="ease-in" ${pitchCurveType === 'ease-in' ? 'selected' : ''}>Ease In (Slow Start)</option>
+                <option value="ease-out" ${pitchCurveType === 'ease-out' ? 'selected' : ''}>Ease Out (Slow End)</option>
+                <option value="sine" ${pitchCurveType === 'sine' ? 'selected' : ''}>Sine Wave</option>
+              </select>
+            </div>
+            <div style="margin-bottom: 12px;">
+              <label style="display: block; color: rgba(255,255,255,0.7); font-size: 11px; margin-bottom: 6px;">Start Pitch: <span id="pitch-curve-start-display">${pitchCurveStart}%</span></label>
+              <input type="range" id="pitch-curve-start" min="50" max="200" value="${pitchCurveStart}" style="width: 100%; accent-color: #4f46e5;">
+            </div>
+            <div style="margin-bottom: 12px;">
+              <label style="display: block; color: rgba(255,255,255,0.7); font-size: 11px; margin-bottom: 6px;">End Pitch: <span id="pitch-curve-end-display">${pitchCurveEnd}%</span></label>
+              <input type="range" id="pitch-curve-end" min="50" max="200" value="${pitchCurveEnd}" style="width: 100%; accent-color: #4f46e5;">
+            </div>
+            <div style="margin-bottom: 12px;">
+              <label style="display: block; color: rgba(255,255,255,0.7); font-size: 11px; margin-bottom: 6px;">Duration: <span id="pitch-curve-duration-display">${pitchCurveDuration}s</span></label>
+              <input type="range" id="pitch-curve-duration" min="5" max="300" value="${pitchCurveDuration}" style="width: 100%; accent-color: #4f46e5;">
+            </div>
+            <div>
+              <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                <input type="checkbox" id="pitch-curve-loop" ${pitchCurveLoop ? 'checked' : ''} style="width: 16px; height: 16px; accent-color: #4f46e5;">
+                Loop Curve
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tempo Curve Accordion -->
+        <div class="customization-group" style="margin-top: 15px;">
+          <div id="tempo-curve-toggle" style="display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; cursor: pointer;">
+            <span style="color: rgba(255,255,255,0.8); font-size: 12px;">Tempo Curve Over Time</span>
+            <span id="tempo-curve-arrow" style="color: rgba(255,255,255,0.5); font-size: 12px;">▼</span>
+          </div>
+          <div id="tempo-curve-content" style="display: none; padding: 12px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); border-top: none; border-radius: 0 0 8px 8px;">
+            <div style="margin-bottom: 12px;">
+              <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                <input type="checkbox" id="tempo-curve-enabled" ${tempoCurveEnabled ? 'checked' : ''} style="width: 16px; height: 16px; accent-color: #4f46e5;">
+                Enable Tempo Curve
+              </label>
+            </div>
+            <div style="margin-bottom: 12px;">
+              <label style="display: block; color: rgba(255,255,255,0.7); font-size: 11px; margin-bottom: 6px;">Curve Type</label>
+              <select id="tempo-curve-type" style="width: 100%; padding: 8px; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); border-radius: 6px; color: #fff;">
+                <option value="linear" ${tempoCurveType === 'linear' ? 'selected' : ''}>Linear</option>
+                <option value="ease-in" ${tempoCurveType === 'ease-in' ? 'selected' : ''}>Ease In (Slow Start)</option>
+                <option value="ease-out" ${tempoCurveType === 'ease-out' ? 'selected' : ''}>Ease Out (Slow End)</option>
+                <option value="sine" ${tempoCurveType === 'sine' ? 'selected' : ''}>Sine Wave</option>
+              </select>
+            </div>
+            <div style="margin-bottom: 12px;">
+              <label style="display: block; color: rgba(255,255,255,0.7); font-size: 11px; margin-bottom: 6px;">Start BPM: <span id="tempo-curve-start-display">${tempoCurveStart}</span></label>
+              <input type="range" id="tempo-curve-start" min="10" max="220" value="${tempoCurveStart}" style="width: 100%; accent-color: #4f46e5;">
+            </div>
+            <div style="margin-bottom: 12px;">
+              <label style="display: block; color: rgba(255,255,255,0.7); font-size: 11px; margin-bottom: 6px;">End BPM: <span id="tempo-curve-end-display">${tempoCurveEnd}</span></label>
+              <input type="range" id="tempo-curve-end" min="10" max="220" value="${tempoCurveEnd}" style="width: 100%; accent-color: #4f46e5;">
+            </div>
+            <div style="margin-bottom: 12px;">
+              <label style="display: block; color: rgba(255,255,255,0.7); font-size: 11px; margin-bottom: 6px;">Duration: <span id="tempo-curve-duration-display">${tempoCurveDuration}s</span></label>
+              <input type="range" id="tempo-curve-duration" min="5" max="300" value="${tempoCurveDuration}" style="width: 100%; accent-color: #4f46e5;">
+            </div>
+            <div>
+              <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                <input type="checkbox" id="tempo-curve-loop" ${tempoCurveLoop ? 'checked' : ''} style="width: 16px; height: 16px; accent-color: #4f46e5;">
+                Loop Curve
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div class="customization-group" style="margin-top: 15px;">
           <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
             <input type="checkbox" id="tick-sound" ${object.userData.tickSound ? 'checked' : ''} style="width: 18px; height: 18px; accent-color: #4f46e5;">
             Enable tick sound
@@ -6009,12 +6708,29 @@ function updateCustomizationPanel(object) {
         <div class="customization-group" style="margin-top: 15px;">
           <label>Sound Type</label>
           <div style="display: flex; gap: 10px; margin-top: 8px;">
-            <button id="sound-type-strike" class="timer-btn ${object.userData.tickSoundType !== 'beep' ? 'pause' : 'start'}" style="flex: 1;">
+            <button id="sound-type-strike" class="timer-btn ${object.userData.tickSoundType !== 'beep' && object.userData.tickSoundType !== 'custom' ? 'pause' : 'start'}" style="flex: 1;">
               Strike
             </button>
             <button id="sound-type-beep" class="timer-btn ${object.userData.tickSoundType === 'beep' ? 'pause' : 'start'}" style="flex: 1;">
               Beep
             </button>
+          </div>
+        </div>
+        <div class="customization-group" style="margin-top: 15px;">
+          <label>Custom Sound File</label>
+          <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 8px;">
+            <label style="display: inline-block; padding: 10px 15px; background: rgba(79, 70, 229, 0.3); border: 1px solid rgba(79, 70, 229, 0.5); border-radius: 8px; color: #fff; cursor: pointer; text-align: center;">
+              ${object.userData.customSoundDataUrl ? 'Change Sound' : 'Upload Sound'}
+              <input type="file" id="metronome-custom-sound" accept="audio/*" style="display: none;">
+            </label>
+            ${object.userData.customSoundDataUrl ? `
+              <button id="sound-type-custom" class="timer-btn ${object.userData.tickSoundType === 'custom' ? 'pause' : 'start'}" style="width: 100%;">
+                Use Custom Sound
+              </button>
+              <button id="metronome-clear-sound" style="padding: 10px 15px; background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 8px; color: #ef4444; cursor: pointer;">
+                Clear Sound
+              </button>
+            ` : ''}
           </div>
         </div>
       `;
@@ -6451,6 +7167,180 @@ function setupMetronomeCustomizationHandlers(object) {
       addScrollToSlider(volumeSlider);
     }
 
+    // Pitch slider
+    const pitchSlider = document.getElementById('metronome-pitch-edit');
+    const pitchDisplay = document.getElementById('pitch-display');
+    if (pitchSlider) {
+      pitchSlider.addEventListener('input', (e) => {
+        object.userData.tickPitch = parseInt(e.target.value);
+        pitchDisplay.textContent = e.target.value + '%';
+        saveState();
+      });
+
+      // Add scroll-based adjustment for pitch slider
+      addScrollToSlider(pitchSlider);
+    }
+
+    // Pitch Curve accordion toggle
+    const pitchCurveToggle = document.getElementById('pitch-curve-toggle');
+    const pitchCurveContent = document.getElementById('pitch-curve-content');
+    const pitchCurveArrow = document.getElementById('pitch-curve-arrow');
+    if (pitchCurveToggle && pitchCurveContent) {
+      pitchCurveToggle.addEventListener('click', () => {
+        const isOpen = pitchCurveContent.style.display !== 'none';
+        pitchCurveContent.style.display = isOpen ? 'none' : 'block';
+        pitchCurveArrow.textContent = isOpen ? '▼' : '▲';
+        pitchCurveToggle.style.borderRadius = isOpen ? '8px' : '8px 8px 0 0';
+      });
+    }
+
+    // Pitch Curve enabled checkbox
+    const pitchCurveEnabledCheckbox = document.getElementById('pitch-curve-enabled');
+    if (pitchCurveEnabledCheckbox) {
+      pitchCurveEnabledCheckbox.addEventListener('change', (e) => {
+        object.userData.pitchCurveEnabled = e.target.checked;
+        // Reset curve start time when enabling
+        if (e.target.checked) {
+          object.userData.pitchCurveStartTime = Date.now();
+        }
+        saveState();
+      });
+    }
+
+    // Pitch Curve type dropdown
+    const pitchCurveTypeSelect = document.getElementById('pitch-curve-type');
+    if (pitchCurveTypeSelect) {
+      pitchCurveTypeSelect.addEventListener('change', (e) => {
+        object.userData.pitchCurveType = e.target.value;
+        saveState();
+      });
+    }
+
+    // Pitch Curve start slider
+    const pitchCurveStartSlider = document.getElementById('pitch-curve-start');
+    const pitchCurveStartDisplay = document.getElementById('pitch-curve-start-display');
+    if (pitchCurveStartSlider) {
+      pitchCurveStartSlider.addEventListener('input', (e) => {
+        object.userData.pitchCurveStart = parseInt(e.target.value);
+        pitchCurveStartDisplay.textContent = e.target.value + '%';
+        saveState();
+      });
+      addScrollToSlider(pitchCurveStartSlider);
+    }
+
+    // Pitch Curve end slider
+    const pitchCurveEndSlider = document.getElementById('pitch-curve-end');
+    const pitchCurveEndDisplay = document.getElementById('pitch-curve-end-display');
+    if (pitchCurveEndSlider) {
+      pitchCurveEndSlider.addEventListener('input', (e) => {
+        object.userData.pitchCurveEnd = parseInt(e.target.value);
+        pitchCurveEndDisplay.textContent = e.target.value + '%';
+        saveState();
+      });
+      addScrollToSlider(pitchCurveEndSlider);
+    }
+
+    // Pitch Curve duration slider
+    const pitchCurveDurationSlider = document.getElementById('pitch-curve-duration');
+    const pitchCurveDurationDisplay = document.getElementById('pitch-curve-duration-display');
+    if (pitchCurveDurationSlider) {
+      pitchCurveDurationSlider.addEventListener('input', (e) => {
+        object.userData.pitchCurveDuration = parseInt(e.target.value);
+        pitchCurveDurationDisplay.textContent = e.target.value + 's';
+        saveState();
+      });
+      addScrollToSlider(pitchCurveDurationSlider);
+    }
+
+    // Pitch Curve loop checkbox
+    const pitchCurveLoopCheckbox = document.getElementById('pitch-curve-loop');
+    if (pitchCurveLoopCheckbox) {
+      pitchCurveLoopCheckbox.addEventListener('change', (e) => {
+        object.userData.pitchCurveLoop = e.target.checked;
+        saveState();
+      });
+    }
+
+    // Tempo Curve accordion toggle
+    const tempoCurveToggle = document.getElementById('tempo-curve-toggle');
+    const tempoCurveContent = document.getElementById('tempo-curve-content');
+    const tempoCurveArrow = document.getElementById('tempo-curve-arrow');
+    if (tempoCurveToggle && tempoCurveContent) {
+      tempoCurveToggle.addEventListener('click', () => {
+        const isOpen = tempoCurveContent.style.display !== 'none';
+        tempoCurveContent.style.display = isOpen ? 'none' : 'block';
+        tempoCurveArrow.textContent = isOpen ? '▼' : '▲';
+        tempoCurveToggle.style.borderRadius = isOpen ? '8px' : '8px 8px 0 0';
+      });
+    }
+
+    // Tempo Curve enabled checkbox
+    const tempoCurveEnabledCheckbox = document.getElementById('tempo-curve-enabled');
+    if (tempoCurveEnabledCheckbox) {
+      tempoCurveEnabledCheckbox.addEventListener('change', (e) => {
+        object.userData.tempoCurveEnabled = e.target.checked;
+        // Reset curve start time when enabling
+        if (e.target.checked) {
+          object.userData.tempoCurveStartTime = Date.now();
+        }
+        saveState();
+      });
+    }
+
+    // Tempo Curve type dropdown
+    const tempoCurveTypeSelect = document.getElementById('tempo-curve-type');
+    if (tempoCurveTypeSelect) {
+      tempoCurveTypeSelect.addEventListener('change', (e) => {
+        object.userData.tempoCurveType = e.target.value;
+        saveState();
+      });
+    }
+
+    // Tempo Curve start slider
+    const tempoCurveStartSlider = document.getElementById('tempo-curve-start');
+    const tempoCurveStartDisplay = document.getElementById('tempo-curve-start-display');
+    if (tempoCurveStartSlider) {
+      tempoCurveStartSlider.addEventListener('input', (e) => {
+        object.userData.tempoCurveStart = parseInt(e.target.value);
+        tempoCurveStartDisplay.textContent = e.target.value;
+        saveState();
+      });
+      addScrollToSlider(tempoCurveStartSlider);
+    }
+
+    // Tempo Curve end slider
+    const tempoCurveEndSlider = document.getElementById('tempo-curve-end');
+    const tempoCurveEndDisplay = document.getElementById('tempo-curve-end-display');
+    if (tempoCurveEndSlider) {
+      tempoCurveEndSlider.addEventListener('input', (e) => {
+        object.userData.tempoCurveEnd = parseInt(e.target.value);
+        tempoCurveEndDisplay.textContent = e.target.value;
+        saveState();
+      });
+      addScrollToSlider(tempoCurveEndSlider);
+    }
+
+    // Tempo Curve duration slider
+    const tempoCurveDurationSlider = document.getElementById('tempo-curve-duration');
+    const tempoCurveDurationDisplay = document.getElementById('tempo-curve-duration-display');
+    if (tempoCurveDurationSlider) {
+      tempoCurveDurationSlider.addEventListener('input', (e) => {
+        object.userData.tempoCurveDuration = parseInt(e.target.value);
+        tempoCurveDurationDisplay.textContent = e.target.value + 's';
+        saveState();
+      });
+      addScrollToSlider(tempoCurveDurationSlider);
+    }
+
+    // Tempo Curve loop checkbox
+    const tempoCurveLoopCheckbox = document.getElementById('tempo-curve-loop');
+    if (tempoCurveLoopCheckbox) {
+      tempoCurveLoopCheckbox.addEventListener('change', (e) => {
+        object.userData.tempoCurveLoop = e.target.checked;
+        saveState();
+      });
+    }
+
     const tickCheckbox = document.getElementById('tick-sound');
     if (tickCheckbox) {
       tickCheckbox.addEventListener('change', (e) => {
@@ -6462,20 +7352,20 @@ function setupMetronomeCustomizationHandlers(object) {
     // Sound type buttons
     const strikeBtn = document.getElementById('sound-type-strike');
     const beepBtn = document.getElementById('sound-type-beep');
+    const customBtn = document.getElementById('sound-type-custom');
 
     const updateSoundTypeButtons = () => {
-      if (strikeBtn && beepBtn) {
-        if (object.userData.tickSoundType === 'beep') {
-          beepBtn.classList.remove('start');
-          beepBtn.classList.add('pause');
-          strikeBtn.classList.remove('pause');
-          strikeBtn.classList.add('start');
-        } else {
-          strikeBtn.classList.remove('start');
-          strikeBtn.classList.add('pause');
-          beepBtn.classList.remove('pause');
-          beepBtn.classList.add('start');
-        }
+      if (strikeBtn) {
+        strikeBtn.classList.remove('start', 'pause');
+        strikeBtn.classList.add(object.userData.tickSoundType === 'strike' ? 'pause' : 'start');
+      }
+      if (beepBtn) {
+        beepBtn.classList.remove('start', 'pause');
+        beepBtn.classList.add(object.userData.tickSoundType === 'beep' ? 'pause' : 'start');
+      }
+      if (customBtn) {
+        customBtn.classList.remove('start', 'pause');
+        customBtn.classList.add(object.userData.tickSoundType === 'custom' ? 'pause' : 'start');
       }
     };
 
@@ -6496,7 +7386,137 @@ function setupMetronomeCustomizationHandlers(object) {
         saveState();
       });
     }
+
+    if (customBtn) {
+      customBtn.addEventListener('click', () => {
+        object.userData.tickSoundType = 'custom';
+        updateSoundTypeButtons();
+        saveState();
+      });
+    }
+
+    // Custom sound file upload
+    const customSoundInput = document.getElementById('metronome-custom-sound');
+    if (customSoundInput) {
+      customSoundInput.addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        // Check if file is audio by MIME type or extension (some files may not have proper MIME type in Electron)
+        const isAudioByType = file.type.startsWith('audio/');
+        const extension = file.name.split('.').pop().toLowerCase();
+
+        // First, check for explicitly unsupported formats
+        if (UNSUPPORTED_AUDIO_FORMATS.includes(extension)) {
+          console.log('Metronome file rejected - unsupported format:', file.name);
+          alert(`The "${extension.toUpperCase()}" format is not supported.\n\nPlease convert your audio file to MP3, WAV, or OGG format.`);
+          e.target.value = '';
+          return;
+        }
+
+        const isAudioByExtension = SUPPORTED_AUDIO_FORMATS.includes(extension);
+
+        if (!isAudioByType && !isAudioByExtension) {
+          console.log('File rejected - not recognized as audio:', file.name, 'type:', file.type);
+          alert('Please select an audio file (MP3, WAV, OGG, etc.)');
+          e.target.value = '';
+          return;
+        }
+
+        console.log('Loading metronome custom sound:', file.name);
+
+        // Show loading indicator
+        const uploadBtn = document.querySelector('#metronome-custom-sound + .upload-btn') ||
+                         document.querySelector('.upload-btn');
+        const originalBtnText = uploadBtn ? uploadBtn.textContent : '';
+        if (uploadBtn) {
+          uploadBtn.textContent = 'Loading...';
+          uploadBtn.style.opacity = '0.7';
+          uploadBtn.style.pointerEvents = 'none';
+        }
+
+        try {
+          // Use the robust audio loading helper
+          const { dataUrl } = await loadAudioFromFile(file);
+
+          object.userData.tickSoundType = 'custom';
+          object.userData.customSoundDataUrl = dataUrl;
+          saveState();
+
+          console.log('Metronome custom sound loaded successfully');
+
+          // Refresh the customization panel to show the new buttons
+          updateCustomizationPanel(object);
+        } catch (err) {
+          console.error('Error loading metronome custom sound:', err);
+          alert('Could not load audio file:\n\n' + (err.message || 'Unknown error'));
+          // Reset the file input
+          e.target.value = '';
+          // Restore upload button
+          if (uploadBtn) {
+            uploadBtn.textContent = originalBtnText;
+            uploadBtn.style.opacity = '';
+            uploadBtn.style.pointerEvents = '';
+          }
+        }
+      });
+    }
+
+    // Clear custom sound button
+    const clearSoundBtn = document.getElementById('metronome-clear-sound');
+    if (clearSoundBtn) {
+      clearSoundBtn.addEventListener('click', () => {
+        object.userData.customSoundDataUrl = null;
+        if (object.userData.tickSoundType === 'custom') {
+          object.userData.tickSoundType = 'strike';
+        }
+        saveState();
+        // Refresh the customization panel
+        updateCustomizationPanel(object);
+      });
+    }
   }, 0);
+}
+
+// Preload custom sound for metronome - validates saved sound is still playable
+async function preloadMetronomeCustomSound(object) {
+  if (!object.userData.customSoundDataUrl) return;
+
+  try {
+    console.log('Validating metronome custom sound...');
+
+    // Just validate that the data URL can create a playable audio element
+    // No need to decode - HTML5 Audio handles it at play time
+    const testAudio = new Audio(object.userData.customSoundDataUrl);
+
+    // Wait for the audio to be ready to play
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Audio validation timeout')), 5000);
+
+      testAudio.oncanplaythrough = () => {
+        clearTimeout(timeout);
+        resolve();
+      };
+
+      testAudio.onerror = () => {
+        clearTimeout(timeout);
+        reject(new Error('Audio validation failed'));
+      };
+
+      testAudio.load();
+    });
+
+    // Automatically switch to custom sound when loaded successfully
+    object.userData.tickSoundType = 'custom';
+    console.log('Metronome custom sound validated successfully');
+    // Don't call saveState() here - this function is called during loading
+    // and calling saveState during load causes race conditions
+  } catch (e) {
+    console.error('Error validating metronome custom sound:', e);
+    // Reset custom sound state on error - but don't show alert during preload
+    // as this could be triggered during page load
+    object.userData.customSoundDataUrl = null;
+  }
 }
 
 function setupLaptopCustomizationHandlers(object) {
@@ -6600,7 +7620,7 @@ function setupLaptopCustomizationHandlers(object) {
             img.src = imageUrl;
             saveState();
             // Refresh the panel to update button text
-            showCustomizationPanel(object);
+            updateCustomizationPanel(object);
           };
           reader.readAsDataURL(file);
         }
@@ -6617,7 +7637,7 @@ function setupLaptopCustomizationHandlers(object) {
         }
         saveState();
         // Refresh the panel to update button text
-        showCustomizationPanel(object);
+        updateCustomizationPanel(object);
       });
     }
 
@@ -6649,7 +7669,7 @@ function setupLaptopCustomizationHandlers(object) {
         object.userData.bootScreenDataUrl = null;
         saveState();
         // Refresh the panel to update button text
-        showCustomizationPanel(object);
+        updateCustomizationPanel(object);
       });
     }
   }, 0);
@@ -7338,22 +8358,79 @@ function closeInteractionModal() {
 function getInteractionContent(object) {
   switch (object.userData.type) {
     case 'clock':
+      const clockData = object.userData;
+      const alarmHours = timerState.alarmHours || 0;
+      const alarmMinutes = timerState.alarmMinutes || 0;
+      const alarmEnabled = timerState.alarmEnabled || false;
+      const alertVolume = Math.round((timerState.alertVolume || 0.5) * 100);
+      const alertPitch = Math.round((timerState.alertPitch || 800) / 8); // Convert Hz to percentage (800Hz = 100%)
       return `
         <div class="timer-controls">
-          <div class="timer-display">
-            <div class="time" id="timer-display">00:00:00</div>
+          <!-- Timer Section -->
+          <div style="margin-bottom: 15px;">
+            <div style="color: rgba(255,255,255,0.7); font-size: 12px; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">Timer</div>
+            <div class="timer-display">
+              <div class="time" id="timer-display">00:00:00</div>
+            </div>
+            <div class="timer-input-group">
+              <input type="number" id="timer-hours" min="0" max="23" value="0" placeholder="HH" class="timer-scroll-input">
+              <span>:</span>
+              <input type="number" id="timer-minutes" min="0" max="59" value="5" placeholder="MM" class="timer-scroll-input">
+              <span>:</span>
+              <input type="number" id="timer-seconds" min="0" max="59" value="0" placeholder="SS" class="timer-scroll-input">
+            </div>
+            <div class="timer-buttons">
+              <button class="timer-btn start" id="timer-start">Start</button>
+              <button class="timer-btn pause" id="timer-pause" style="display:none">Pause</button>
+              <button class="timer-btn reset" id="timer-reset">Reset</button>
+            </div>
           </div>
-          <div class="timer-input-group">
-            <input type="number" id="timer-hours" min="0" max="23" value="0" placeholder="HH">
-            <span>:</span>
-            <input type="number" id="timer-minutes" min="0" max="59" value="5" placeholder="MM">
-            <span>:</span>
-            <input type="number" id="timer-seconds" min="0" max="59" value="0" placeholder="SS">
+
+          <!-- Alarm Section -->
+          <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.1);">
+            <div style="color: rgba(255,255,255,0.7); font-size: 12px; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">Alarm</div>
+            <div class="timer-input-group">
+              <input type="number" id="alarm-hours" min="0" max="23" value="${alarmHours}" placeholder="HH" class="timer-scroll-input">
+              <span>:</span>
+              <input type="number" id="alarm-minutes" min="0" max="59" value="${alarmMinutes}" placeholder="MM" class="timer-scroll-input">
+            </div>
+            <div class="timer-buttons" style="margin-top: 10px;">
+              <button class="timer-btn ${alarmEnabled ? 'pause' : 'start'}" id="alarm-toggle">
+                ${alarmEnabled ? 'Alarm ON' : 'Set Alarm'}
+              </button>
+              <button class="timer-btn reset" id="alarm-clear" ${!alarmEnabled ? 'disabled' : ''}>Clear</button>
+            </div>
           </div>
-          <div class="timer-buttons">
-            <button class="timer-btn start" id="timer-start">Start</button>
-            <button class="timer-btn pause" id="timer-pause" style="display:none">Pause</button>
-            <button class="timer-btn reset" id="timer-reset">Reset</button>
+
+          <!-- Sound Settings Accordion -->
+          <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.1);">
+            <div id="sound-settings-toggle" style="display: flex; align-items: center; justify-content: space-between; padding: 10px 15px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; cursor: pointer;">
+              <span style="color: rgba(255,255,255,0.8); font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;">Sound Settings</span>
+              <span id="sound-settings-arrow" style="color: rgba(255,255,255,0.5); font-size: 12px;">▼</span>
+            </div>
+            <div id="sound-settings-content" style="display: none; padding: 15px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); border-top: none; border-radius: 0 0 8px 8px;">
+              <div style="margin-bottom: 15px;">
+                <label style="display: block; color: rgba(255,255,255,0.7); font-size: 12px; margin-bottom: 8px;">Volume: <span id="alert-volume-display">${alertVolume}%</span></label>
+                <input type="range" id="alert-volume" min="0" max="100" value="${alertVolume}" style="width: 100%; accent-color: #4f46e5;">
+              </div>
+              <div style="margin-bottom: 15px;">
+                <label style="display: block; color: rgba(255,255,255,0.7); font-size: 12px; margin-bottom: 8px;">Pitch: <span id="alert-pitch-display">${alertPitch}%</span></label>
+                <input type="range" id="alert-pitch" min="50" max="200" value="${alertPitch}" style="width: 100%; accent-color: #4f46e5;">
+              </div>
+              <div>
+                <label style="display: block; color: rgba(255,255,255,0.7); font-size: 12px; margin-bottom: 8px;">Custom Sound</label>
+                <div style="display: flex; flex-direction: column; gap: 10px;">
+                  <label style="display: inline-block; padding: 10px 15px; background: rgba(79, 70, 229, 0.3); border: 1px solid rgba(79, 70, 229, 0.5); border-radius: 8px; color: #fff; cursor: pointer; text-align: center;">
+                    ${timerState.customSoundDataUrl ? 'Change Sound' : 'Upload Sound'}
+                    <input type="file" id="timer-custom-sound" accept="audio/*" style="display: none;">
+                  </label>
+                  ${timerState.customSoundDataUrl ? `
+                    <button id="timer-use-custom" class="timer-btn start" style="width: 100%;">Use Custom Sound</button>
+                    <button id="timer-clear-sound" style="padding: 10px 15px; background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 8px; color: #ef4444; cursor: pointer;">Clear Sound</button>
+                  ` : ''}
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       `;
@@ -7711,6 +8788,9 @@ function setupTimerHandlers() {
           playTimerAlert();
         }
       }, 1000);
+
+      // Close modal after starting timer
+      closeInteractionModal();
     }
   });
 
@@ -7737,6 +8817,325 @@ function setupTimerHandlers() {
     display.textContent = '00:00:00';
     display.classList.remove('running', 'paused');
   });
+
+  // Setup alarm handlers
+  const alarmToggleBtn = document.getElementById('alarm-toggle');
+  const alarmClearBtn = document.getElementById('alarm-clear');
+
+  if (alarmToggleBtn) {
+    alarmToggleBtn.addEventListener('click', () => {
+      const alarmHours = parseInt(document.getElementById('alarm-hours').value) || 0;
+      const alarmMinutes = parseInt(document.getElementById('alarm-minutes').value) || 0;
+
+      if (!timerState.alarmEnabled) {
+        // Set alarm
+        timerState.alarmHours = alarmHours;
+        timerState.alarmMinutes = alarmMinutes;
+        timerState.alarmEnabled = true;
+        timerState.alarmTriggered = false;
+
+        alarmToggleBtn.textContent = 'Alarm ON';
+        alarmToggleBtn.classList.remove('start');
+        alarmToggleBtn.classList.add('pause');
+        alarmClearBtn.disabled = false;
+
+        // Update the alarm hand on clock objects
+        updateAlarmHandsOnAllClocks();
+
+        // Close modal after setting alarm
+        closeInteractionModal();
+      } else {
+        // Toggle off
+        timerState.alarmEnabled = false;
+        alarmToggleBtn.textContent = 'Set Alarm';
+        alarmToggleBtn.classList.remove('pause');
+        alarmToggleBtn.classList.add('start');
+        alarmClearBtn.disabled = true;
+
+        // Hide alarm hand
+        updateAlarmHandsOnAllClocks();
+      }
+    });
+  }
+
+  if (alarmClearBtn) {
+    alarmClearBtn.addEventListener('click', () => {
+      timerState.alarmEnabled = false;
+      timerState.alarmTriggered = false;
+      alarmToggleBtn.textContent = 'Set Alarm';
+      alarmToggleBtn.classList.remove('pause');
+      alarmToggleBtn.classList.add('start');
+      alarmClearBtn.disabled = true;
+
+      // Hide alarm hand
+      updateAlarmHandsOnAllClocks();
+    });
+  }
+
+  // Add real-time alarm hand preview when changing alarm time inputs
+  const alarmHoursInput = document.getElementById('alarm-hours');
+  const alarmMinutesInput = document.getElementById('alarm-minutes');
+
+  const updateAlarmHandPreview = () => {
+    const hours = parseInt(alarmHoursInput?.value) || 0;
+    const minutes = parseInt(alarmMinutesInput?.value) || 0;
+    // Update preview on all clocks by temporarily setting the values
+    const prevHours = timerState.alarmHours;
+    const prevMinutes = timerState.alarmMinutes;
+    const wasEnabled = timerState.alarmEnabled;
+
+    // Temporarily enable and set values for preview
+    timerState.alarmHours = hours;
+    timerState.alarmMinutes = minutes;
+    timerState.alarmEnabled = true;
+    updateAlarmHandsOnAllClocks();
+
+    // Restore previous enabled state but keep the new time values
+    // This way the hand shows the preview position but the alarm isn't actually set
+    if (!wasEnabled) {
+      // Keep showing the preview even if not enabled yet
+      // The hand will remain visible as a preview
+    }
+  };
+
+  if (alarmHoursInput) {
+    alarmHoursInput.addEventListener('input', updateAlarmHandPreview);
+    alarmHoursInput.addEventListener('wheel', (e) => {
+      // Let the wheel event happen first, then update preview
+      setTimeout(updateAlarmHandPreview, 0);
+    });
+  }
+
+  if (alarmMinutesInput) {
+    alarmMinutesInput.addEventListener('input', updateAlarmHandPreview);
+    alarmMinutesInput.addEventListener('wheel', (e) => {
+      // Let the wheel event happen first, then update preview
+      setTimeout(updateAlarmHandPreview, 0);
+    });
+  }
+
+  // Setup sound settings accordion
+  const soundSettingsToggle = document.getElementById('sound-settings-toggle');
+  const soundSettingsContent = document.getElementById('sound-settings-content');
+  const soundSettingsArrow = document.getElementById('sound-settings-arrow');
+
+  if (soundSettingsToggle) {
+    soundSettingsToggle.addEventListener('click', () => {
+      const isOpen = soundSettingsContent.style.display !== 'none';
+      soundSettingsContent.style.display = isOpen ? 'none' : 'block';
+      soundSettingsArrow.textContent = isOpen ? '▼' : '▲';
+      soundSettingsToggle.style.borderRadius = isOpen ? '8px' : '8px 8px 0 0';
+    });
+  }
+
+  // Volume slider
+  const volumeSlider = document.getElementById('alert-volume');
+  const volumeDisplay = document.getElementById('alert-volume-display');
+  if (volumeSlider) {
+    volumeSlider.addEventListener('input', (e) => {
+      timerState.alertVolume = parseInt(e.target.value) / 100;
+      volumeDisplay.textContent = e.target.value + '%';
+    });
+    addScrollToSlider(volumeSlider);
+  }
+
+  // Pitch slider
+  const pitchSlider = document.getElementById('alert-pitch');
+  const pitchDisplay = document.getElementById('alert-pitch-display');
+  if (pitchSlider) {
+    pitchSlider.addEventListener('input', (e) => {
+      timerState.alertPitch = parseInt(e.target.value) * 8; // Convert percentage to Hz (100% = 800Hz)
+      pitchDisplay.textContent = e.target.value + '%';
+    });
+    addScrollToSlider(pitchSlider);
+  }
+
+  // Custom sound upload
+  const customSoundInput = document.getElementById('timer-custom-sound');
+  if (customSoundInput) {
+    customSoundInput.addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      // Check if file is audio by MIME type or extension (some files may not have proper MIME type in Electron)
+      const isAudioByType = file.type.startsWith('audio/');
+      const extension = file.name.split('.').pop().toLowerCase();
+
+      // First, check for explicitly unsupported formats
+      if (UNSUPPORTED_AUDIO_FORMATS.includes(extension)) {
+        console.log('Timer file rejected - unsupported format:', file.name);
+        alert(`The "${extension.toUpperCase()}" format is not supported.\n\nPlease convert your audio file to MP3, WAV, or OGG format.`);
+        e.target.value = '';
+        return;
+      }
+
+      const isAudioByExtension = SUPPORTED_AUDIO_FORMATS.includes(extension);
+
+      if (!isAudioByType && !isAudioByExtension) {
+        console.log('Timer file rejected - not recognized as audio:', file.name, 'type:', file.type);
+        alert('Please select an audio file (MP3, WAV, OGG, etc.)');
+        e.target.value = '';
+        return;
+      }
+
+      console.log('Loading timer custom sound:', file.name);
+
+      // Show loading indicator
+      const uploadBtn = document.querySelector('.upload-btn');
+      const originalBtnText = uploadBtn ? uploadBtn.textContent : '';
+      if (uploadBtn) {
+        uploadBtn.textContent = 'Loading...';
+        uploadBtn.style.opacity = '0.7';
+        uploadBtn.style.pointerEvents = 'none';
+      }
+
+      try {
+        // Use the robust audio loading helper
+        const { dataUrl } = await loadAudioFromFile(file);
+
+        timerState.useCustomSound = true;
+        timerState.customSoundDataUrl = dataUrl;
+
+        console.log('Timer custom sound loaded successfully');
+
+        // Refresh the modal to show new buttons
+        if (interactionObject && interactionObject.userData.type === 'clock') {
+          const content = document.getElementById('interaction-content');
+          content.innerHTML = getInteractionContent(interactionObject);
+          setupTimerHandlers();
+        }
+      } catch (err) {
+        console.error('Error loading timer custom sound:', err);
+        alert('Could not load audio file:\n\n' + (err.message || 'Unknown error'));
+        // Reset the file input
+        e.target.value = '';
+        // Restore upload button
+        if (uploadBtn) {
+          uploadBtn.textContent = originalBtnText;
+          uploadBtn.style.opacity = '';
+          uploadBtn.style.pointerEvents = '';
+        }
+      }
+    });
+  }
+
+  // Use custom sound button
+  const useCustomBtn = document.getElementById('timer-use-custom');
+  if (useCustomBtn) {
+    useCustomBtn.addEventListener('click', () => {
+      timerState.useCustomSound = true;
+    });
+  }
+
+  // Clear custom sound button
+  const clearSoundBtn = document.getElementById('timer-clear-sound');
+  if (clearSoundBtn) {
+    clearSoundBtn.addEventListener('click', () => {
+      timerState.customSoundDataUrl = null;
+      timerState.useCustomSound = false;
+      // Refresh the modal
+      if (interactionObject && interactionObject.userData.type === 'clock') {
+        const content = document.getElementById('interaction-content');
+        content.innerHTML = getInteractionContent(interactionObject);
+        setupTimerHandlers();
+      }
+    });
+  }
+
+  // Setup scroll-based digit change for timer inputs
+  setupScrollInputs();
+}
+
+// Setup scroll-based digit change for timer/alarm inputs
+function setupScrollInputs() {
+  const scrollInputs = document.querySelectorAll('.timer-scroll-input');
+  scrollInputs.forEach(input => {
+    input.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const currentValue = parseInt(input.value) || 0;
+      const min = parseInt(input.min) || 0;
+      const max = parseInt(input.max) || 59;
+      const step = e.deltaY < 0 ? 1 : -1;
+      let newValue = currentValue + step;
+
+      // Wrap around
+      if (newValue > max) newValue = min;
+      if (newValue < min) newValue = max;
+
+      input.value = newValue;
+    });
+  });
+}
+
+// Preload custom sound for timer to avoid delay
+async function preloadTimerCustomSound() {
+  if (!timerState.customSoundDataUrl) return;
+
+  try {
+    console.log('Validating timer custom sound...');
+
+    // Just validate that the data URL can create a playable audio element
+    // No need to decode - HTML5 Audio handles it at play time
+    const testAudio = new Audio(timerState.customSoundDataUrl);
+
+    // Wait for the audio to be ready to play
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Audio validation timeout')), 5000);
+
+      testAudio.oncanplaythrough = () => {
+        clearTimeout(timeout);
+        resolve();
+      };
+
+      testAudio.onerror = () => {
+        clearTimeout(timeout);
+        reject(new Error('Audio validation failed'));
+      };
+
+      testAudio.load();
+    });
+
+    // Automatically enable custom sound when validated successfully
+    timerState.useCustomSound = true;
+    console.log('Timer custom sound validated successfully');
+  } catch (e) {
+    console.error('Error validating timer custom sound:', e);
+    // Reset custom sound state on error - but don't show alert during preload
+    // as this could be triggered during page load
+    timerState.customSoundDataUrl = null;
+    timerState.useCustomSound = false;
+  }
+}
+
+// Update alarm hands on all clock objects
+// Update the alarm hand position on a clock object
+function updateClockAlarmHand(clockObject) {
+  const alarmHand = clockObject.getObjectByName('alarmHand');
+  if (!alarmHand) return;
+
+  if (timerState.alarmEnabled) {
+    // Show the alarm hand
+    alarmHand.visible = true;
+
+    // Calculate angle for alarm time (like an hour hand)
+    // 12 hours = 360 degrees, so each hour = 30 degrees
+    // Convert to 12-hour format and calculate angle
+    // Use the same formula as the hour hand: -(hourFloat / 12) * Math.PI * 2
+    const hours12 = (timerState.alarmHours % 12) + timerState.alarmMinutes / 60;
+    const angle = -(hours12 / 12) * Math.PI * 2;
+    alarmHand.rotation.z = angle;
+  } else {
+    // Hide the alarm hand
+    alarmHand.visible = false;
+  }
+}
+
+function updateAlarmHandsOnAllClocks() {
+  deskObjects.forEach(obj => {
+    if (obj.userData.type === 'clock') {
+      updateClockAlarmHand(obj);
+    }
+  });
 }
 
 function updateTimerDisplay() {
@@ -7757,6 +9156,62 @@ function playTimerAlert() {
     modal.style.animation = '';
   }, 1500);
 
+  const volume = timerState.alertVolume || 0.5;
+  const pitch = timerState.alertPitch || 800;
+
+  // Check if custom sound is available and should be used
+  // Use HTML5 Audio element for playback (doesn't hang like Web Audio API decodeAudioData)
+  if (timerState.useCustomSound && timerState.customSoundDataUrl) {
+    try {
+      timerState.isAlerting = true;
+
+      // Create and store the audio element for the custom sound
+      const audio = new Audio(timerState.customSoundDataUrl);
+      timerState.customAudioElement = audio;
+      audio.volume = volume;
+      audio.playbackRate = pitch / 800; // Pitch adjustment via playback rate
+
+      // Play custom sound in a loop
+      const playCustomLoop = () => {
+        if (!timerState.isAlerting) return;
+
+        try {
+          audio.currentTime = 0;
+          audio.play().catch(err => {
+            console.error('Error playing custom sound:', err);
+            stopTimerAlert();
+            playDefaultTimerAlert(volume, pitch);
+          });
+        } catch (playErr) {
+          console.error('Error playing custom sound:', playErr);
+          stopTimerAlert();
+          playDefaultTimerAlert(volume, pitch);
+        }
+      };
+
+      // Loop the sound
+      audio.onended = () => {
+        if (timerState.isAlerting) {
+          setTimeout(playCustomLoop, 500); // 500ms pause between plays
+        }
+      };
+
+      playCustomLoop();
+
+      // Auto-stop after 30 seconds
+      setTimeout(() => {
+        stopTimerAlert();
+      }, 30000);
+    } catch (e) {
+      console.log('Custom audio not available, falling back to default:', e.message);
+      playDefaultTimerAlert(volume, pitch);
+    }
+  } else {
+    playDefaultTimerAlert(volume, pitch);
+  }
+}
+
+function playDefaultTimerAlert(volume, pitch) {
   // Play a continuous beeping sound using Web Audio API
   // The sound will continue until stopped by middle-click on clock
   try {
@@ -7767,18 +9222,17 @@ function playTimerAlert() {
     timerState.alertOscillator.connect(gainNode);
     gainNode.connect(timerState.alertAudioCtx.destination);
 
-    timerState.alertOscillator.frequency.value = 800;
+    timerState.alertOscillator.frequency.value = pitch;
     timerState.alertOscillator.type = 'sine';
-    gainNode.gain.value = 0.3;
 
     // Create a pulsing effect by modulating the gain
     const now = timerState.alertAudioCtx.currentTime;
-    gainNode.gain.setValueAtTime(0.3, now);
+    const peakGain = 0.6 * volume;
 
     // Pulse the sound on/off
     let time = now;
     for (let i = 0; i < 60; i++) { // Up to 30 seconds of pulsing (60 * 0.5s)
-      gainNode.gain.setValueAtTime(0.3, time);
+      gainNode.gain.setValueAtTime(peakGain, time);
       gainNode.gain.setValueAtTime(0, time + 0.3);
       time += 0.5;
     }
@@ -7796,16 +9250,32 @@ function playTimerAlert() {
 }
 
 function stopTimerAlert() {
-  if (timerState.isAlerting && timerState.alertOscillator) {
+  timerState.isAlerting = false; // Stop any custom sound loops first
+
+  // Stop HTML5 Audio element if playing (custom sound)
+  if (timerState.customAudioElement) {
+    try {
+      timerState.customAudioElement.pause();
+      timerState.customAudioElement.currentTime = 0;
+    } catch (e) {
+      // Ignore if already stopped
+    }
+    timerState.customAudioElement = null;
+  }
+
+  // Stop Web Audio API oscillator if playing (default alert)
+  if (timerState.alertOscillator) {
     try {
       timerState.alertOscillator.stop();
-      timerState.alertAudioCtx.close();
+      // Only close the context if it's NOT the shared one (default alert uses its own)
+      if (timerState.alertAudioCtx && timerState.alertAudioCtx !== sharedAudioCtx) {
+        timerState.alertAudioCtx.close();
+      }
     } catch (e) {
       // Ignore if already stopped
     }
     timerState.alertOscillator = null;
     timerState.alertAudioCtx = null;
-    timerState.isAlerting = false;
   }
 }
 
@@ -8347,6 +9817,8 @@ function setupMetronomeHandlers(object) {
   toggleBtn.addEventListener('click', () => {
     object.userData.isRunning = !object.userData.isRunning;
     if (object.userData.isRunning) {
+      // Reset pitch curve start time when starting
+      object.userData.pitchCurveStartTime = Date.now();
       status.textContent = 'RUNNING';
       status.classList.add('running');
       toggleBtn.textContent = 'Stop';
@@ -9372,7 +10844,11 @@ function performQuickInteraction(object, clickedMesh = null) {
     case 'metronome':
       // Toggle metronome on/off with middle-click
       object.userData.isRunning = !object.userData.isRunning;
-      if (!object.userData.isRunning) {
+      if (object.userData.isRunning) {
+        // Reset pitch and tempo curve start times when starting
+        object.userData.pitchCurveStartTime = Date.now();
+        object.userData.tempoCurveStartTime = Date.now();
+      } else {
         // Reset pendulum when stopped
         object.userData.pendulumAngle = 0;
         const pendulum = object.getObjectByName('pendulum');
@@ -12094,6 +13570,66 @@ async function saveStateImmediate() {
           data.volume = obj.userData.volume;
           data.tickSound = obj.userData.tickSound;
           data.tickSoundType = obj.userData.tickSoundType;
+          // Save pitch settings
+          if (obj.userData.tickPitch !== undefined) {
+            data.tickPitch = obj.userData.tickPitch;
+          }
+          // Save custom sound data URL for persistence
+          if (obj.userData.customSoundDataUrl) {
+            data.customSoundDataUrl = obj.userData.customSoundDataUrl;
+          }
+          // Save pitch curve settings
+          if (obj.userData.pitchCurveEnabled !== undefined) {
+            data.pitchCurveEnabled = obj.userData.pitchCurveEnabled;
+          }
+          if (obj.userData.pitchCurveType) {
+            data.pitchCurveType = obj.userData.pitchCurveType;
+          }
+          if (obj.userData.pitchCurveStart !== undefined) {
+            data.pitchCurveStart = obj.userData.pitchCurveStart;
+          }
+          if (obj.userData.pitchCurveEnd !== undefined) {
+            data.pitchCurveEnd = obj.userData.pitchCurveEnd;
+          }
+          if (obj.userData.pitchCurveDuration !== undefined) {
+            data.pitchCurveDuration = obj.userData.pitchCurveDuration;
+          }
+          if (obj.userData.pitchCurveLoop !== undefined) {
+            data.pitchCurveLoop = obj.userData.pitchCurveLoop;
+          }
+          // Save tempo curve settings
+          if (obj.userData.tempoCurveEnabled !== undefined) {
+            data.tempoCurveEnabled = obj.userData.tempoCurveEnabled;
+          }
+          if (obj.userData.tempoCurveType) {
+            data.tempoCurveType = obj.userData.tempoCurveType;
+          }
+          if (obj.userData.tempoCurveStart !== undefined) {
+            data.tempoCurveStart = obj.userData.tempoCurveStart;
+          }
+          if (obj.userData.tempoCurveEnd !== undefined) {
+            data.tempoCurveEnd = obj.userData.tempoCurveEnd;
+          }
+          if (obj.userData.tempoCurveDuration !== undefined) {
+            data.tempoCurveDuration = obj.userData.tempoCurveDuration;
+          }
+          if (obj.userData.tempoCurveLoop !== undefined) {
+            data.tempoCurveLoop = obj.userData.tempoCurveLoop;
+          }
+          // Save running state and pendulum phase for persistence
+          if (obj.userData.isRunning !== undefined) {
+            data.isRunning = obj.userData.isRunning;
+          }
+          if (obj.userData.pendulumAngle !== undefined) {
+            data.pendulumAngle = obj.userData.pendulumAngle;
+          }
+          if (obj.userData.pendulumDirection !== undefined) {
+            data.pendulumDirection = obj.userData.pendulumDirection;
+          }
+          if (obj.userData.lastTickTime !== undefined) {
+            // Store relative time offset from now for restoration
+            data.lastTickTimeOffset = Date.now() - obj.userData.lastTickTime;
+          }
           break;
         case 'laptop':
           data.bootTime = obj.userData.bootTime;
@@ -12161,6 +13697,16 @@ async function saveStateImmediate() {
       z: camera.position.z,
       yaw: cameraLookState.yaw,
       pitch: cameraLookState.pitch
+    },
+    // Save timer/alarm state (for clock objects)
+    timerState: {
+      alarmEnabled: timerState.alarmEnabled,
+      alarmHours: timerState.alarmHours,
+      alarmMinutes: timerState.alarmMinutes,
+      alertVolume: timerState.alertVolume,
+      alertPitch: timerState.alertPitch,
+      customSoundDataUrl: timerState.customSoundDataUrl,
+      useCustomSound: timerState.useCustomSound
     }
   };
 
@@ -12194,6 +13740,22 @@ async function loadState() {
           cameraLookState.pitch = result.state.camera.pitch;
         }
         updateCameraLook();
+      }
+
+      // Load timer/alarm state
+      if (result.state.timerState) {
+        const savedTimer = result.state.timerState;
+        if (savedTimer.alarmEnabled !== undefined) timerState.alarmEnabled = savedTimer.alarmEnabled;
+        if (savedTimer.alarmHours !== undefined) timerState.alarmHours = savedTimer.alarmHours;
+        if (savedTimer.alarmMinutes !== undefined) timerState.alarmMinutes = savedTimer.alarmMinutes;
+        if (savedTimer.alertVolume !== undefined) timerState.alertVolume = savedTimer.alertVolume;
+        if (savedTimer.alertPitch !== undefined) timerState.alertPitch = savedTimer.alertPitch;
+        if (savedTimer.useCustomSound !== undefined) timerState.useCustomSound = savedTimer.useCustomSound;
+        if (savedTimer.customSoundDataUrl) {
+          timerState.customSoundDataUrl = savedTimer.customSoundDataUrl;
+          // Pre-decode the audio from data URL
+          preloadTimerCustomSound();
+        }
       }
 
       // Load objects
@@ -12438,6 +14000,36 @@ async function loadState() {
                 if (objData.volume !== undefined) obj.userData.volume = objData.volume;
                 if (objData.tickSound !== undefined) obj.userData.tickSound = objData.tickSound;
                 if (objData.tickSoundType) obj.userData.tickSoundType = objData.tickSoundType;
+                // Restore pitch settings
+                if (objData.tickPitch !== undefined) obj.userData.tickPitch = objData.tickPitch;
+                // Restore custom sound data URL and pre-decode it
+                if (objData.customSoundDataUrl) {
+                  obj.userData.customSoundDataUrl = objData.customSoundDataUrl;
+                  // Pre-decode the audio from data URL
+                  preloadMetronomeCustomSound(obj);
+                }
+                // Restore pitch curve settings
+                if (objData.pitchCurveEnabled !== undefined) obj.userData.pitchCurveEnabled = objData.pitchCurveEnabled;
+                if (objData.pitchCurveType) obj.userData.pitchCurveType = objData.pitchCurveType;
+                if (objData.pitchCurveStart !== undefined) obj.userData.pitchCurveStart = objData.pitchCurveStart;
+                if (objData.pitchCurveEnd !== undefined) obj.userData.pitchCurveEnd = objData.pitchCurveEnd;
+                if (objData.pitchCurveDuration !== undefined) obj.userData.pitchCurveDuration = objData.pitchCurveDuration;
+                if (objData.pitchCurveLoop !== undefined) obj.userData.pitchCurveLoop = objData.pitchCurveLoop;
+                // Restore tempo curve settings
+                if (objData.tempoCurveEnabled !== undefined) obj.userData.tempoCurveEnabled = objData.tempoCurveEnabled;
+                if (objData.tempoCurveType) obj.userData.tempoCurveType = objData.tempoCurveType;
+                if (objData.tempoCurveStart !== undefined) obj.userData.tempoCurveStart = objData.tempoCurveStart;
+                if (objData.tempoCurveEnd !== undefined) obj.userData.tempoCurveEnd = objData.tempoCurveEnd;
+                if (objData.tempoCurveDuration !== undefined) obj.userData.tempoCurveDuration = objData.tempoCurveDuration;
+                if (objData.tempoCurveLoop !== undefined) obj.userData.tempoCurveLoop = objData.tempoCurveLoop;
+                // Restore running state and pendulum phase
+                if (objData.isRunning !== undefined) obj.userData.isRunning = objData.isRunning;
+                if (objData.pendulumAngle !== undefined) obj.userData.pendulumAngle = objData.pendulumAngle;
+                if (objData.pendulumDirection !== undefined) obj.userData.pendulumDirection = objData.pendulumDirection;
+                if (objData.lastTickTimeOffset !== undefined) {
+                  // Restore lastTickTime relative to current time
+                  obj.userData.lastTickTime = Date.now() - objData.lastTickTimeOffset;
+                }
                 break;
               case 'laptop':
                 if (objData.bootTime) obj.userData.bootTime = objData.bootTime;
@@ -12639,7 +14231,45 @@ function animate() {
       if (pendulum) {
         // Calculate swing timing based on BPM
         // One beat = one swing to the left + one swing to the right, so 2 direction changes per beat
-        const bpm = obj.userData.bpm || 120;
+        let bpm = obj.userData.bpm || 120;
+
+        // Apply tempo curve if enabled
+        if (obj.userData.tempoCurveEnabled) {
+          const curveStartTime = obj.userData.tempoCurveStartTime || Date.now();
+          const elapsed = (Date.now() - curveStartTime) / 1000; // seconds
+          const duration = obj.userData.tempoCurveDuration || 60;
+          let progress = elapsed / duration;
+
+          // Handle looping
+          if (obj.userData.tempoCurveLoop) {
+            progress = progress % 1; // Wrap around for looping
+          } else {
+            progress = Math.min(progress, 1); // Clamp at 1 for non-looping
+          }
+
+          // Apply easing based on curve type
+          let easedProgress = progress;
+          const curveType = obj.userData.tempoCurveType || 'linear';
+          switch (curveType) {
+            case 'ease-in':
+              easedProgress = progress * progress; // Quadratic ease-in
+              break;
+            case 'ease-out':
+              easedProgress = 1 - (1 - progress) * (1 - progress); // Quadratic ease-out
+              break;
+            case 'sine':
+              // Sine wave: goes from start to end and back
+              easedProgress = (Math.sin(progress * Math.PI * 2 - Math.PI / 2) + 1) / 2;
+              break;
+            // 'linear' uses progress as-is
+          }
+
+          // Interpolate between start and end BPM
+          const startBPM = obj.userData.tempoCurveStart || 60;
+          const endBPM = obj.userData.tempoCurveEnd || 120;
+          bpm = startBPM + (endBPM - startBPM) * easedProgress;
+        }
+
         const msPerBeat = 60000 / bpm; // Milliseconds per beat
         const msPerSwing = msPerBeat / 2; // Each half-swing (tick) takes half a beat
         const now = Date.now();
@@ -12668,20 +14298,73 @@ function animate() {
               const currentTime = audioCtx.currentTime;
               const volume = obj.userData.volume !== undefined ? obj.userData.volume : 0.5;
 
-              if (obj.userData.tickSoundType === 'beep') {
-                // Simple beep sound
+              // Calculate pitch multiplier - use pitch curve if enabled
+              let pitchMultiplier = (obj.userData.tickPitch || 100) / 100;
+
+              if (obj.userData.pitchCurveEnabled) {
+                // Calculate current pitch based on curve
+                const curveStartTime = obj.userData.pitchCurveStartTime || Date.now();
+                const elapsed = (Date.now() - curveStartTime) / 1000; // seconds
+                const duration = obj.userData.pitchCurveDuration || 60;
+                let progress = elapsed / duration;
+
+                // Handle looping
+                if (obj.userData.pitchCurveLoop) {
+                  progress = progress % 1; // Wrap around for looping
+                } else {
+                  progress = Math.min(progress, 1); // Clamp at 1 for non-looping
+                }
+
+                // Apply easing based on curve type
+                let easedProgress = progress;
+                const curveType = obj.userData.pitchCurveType || 'linear';
+                switch (curveType) {
+                  case 'ease-in':
+                    easedProgress = progress * progress; // Quadratic ease-in
+                    break;
+                  case 'ease-out':
+                    easedProgress = 1 - (1 - progress) * (1 - progress); // Quadratic ease-out
+                    break;
+                  case 'sine':
+                    // Sine wave: goes from start to end and back
+                    easedProgress = (Math.sin(progress * Math.PI * 2 - Math.PI / 2) + 1) / 2;
+                    break;
+                  // 'linear' uses progress as-is
+                }
+
+                // Interpolate between start and end pitch
+                const startPitch = (obj.userData.pitchCurveStart || 100) / 100;
+                const endPitch = (obj.userData.pitchCurveEnd || 100) / 100;
+                pitchMultiplier = startPitch + (endPitch - startPitch) * easedProgress;
+              }
+
+              if (obj.userData.tickSoundType === 'custom' && obj.userData.customSoundDataUrl) {
+                // Play custom sound using HTML5 Audio element
+                // This avoids Web Audio API's decodeAudioData which can hang
+                try {
+                  const audio = new Audio(obj.userData.customSoundDataUrl);
+                  audio.volume = volume;
+                  audio.playbackRate = pitchMultiplier; // Pitch adjustment via playback rate
+                  audio.play().catch(err => {
+                    console.warn('Failed to play custom metronome sound:', err);
+                  });
+                } catch (e) {
+                  console.warn('Error creating audio element:', e);
+                }
+              } else if (obj.userData.tickSoundType === 'beep') {
+                // Simple beep sound with pitch adjustment
                 const osc = audioCtx.createOscillator();
                 const gain = audioCtx.createGain();
                 osc.connect(gain);
                 gain.connect(audioCtx.destination);
-                osc.frequency.value = 880; // A5 note
+                osc.frequency.value = 880 * pitchMultiplier; // A5 note with pitch adjustment
                 osc.type = 'sine';
                 gain.gain.setValueAtTime(0.2 * volume, currentTime);
                 gain.gain.exponentialRampToValueAtTime(0.01, currentTime + 0.08);
                 osc.start(currentTime);
                 osc.stop(currentTime + 0.1);
               } else {
-                // Default: Strike/click sound (more percussive/mechanical)
+                // Default: Strike/click sound (more percussive/mechanical) with pitch adjustment
                 const osc = audioCtx.createOscillator();
                 const osc2 = audioCtx.createOscillator();
                 const gain = audioCtx.createGain();
@@ -12693,16 +14376,16 @@ function animate() {
                 filter.connect(gain);
                 gain.connect(audioCtx.destination);
 
-                // Mechanical metronome click sound
+                // Mechanical metronome click sound with pitch adjustment
                 // Use lower frequencies for a wooden "click" sound
-                osc.frequency.value = 1200; // Main click frequency
+                osc.frequency.value = 1200 * pitchMultiplier; // Main click frequency
                 osc.type = 'sine';
-                osc2.frequency.value = 300; // Low body resonance
+                osc2.frequency.value = 300 * pitchMultiplier; // Low body resonance
                 osc2.type = 'sine';
 
-                // Bandpass filter for natural wood resonance
+                // Bandpass filter for natural wood resonance (also pitch-adjusted)
                 filter.type = 'bandpass';
-                filter.frequency.value = 800;
+                filter.frequency.value = 800 * pitchMultiplier;
                 filter.Q.value = 2;
 
                 // Very sharp attack, quick exponential decay for percussive "tick"
