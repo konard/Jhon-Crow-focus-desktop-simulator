@@ -2969,149 +2969,163 @@ function createCassettePlayer(options = {}) {
     metalness: 0.8
   });
 
-  // Classic Sony Walkman WM-10 style - horizontal orientation, compact design
-  const bodyWidth = 0.42;  // Width (horizontal)
-  const bodyHeight = 0.11; // Height (thickness)
-  const bodyDepth = 0.32;  // Depth
+  // Classic Sony TCS-350/Soundabout style - VERTICAL orientation, compact handheld design
+  // Reference: Images show vertical cassette players that fit in hand
+  // Main body dimensions (vertical orientation)
+  const bodyWidth = 0.09;   // Width (narrow - side to side)
+  const bodyHeight = 0.14;  // Height (tall - top to bottom when standing)
+  const bodyDepth = 0.025;  // Depth (thin - front to back thickness)
 
-  // Main body
+  // Main body - silver/cream colored
   const bodyGeometry = new THREE.BoxGeometry(bodyWidth, bodyHeight, bodyDepth);
   const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
   body.position.y = bodyHeight / 2;
   body.castShadow = true;
   group.add(body);
 
-  // Red accent stripe at top edge (signature Walkman look)
-  const topStripeGeometry = new THREE.BoxGeometry(bodyWidth + 0.002, 0.008, bodyDepth + 0.002);
-  const topStripe = new THREE.Mesh(topStripeGeometry, accentMaterial);
-  topStripe.position.set(0, bodyHeight - 0.002, 0);
-  group.add(topStripe);
+  // Black top panel (like Sony TCS-350)
+  const topPanelHeight = 0.022;
+  const topPanelGeometry = new THREE.BoxGeometry(bodyWidth + 0.002, topPanelHeight, bodyDepth + 0.002);
+  const topPanel = new THREE.Mesh(topPanelGeometry, blackMaterial);
+  topPanel.position.set(0, bodyHeight - topPanelHeight / 2, 0);
+  group.add(topPanel);
 
-  // Dark cassette compartment panel (rounded corners effect with oval shape)
-  const cassetteAreaWidth = bodyWidth * 0.75;
-  const cassetteAreaHeight = bodyHeight * 0.65;
-  const cassetteAreaGeometry = new THREE.BoxGeometry(cassetteAreaWidth, cassetteAreaHeight, 0.015);
-  const cassetteArea = new THREE.Mesh(cassetteAreaGeometry, darkPanelMaterial);
-  cassetteArea.position.set(-bodyWidth * 0.05, bodyHeight / 2, bodyDepth / 2 + 0.005);
-  group.add(cassetteArea);
+  // Red accent stripe below top panel
+  const accentStripeGeometry = new THREE.BoxGeometry(bodyWidth + 0.001, 0.004, bodyDepth + 0.001);
+  const accentStripe = new THREE.Mesh(accentStripeGeometry, accentMaterial);
+  accentStripe.position.set(0, bodyHeight - topPanelHeight - 0.002, 0);
+  group.add(accentStripe);
 
-  // Rounded frame around cassette area
-  const frameThickness = 0.012;
-  // Create rounded cassette window frame using torus segments and boxes
-  const frameColor = 0x2a2a3a;
-  const frameMaterial = new THREE.MeshStandardMaterial({
-    color: frameColor,
-    roughness: 0.5,
-    metalness: 0.2
-  });
+  // Cassette window area - takes up most of the front face
+  const windowWidth = bodyWidth * 0.75;
+  const windowHeight = bodyHeight * 0.55;
+  const windowFrameGeometry = new THREE.BoxGeometry(windowWidth + 0.006, windowHeight + 0.006, 0.004);
+  const windowFrame = new THREE.Mesh(windowFrameGeometry, darkPanelMaterial);
+  windowFrame.position.set(0, bodyHeight * 0.52, bodyDepth / 2 + 0.002);
+  group.add(windowFrame);
 
   // Cassette window (transparent, shows reels)
-  const windowWidth = cassetteAreaWidth * 0.85;
-  const windowHeight = cassetteAreaHeight * 0.75;
-  const windowGeometry = new THREE.BoxGeometry(windowWidth, windowHeight, 0.006);
+  const windowGeometry = new THREE.BoxGeometry(windowWidth, windowHeight, 0.003);
   const windowMaterial = new THREE.MeshStandardMaterial({
-    color: 0x4a4a5a,
+    color: 0x5a5a6a,
     roughness: 0.1,
     metalness: 0.0,
     transparent: true,
-    opacity: 0.4
+    opacity: 0.35
   });
   const cassetteWindow = new THREE.Mesh(windowGeometry, windowMaterial);
-  cassetteWindow.position.set(-bodyWidth * 0.05, bodyHeight / 2, bodyDepth / 2 + 0.015);
+  cassetteWindow.position.set(0, bodyHeight * 0.52, bodyDepth / 2 + 0.005);
   group.add(cassetteWindow);
 
-  // Cassette reels (visible through window) - larger, more prominent like classic Walkman
+  // Cassette reels (visible through window) - vertically stacked like real cassette
   const reelGroup = new THREE.Group();
   reelGroup.name = 'reels';
-  reelGroup.position.set(-bodyWidth * 0.05, bodyHeight / 2, bodyDepth / 2 + 0.018);
+  reelGroup.position.set(0, bodyHeight * 0.52, bodyDepth / 2 + 0.007);
 
-  // Larger reels for the classic look
-  const reelRadius = 0.045;
-  const reelGeometry = new THREE.CylinderGeometry(reelRadius, reelRadius, 0.012, 24);
+  // Reels sized to fit in window - smaller for compact design
+  const reelRadius = 0.022;
+  const reelGeometry = new THREE.CylinderGeometry(reelRadius, reelRadius, 0.006, 20);
   const reelMaterial = new THREE.MeshStandardMaterial({
-    color: 0x3d3d4d,
+    color: 0x2d2d3d,
     roughness: 0.4,
     metalness: 0.3
   });
 
-  // Left reel (supply)
-  const leftReelGroup = new THREE.Group();
-  leftReelGroup.name = 'leftReel';
-  leftReelGroup.position.set(-0.065, 0, 0);
-  const leftReelMesh = new THREE.Mesh(reelGeometry, reelMaterial);
-  leftReelMesh.rotation.x = Math.PI / 2;
-  leftReelGroup.add(leftReelMesh);
-  reelGroup.add(leftReelGroup);
+  // Top reel (supply)
+  const topReelGroup = new THREE.Group();
+  topReelGroup.name = 'leftReel';  // Keep name for animation compatibility
+  topReelGroup.position.set(0, windowHeight * 0.28, 0);
+  const topReelMesh = new THREE.Mesh(reelGeometry, reelMaterial);
+  topReelMesh.rotation.x = Math.PI / 2;
+  topReelGroup.add(topReelMesh);
+  reelGroup.add(topReelGroup);
 
-  // Right reel (take-up)
-  const rightReelGroup = new THREE.Group();
-  rightReelGroup.name = 'rightReel';
-  rightReelGroup.position.set(0.055, 0, 0);
-  const rightReelMesh = new THREE.Mesh(reelGeometry, reelMaterial);
-  rightReelMesh.rotation.x = Math.PI / 2;
-  rightReelGroup.add(rightReelMesh);
-  reelGroup.add(rightReelGroup);
+  // Bottom reel (take-up)
+  const bottomReelGroup = new THREE.Group();
+  bottomReelGroup.name = 'rightReel';  // Keep name for animation compatibility
+  bottomReelGroup.position.set(0, -windowHeight * 0.28, 0);
+  const bottomReelMesh = new THREE.Mesh(reelGeometry, reelMaterial);
+  bottomReelMesh.rotation.x = Math.PI / 2;
+  bottomReelGroup.add(bottomReelMesh);
+  reelGroup.add(bottomReelGroup);
 
-  // Reel center hubs (white with spokes pattern)
-  const hubGeometry = new THREE.CylinderGeometry(0.015, 0.015, 0.015, 6);
+  // Reel center hubs (white/light colored)
+  const hubGeometry = new THREE.CylinderGeometry(0.008, 0.008, 0.008, 6);
   const hubMaterial = new THREE.MeshStandardMaterial({
-    color: 0xf5f5f5,
+    color: 0xf0f0f0,
     roughness: 0.3
   });
 
-  const leftHub = new THREE.Mesh(hubGeometry, hubMaterial);
-  leftHub.rotation.x = Math.PI / 2;
-  leftHub.position.set(-0.065, 0, 0.004);
-  reelGroup.add(leftHub);
+  const topHub = new THREE.Mesh(hubGeometry, hubMaterial);
+  topHub.rotation.x = Math.PI / 2;
+  topHub.position.set(0, windowHeight * 0.28, 0.003);
+  reelGroup.add(topHub);
 
-  const rightHub = new THREE.Mesh(hubGeometry, hubMaterial);
-  rightHub.rotation.x = Math.PI / 2;
-  rightHub.position.set(0.055, 0, 0.004);
-  reelGroup.add(rightHub);
+  const bottomHub = new THREE.Mesh(hubGeometry, hubMaterial);
+  bottomHub.rotation.x = Math.PI / 2;
+  bottomHub.position.set(0, -windowHeight * 0.28, 0.003);
+  reelGroup.add(bottomHub);
 
-  // Reel outer rings (darker rim)
-  const rimGeometry = new THREE.TorusGeometry(reelRadius - 0.003, 0.004, 8, 24);
+  // Reel outer rings
+  const rimGeometry = new THREE.TorusGeometry(reelRadius - 0.002, 0.002, 8, 20);
   const rimMaterial = new THREE.MeshStandardMaterial({
-    color: 0x2d2d3d,
+    color: 0x1d1d2d,
     roughness: 0.5,
     metalness: 0.4
   });
 
-  const leftRim = new THREE.Mesh(rimGeometry, rimMaterial);
-  leftRim.position.set(-0.065, 0, 0.007);
-  reelGroup.add(leftRim);
+  const topRim = new THREE.Mesh(rimGeometry, rimMaterial);
+  topRim.position.set(0, windowHeight * 0.28, 0.004);
+  reelGroup.add(topRim);
 
-  const rightRim = new THREE.Mesh(rimGeometry, rimMaterial);
-  rightRim.position.set(0.055, 0, 0.007);
-  reelGroup.add(rightRim);
+  const bottomRim = new THREE.Mesh(rimGeometry, rimMaterial);
+  bottomRim.position.set(0, -windowHeight * 0.28, 0.004);
+  reelGroup.add(bottomRim);
 
-  // Tape between reels
-  const tapeGeometry = new THREE.BoxGeometry(0.08, 0.004, 0.002);
-  const tapeMaterial = new THREE.MeshStandardMaterial({
-    color: 0x3a2a1a,
-    roughness: 0.8
+  // Tape guide area between reels (small rectangle)
+  const tapeGuideGeometry = new THREE.BoxGeometry(windowWidth * 0.5, 0.008, 0.002);
+  const tapeGuideMaterial = new THREE.MeshStandardMaterial({
+    color: 0xe8e8e8,
+    roughness: 0.6
   });
-  const tape = new THREE.Mesh(tapeGeometry, tapeMaterial);
-  tape.position.set(-0.005, 0.03, 0);
-  reelGroup.add(tape);
+  const tapeGuide = new THREE.Mesh(tapeGuideGeometry, tapeGuideMaterial);
+  tapeGuide.position.set(0, 0, 0.002);
+  reelGroup.add(tapeGuide);
 
   group.add(reelGroup);
 
-  // "SONY" text area at top right
-  const sonyLabelGeometry = new THREE.BoxGeometry(0.06, 0.015, 0.003);
-  const sonyLabel = new THREE.Mesh(sonyLabelGeometry, accentMaterial);
-  sonyLabel.position.set(bodyWidth * 0.28, bodyHeight - 0.015, bodyDepth / 2 + 0.002);
+  // Arrow indicator on cassette area (like in reference images)
+  const arrowBodyGeometry = new THREE.BoxGeometry(0.003, 0.018, 0.002);
+  const arrowMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5 });
+  const arrowBody = new THREE.Mesh(arrowBodyGeometry, arrowMaterial);
+  arrowBody.position.set(-windowWidth * 0.35, bodyHeight * 0.52, bodyDepth / 2 + 0.006);
+  group.add(arrowBody);
+
+  const arrowHeadGeometry = new THREE.ConeGeometry(0.006, 0.01, 3);
+  const arrowHead = new THREE.Mesh(arrowHeadGeometry, arrowMaterial);
+  arrowHead.rotation.z = Math.PI;  // Point downward
+  arrowHead.position.set(-windowWidth * 0.35, bodyHeight * 0.52 - 0.014, bodyDepth / 2 + 0.006);
+  group.add(arrowHead);
+
+  // "SONY" label area at top
+  const sonyLabelGeometry = new THREE.BoxGeometry(0.035, 0.01, 0.002);
+  const sonyLabelMaterial = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    roughness: 0.4
+  });
+  const sonyLabel = new THREE.Mesh(sonyLabelGeometry, sonyLabelMaterial);
+  sonyLabel.position.set(0, bodyHeight - topPanelHeight / 2, bodyDepth / 2 + 0.002);
   group.add(sonyLabel);
 
-  // "WALKMAN" text area - red stripe with text appearance
-  const walkmanLabelGeometry = new THREE.BoxGeometry(0.12, 0.022, 0.003);
-  const walkmanLabel = new THREE.Mesh(walkmanLabelGeometry, accentMaterial);
-  walkmanLabel.position.set(bodyWidth * 0.25, bodyHeight / 2 - 0.02, bodyDepth / 2 + 0.008);
-  group.add(walkmanLabel);
+  // "STEREO" text area below cassette window
+  const stereoLabelGeometry = new THREE.BoxGeometry(0.04, 0.008, 0.002);
+  const stereoLabel = new THREE.Mesh(stereoLabelGeometry, blackMaterial);
+  stereoLabel.position.set(bodyWidth * 0.15, bodyHeight * 0.18, bodyDepth / 2 + 0.002);
+  group.add(stereoLabel);
 
-  // Display screen for track name (LCD-style) - positioned at bottom
-  const screenWidth = bodyWidth * 0.65;
-  const screenHeight = 0.022;
+  // Display screen for track name (LCD-style) - at bottom of front face
+  const screenWidth = bodyWidth * 0.85;
+  const screenHeight = 0.018;
   const screenBackGeometry = new THREE.PlaneGeometry(screenWidth, screenHeight);
   const screenBackMaterial = new THREE.MeshStandardMaterial({
     color: 0x2d4a3e,
@@ -3119,7 +3133,7 @@ function createCassettePlayer(options = {}) {
     metalness: 0.0
   });
   const screenBack = new THREE.Mesh(screenBackGeometry, screenBackMaterial);
-  screenBack.position.set(0, bodyHeight / 2 - 0.038, bodyDepth / 2 + 0.008);
+  screenBack.position.set(0, bodyHeight * 0.08, bodyDepth / 2 + 0.003);
   screenBack.name = 'screen';
   group.add(screenBack);
 
@@ -3133,7 +3147,7 @@ function createCassettePlayer(options = {}) {
   screenCtx.fillStyle = '#2d4a3e';
   screenCtx.fillRect(0, 0, 256, 32);
   screenCtx.fillStyle = '#7cfc7c';
-  screenCtx.font = '300 16px "Segoe UI", Arial, sans-serif';
+  screenCtx.font = '300 14px "Segoe UI", Arial, sans-serif';
   screenCtx.letterSpacing = '2px';
   screenCtx.textAlign = 'center';
   screenCtx.textBaseline = 'middle';
@@ -3150,7 +3164,7 @@ function createCassettePlayer(options = {}) {
     new THREE.PlaneGeometry(screenWidth * 0.95, screenHeight * 0.85),
     screenDisplayMaterial
   );
-  screenDisplay.position.set(0, bodyHeight / 2 - 0.038, bodyDepth / 2 + 0.009);
+  screenDisplay.position.set(0, bodyHeight * 0.08, bodyDepth / 2 + 0.004);
   screenDisplay.name = 'screenDisplay';
   group.add(screenDisplay);
 
@@ -3159,179 +3173,165 @@ function createCassettePlayer(options = {}) {
   group.userData.screenCtx = screenCtx;
   group.userData.screenTexture = screenTexture;
 
-  // Control buttons on top edge (classic Walkman style - small silver buttons)
-  const buttonRadius = 0.012;
-  const buttonHeight = 0.008;
-  const buttonY = bodyHeight + 0.003;
-  const buttonBaseZ = -bodyDepth * 0.15;
-  const buttonSpacing = 0.038;
+  // Control buttons on LEFT SIDE (like Sony TCS-350/Soundabout)
+  // This creates a separate, smaller button panel area
+  const buttonPanelWidth = 0.022;
+  const buttonPanelGeometry = new THREE.BoxGeometry(buttonPanelWidth, bodyHeight * 0.5, bodyDepth);
+  const buttonPanel = new THREE.Mesh(buttonPanelGeometry, bodyMaterial);
+  buttonPanel.position.set(-bodyWidth / 2 - buttonPanelWidth / 2, bodyHeight * 0.4, 0);
+  group.add(buttonPanel);
 
-  const buttonGeometry = new THREE.CylinderGeometry(buttonRadius, buttonRadius, buttonHeight, 12);
+  // Red accent on button panel (like reference images)
+  const buttonPanelAccentGeometry = new THREE.BoxGeometry(buttonPanelWidth + 0.001, 0.003, bodyDepth + 0.001);
+  const buttonPanelAccent = new THREE.Mesh(buttonPanelAccentGeometry, accentMaterial);
+  buttonPanelAccent.position.set(-bodyWidth / 2 - buttonPanelWidth / 2, bodyHeight * 0.65 - 0.002, 0);
+  group.add(buttonPanelAccent);
 
-  // Button material - silver
+  // Button dimensions for side-mounted buttons
+  const buttonRadius = 0.007;
+  const buttonDepth = 0.006;
+  const buttonX = -bodyWidth / 2 - buttonPanelWidth / 2;
+  const buttonZ = bodyDepth / 2 + 0.003;
+  const buttonSpacing = 0.022;
+
+  const buttonGeometry = new THREE.CylinderGeometry(buttonRadius, buttonRadius, buttonDepth, 10);
+
+  // Button material - dark gray/black like reference
   const buttonMaterial = new THREE.MeshStandardMaterial({
-    color: 0xa0a0a0,
-    roughness: 0.3,
-    metalness: 0.7
+    color: 0x2a2a2a,
+    roughness: 0.4,
+    metalness: 0.3
   });
 
   // Create buttons group
   const buttonsGroup = new THREE.Group();
   buttonsGroup.name = 'buttons';
 
-  // Previous track button
-  const prevButton = new THREE.Mesh(buttonGeometry, buttonMaterial);
-  prevButton.position.set(-buttonSpacing * 1.5, buttonY, buttonBaseZ);
-  prevButton.name = 'prevButton';
-  prevButton.userData.buttonType = 'prev';
-  buttonsGroup.add(prevButton);
-
-  // Play/Pause button (slightly larger, orange)
-  const playButtonGeometry = new THREE.CylinderGeometry(buttonRadius * 1.2, buttonRadius * 1.2, buttonHeight, 12);
+  // Buttons arranged vertically on side panel
+  // Play/Pause button (top, red/orange for visibility)
+  const playButtonGeometry = new THREE.CylinderGeometry(buttonRadius * 1.1, buttonRadius * 1.1, buttonDepth, 10);
   const playButtonMaterial = new THREE.MeshStandardMaterial({
-    color: 0xff6600,
+    color: 0xcc3333,  // Red like reference images
     roughness: 0.3,
-    metalness: 0.5
+    metalness: 0.4
   });
   const playButton = new THREE.Mesh(playButtonGeometry, playButtonMaterial);
-  playButton.position.set(-buttonSpacing * 0.5, buttonY, buttonBaseZ);
+  playButton.rotation.x = Math.PI / 2;
+  playButton.position.set(buttonX, bodyHeight * 0.55, buttonZ);
   playButton.name = 'playButton';
   playButton.userData.buttonType = 'play';
   buttonsGroup.add(playButton);
 
   // Stop button
   const stopButton = new THREE.Mesh(buttonGeometry, buttonMaterial);
-  stopButton.position.set(buttonSpacing * 0.5, buttonY, buttonBaseZ);
+  stopButton.rotation.x = Math.PI / 2;
+  stopButton.position.set(buttonX, bodyHeight * 0.55 - buttonSpacing, buttonZ);
   stopButton.name = 'stopButton';
   stopButton.userData.buttonType = 'stop';
   buttonsGroup.add(stopButton);
 
+  // Previous track button
+  const prevButton = new THREE.Mesh(buttonGeometry, buttonMaterial);
+  prevButton.rotation.x = Math.PI / 2;
+  prevButton.position.set(buttonX, bodyHeight * 0.55 - buttonSpacing * 2, buttonZ);
+  prevButton.name = 'prevButton';
+  prevButton.userData.buttonType = 'prev';
+  buttonsGroup.add(prevButton);
+
   // Next track button
   const nextButton = new THREE.Mesh(buttonGeometry, buttonMaterial);
-  nextButton.position.set(buttonSpacing * 1.5, buttonY, buttonBaseZ);
+  nextButton.rotation.x = Math.PI / 2;
+  nextButton.position.set(buttonX, bodyHeight * 0.55 - buttonSpacing * 3, buttonZ);
   nextButton.name = 'nextButton';
   nextButton.userData.buttonType = 'next';
   buttonsGroup.add(nextButton);
 
-  // Button symbols on top surface
-  const symbolMaterial = new THREE.MeshStandardMaterial({ color: 0x333333, roughness: 0.5 });
-
-  // Prev symbol (◀◀)
-  const prevSymbol1 = new THREE.Mesh(
-    new THREE.ConeGeometry(0.004, 0.008, 3),
-    symbolMaterial
-  );
-  prevSymbol1.rotation.x = -Math.PI / 2;
-  prevSymbol1.rotation.z = Math.PI / 2;
-  prevSymbol1.position.set(-buttonSpacing * 1.5 + 0.003, buttonY + buttonHeight / 2 + 0.001, buttonBaseZ);
-  prevSymbol1.userData.buttonType = 'prev';
-  buttonsGroup.add(prevSymbol1);
-
-  const prevSymbol2 = new THREE.Mesh(
-    new THREE.ConeGeometry(0.004, 0.008, 3),
-    symbolMaterial
-  );
-  prevSymbol2.rotation.x = -Math.PI / 2;
-  prevSymbol2.rotation.z = Math.PI / 2;
-  prevSymbol2.position.set(-buttonSpacing * 1.5 - 0.003, buttonY + buttonHeight / 2 + 0.001, buttonBaseZ);
-  prevSymbol2.userData.buttonType = 'prev';
-  buttonsGroup.add(prevSymbol2);
+  // Button symbols (small indicators)
+  const symbolMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5 });
 
   // Play symbol (▶)
   const playSymbol = new THREE.Mesh(
-    new THREE.ConeGeometry(0.005, 0.01, 3),
+    new THREE.ConeGeometry(0.003, 0.005, 3),
     symbolMaterial
   );
-  playSymbol.rotation.x = -Math.PI / 2;
-  playSymbol.rotation.z = -Math.PI / 2;
-  playSymbol.position.set(-buttonSpacing * 0.5, buttonY + buttonHeight / 2 + 0.001, buttonBaseZ);
+  playSymbol.rotation.x = Math.PI / 2;
+  playSymbol.position.set(buttonX, bodyHeight * 0.55, buttonZ + buttonDepth / 2 + 0.001);
   playSymbol.name = 'playSymbol';
   playSymbol.userData.buttonType = 'play';
   buttonsGroup.add(playSymbol);
 
   // Stop symbol (■)
   const stopSymbol = new THREE.Mesh(
-    new THREE.BoxGeometry(0.006, 0.002, 0.006),
+    new THREE.BoxGeometry(0.004, 0.004, 0.002),
     symbolMaterial
   );
-  stopSymbol.position.set(buttonSpacing * 0.5, buttonY + buttonHeight / 2 + 0.001, buttonBaseZ);
+  stopSymbol.position.set(buttonX, bodyHeight * 0.55 - buttonSpacing, buttonZ + buttonDepth / 2 + 0.001);
   stopSymbol.userData.buttonType = 'stop';
   buttonsGroup.add(stopSymbol);
 
-  // Next symbol (▶▶)
-  const nextSymbol1 = new THREE.Mesh(
-    new THREE.ConeGeometry(0.004, 0.008, 3),
+  // Prev symbol (◀◀) - simplified as small triangles
+  const prevSymbol = new THREE.Mesh(
+    new THREE.ConeGeometry(0.003, 0.005, 3),
     symbolMaterial
   );
-  nextSymbol1.rotation.x = -Math.PI / 2;
-  nextSymbol1.rotation.z = -Math.PI / 2;
-  nextSymbol1.position.set(buttonSpacing * 1.5 - 0.003, buttonY + buttonHeight / 2 + 0.001, buttonBaseZ);
-  nextSymbol1.userData.buttonType = 'next';
-  buttonsGroup.add(nextSymbol1);
+  prevSymbol.rotation.x = Math.PI / 2;
+  prevSymbol.rotation.z = Math.PI;  // Point left
+  prevSymbol.position.set(buttonX, bodyHeight * 0.55 - buttonSpacing * 2, buttonZ + buttonDepth / 2 + 0.001);
+  prevSymbol.userData.buttonType = 'prev';
+  buttonsGroup.add(prevSymbol);
 
-  const nextSymbol2 = new THREE.Mesh(
-    new THREE.ConeGeometry(0.004, 0.008, 3),
+  // Next symbol (▶▶) - simplified
+  const nextSymbol = new THREE.Mesh(
+    new THREE.ConeGeometry(0.003, 0.005, 3),
     symbolMaterial
   );
-  nextSymbol2.rotation.x = -Math.PI / 2;
-  nextSymbol2.rotation.z = -Math.PI / 2;
-  nextSymbol2.position.set(buttonSpacing * 1.5 + 0.003, buttonY + buttonHeight / 2 + 0.001, buttonBaseZ);
-  nextSymbol2.userData.buttonType = 'next';
-  buttonsGroup.add(nextSymbol2);
+  nextSymbol.rotation.x = Math.PI / 2;
+  nextSymbol.position.set(buttonX, bodyHeight * 0.55 - buttonSpacing * 3, buttonZ + buttonDepth / 2 + 0.001);
+  nextSymbol.userData.buttonType = 'next';
+  buttonsGroup.add(nextSymbol);
 
   group.add(buttonsGroup);
 
-  // Volume wheel on the side (classic Walkman style)
-  const volumeWheelGeometry = new THREE.CylinderGeometry(0.012, 0.012, 0.018, 16);
+  // Volume wheel on the right side (classic style)
+  const volumeWheelGeometry = new THREE.CylinderGeometry(0.008, 0.008, 0.012, 12);
   const volumeWheel = new THREE.Mesh(volumeWheelGeometry, silverMaterial);
   volumeWheel.rotation.z = Math.PI / 2;
-  volumeWheel.position.set(bodyWidth / 2 + 0.009, bodyHeight / 2, -0.06);
+  volumeWheel.position.set(bodyWidth / 2 + 0.006, bodyHeight * 0.5, 0);
   volumeWheel.name = 'volumeWheel';
   group.add(volumeWheel);
 
   // Volume wheel ridges (grip texture)
-  for (let i = 0; i < 8; i++) {
-    const ridgeGeometry = new THREE.BoxGeometry(0.002, 0.001, 0.012);
+  for (let i = 0; i < 6; i++) {
+    const ridgeGeometry = new THREE.BoxGeometry(0.001, 0.0008, 0.008);
     const ridge = new THREE.Mesh(ridgeGeometry, blackMaterial);
-    const angle = (i / 8) * Math.PI * 2;
+    const angle = (i / 6) * Math.PI * 2;
     ridge.position.set(
-      bodyWidth / 2 + 0.009 + Math.cos(angle) * 0.011,
-      bodyHeight / 2 + Math.sin(angle) * 0.011,
-      -0.06
+      bodyWidth / 2 + 0.006 + Math.cos(angle) * 0.007,
+      bodyHeight * 0.5 + Math.sin(angle) * 0.007,
+      0
     );
     ridge.rotation.z = angle;
     group.add(ridge);
   }
 
-  // Headphone jack (3.5mm) on the side
-  const jackGeometry = new THREE.CylinderGeometry(0.005, 0.005, 0.012, 8);
+  // Headphone jack on bottom
+  const jackGeometry = new THREE.CylinderGeometry(0.003, 0.003, 0.008, 8);
   const jack = new THREE.Mesh(jackGeometry, blackMaterial);
-  jack.rotation.z = Math.PI / 2;
-  jack.position.set(bodyWidth / 2 + 0.006, bodyHeight / 2, 0.08);
+  jack.position.set(bodyWidth * 0.25, 0, 0);
   group.add(jack);
 
-  // Battery compartment indicator on back
-  const batteryDoorGeometry = new THREE.BoxGeometry(0.08, bodyHeight * 0.5, 0.003);
-  const batteryDoor = new THREE.Mesh(batteryDoorGeometry, silverMaterial);
-  batteryDoor.position.set(0, bodyHeight / 2, -bodyDepth / 2 - 0.001);
-  group.add(batteryDoor);
-
   // Belt clip on the back
-  const clipGeometry = new THREE.BoxGeometry(0.05, 0.012, 0.02);
+  const clipGeometry = new THREE.BoxGeometry(0.03, 0.008, 0.015);
   const clip = new THREE.Mesh(clipGeometry, silverMaterial);
-  clip.position.set(0, bodyHeight - 0.006, -bodyDepth / 2 + 0.01);
+  clip.position.set(0, bodyHeight * 0.8, -bodyDepth / 2 - 0.007);
   group.add(clip);
 
-  // Counter indicator area (small window)
-  const counterGeometry = new THREE.BoxGeometry(0.03, 0.012, 0.003);
-  const counterMaterial = new THREE.MeshStandardMaterial({
-    color: 0x1a1a1a,
-    roughness: 0.3,
-    metalness: 0.0
-  });
-  const counter = new THREE.Mesh(counterGeometry, counterMaterial);
-  counter.position.set(-bodyWidth * 0.3, bodyHeight / 2 - 0.038, bodyDepth / 2 + 0.008);
-  group.add(counter);
+  // Wrist strap attachment point at top corner
+  const strapHoleGeometry = new THREE.TorusGeometry(0.004, 0.001, 8, 12);
+  const strapHole = new THREE.Mesh(strapHoleGeometry, silverMaterial);
+  strapHole.rotation.y = Math.PI / 2;
+  strapHole.position.set(bodyWidth / 2, bodyHeight - 0.008, 0);
+  group.add(strapHole);
 
   group.position.y = getDeskSurfaceY();
 
@@ -4266,7 +4266,7 @@ const OBJECT_COLLISION_RADII_BASE = {
   'hourglass': 0.06,   // CylinderGeometry radius 0.12
   'paper': 0.08,       // BoxGeometry 0.28 x 0.4
   'metronome': 0.07,   // Base radius 0.15
-  'cassette-player': 0.11 // Sony Walkman WM-10 style player (0.42 x 0.32)
+  'cassette-player': 0.07 // Sony TCS-350 style vertical player (0.112 x 0.14)
 };
 
 // Global collision radius multiplier (adjustable in settings, 0.5 to 2.0)
@@ -4293,7 +4293,7 @@ const OBJECT_COLLISION_HEIGHTS_BASE = {
   'hourglass': 0.3,    // Medium hourglass
   'paper': 0.005,      // Paper sheet is very flat
   'metronome': 0.4,    // Medium metronome
-  'cassette-player': 0.11 // Sony Walkman WM-10 style player (height 0.11)
+  'cassette-player': 0.14 // Sony TCS-350 style vertical player (height 0.14)
 };
 
 // Default collision height for unknown object types
@@ -4331,7 +4331,7 @@ const OBJECT_STACKING_RADII = {
   'hourglass': 0.12,   // Hourglass base
   'paper': 0.24,       // BoxGeometry 0.28 x 0.4, half diagonal
   'metronome': 0.15,   // Metronome base
-  'cassette-player': 0.26 // Sony Walkman WM-10 style (0.42 x 0.32 diagonal / 2)
+  'cassette-player': 0.09 // Sony TCS-350 style vertical (0.112 x 0.14 diagonal / 2)
 };
 
 // Default collision radius for unknown object types
