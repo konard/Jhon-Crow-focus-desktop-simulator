@@ -121,6 +121,98 @@ function getSharedAudioContext() {
   return sharedAudioCtx;
 }
 
+// ============================================================================
+// AUDIO LOADING OVERLAY
+// ============================================================================
+// State for cancellable audio loading
+let audioLoadingCancelled = false;
+let audioLoadingResolve = null;
+
+function showAudioLoadingOverlay() {
+  audioLoadingCancelled = false;
+  const overlay = document.getElementById('audio-loading-overlay');
+  if (overlay) {
+    overlay.classList.add('visible');
+    // Setup cancel button handler
+    const cancelBtn = document.getElementById('audio-loading-cancel');
+    if (cancelBtn) {
+      cancelBtn.onclick = () => {
+        audioLoadingCancelled = true;
+        hideAudioLoadingOverlay();
+        console.log('Audio loading cancelled by user');
+        // If there's a pending promise, reject it
+        if (audioLoadingResolve) {
+          audioLoadingResolve.reject(new Error('Audio loading cancelled by user'));
+          audioLoadingResolve = null;
+        }
+      };
+    }
+  }
+}
+
+function hideAudioLoadingOverlay() {
+  const overlay = document.getElementById('audio-loading-overlay');
+  if (overlay) {
+    overlay.classList.remove('visible');
+  }
+}
+
+// Pre-validate audio file using HTML5 Audio element
+// This is much faster and won't hang the browser
+async function preValidateAudioFile(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const audio = new Audio();
+    let timeout = null;
+    let handled = false;
+
+    const cleanup = () => {
+      if (timeout) clearTimeout(timeout);
+      URL.revokeObjectURL(url);
+      audio.src = '';
+    };
+
+    const handleError = (msg) => {
+      if (handled) return;
+      handled = true;
+      cleanup();
+      reject(new Error(msg));
+    };
+
+    const handleSuccess = () => {
+      if (handled) return;
+      handled = true;
+      cleanup();
+      resolve(true);
+    };
+
+    // Timeout after 3 seconds - if it takes longer, file is probably problematic
+    timeout = setTimeout(() => {
+      handleError('Audio file validation timed out. The file may be corrupted or in an unsupported format.');
+    }, 3000);
+
+    audio.onerror = () => {
+      handleError('Unable to load audio file. The file may be corrupted or in an unsupported format.');
+    };
+
+    // canplaythrough means the file can be played
+    audio.oncanplaythrough = () => {
+      handleSuccess();
+    };
+
+    // For short files, loadedmetadata may fire before canplaythrough
+    audio.onloadedmetadata = () => {
+      // Give it a bit more time for canplaythrough, but consider it valid
+      setTimeout(() => {
+        if (!handled) handleSuccess();
+      }, 500);
+    };
+
+    audio.src = url;
+    audio.load();
+  });
+}
+
 // List of audio formats NOT supported by Chromium/Electron's Web Audio API
 // These formats will cause decodeAudioData to hang or fail
 const UNSUPPORTED_AUDIO_FORMATS = ['wma', 'wv', 'ape', 'ra', 'ram', 'mid', 'midi', 'amr', 'mka'];
@@ -143,8 +235,8 @@ async function decodeAudioBuffer(arrayBuffer, fileName = '') {
     }
   }
 
-  // Warn about large files (>5MB) that may cause issues
-  const MAX_RECOMMENDED_SIZE = 5 * 1024 * 1024; // 5MB
+  // Warn about large files (>2MB) that may cause issues
+  const MAX_RECOMMENDED_SIZE = 2 * 1024 * 1024; // 2MB
   if (bufferSize > MAX_RECOMMENDED_SIZE) {
     console.warn('decodeAudioBuffer: Large file detected (' + (bufferSize / (1024 * 1024)).toFixed(2) + 'MB). This may take a while or fail.');
   }
@@ -163,13 +255,12 @@ async function decodeAudioBuffer(arrayBuffer, fileName = '') {
   const bufferCopy = arrayBuffer.slice(0);
   console.log('decodeAudioBuffer: Buffer copied, calling decodeAudioData...');
 
-  // Use a shorter timeout for better UX (10 seconds)
-  const DECODE_TIMEOUT_MS = 10000;
+  // Use a 5 second timeout - if it takes longer, it's likely hung
+  const DECODE_TIMEOUT_MS = 5000;
   let timeoutId = null;
   let isTimedOut = false;
 
   // Create a timeout promise to prevent indefinite hangs
-  // Use a separate function to ensure the timeout runs even if the main thread is busy
   const timeoutPromise = new Promise((_, reject) => {
     timeoutId = setTimeout(() => {
       isTimedOut = true;
@@ -183,7 +274,7 @@ async function decodeAudioBuffer(arrayBuffer, fileName = '') {
     let handled = false;
 
     const handleSuccess = (decodedBuffer) => {
-      if (handled || isTimedOut) return;
+      if (handled || isTimedOut || audioLoadingCancelled) return;
       handled = true;
       if (timeoutId) clearTimeout(timeoutId);
       console.log('Audio decoded successfully, duration:', decodedBuffer.duration, 'channels:', decodedBuffer.numberOfChannels);
@@ -198,9 +289,22 @@ async function decodeAudioBuffer(arrayBuffer, fileName = '') {
       reject(new Error('Unable to decode audio file. The file format may not be supported by your browser. Try converting to MP3 (128kbps) or WAV (16-bit PCM).'));
     };
 
-    // Use requestAnimationFrame to ensure async execution
-    // This helps prevent the main thread from blocking before the timeout can fire
-    requestAnimationFrame(() => {
+    // Check if already cancelled
+    if (audioLoadingCancelled) {
+      if (timeoutId) clearTimeout(timeoutId);
+      reject(new Error('Audio loading cancelled by user'));
+      return;
+    }
+
+    // Use setTimeout(0) to yield to the event loop before starting decode
+    // This allows the loading overlay to render before we start the potentially blocking operation
+    setTimeout(() => {
+      if (audioLoadingCancelled) {
+        if (timeoutId) clearTimeout(timeoutId);
+        reject(new Error('Audio loading cancelled by user'));
+        return;
+      }
+
       try {
         // Use callback form for maximum compatibility
         // Note: Some Electron versions may hang on decodeAudioData for certain files
@@ -211,7 +315,7 @@ async function decodeAudioBuffer(arrayBuffer, fileName = '') {
         if (result && typeof result.then === 'function') {
           result
             .then((buffer) => {
-              if (!handled && !isTimedOut) {
+              if (!handled && !isTimedOut && !audioLoadingCancelled) {
                 console.log('decodeAudioData resolved via promise');
                 handleSuccess(buffer);
               }
@@ -228,7 +332,7 @@ async function decodeAudioBuffer(arrayBuffer, fileName = '') {
         console.error('decodeAudioData sync error:', e);
         handleError(e);
       }
-    });
+    }, 0);
   });
 
   // Race between decode and timeout
@@ -400,9 +504,10 @@ async function transcodeToWav(inputBuffer, fileName = '', maxDuration = 10) {
 
 // Safe wrapper for loading audio files from File objects
 // This uses a smart approach:
-// 1. For MP3/OGG files, use FFmpeg first (browser decoding can hang on these)
-// 2. For WAV files, try browser first, fall back to FFmpeg
-// 3. FFmpeg handles any format that the browser can't decode
+// 1. Pre-validate using HTML5 Audio element (fast, won't hang)
+// 2. For MP3/OGG files, use FFmpeg first (browser decoding can hang on these)
+// 3. For WAV files, try browser first, fall back to FFmpeg
+// 4. FFmpeg handles any format that the browser can't decode
 async function loadAudioFromFile(file) {
   console.log('loadAudioFromFile:', file.name, 'type:', file.type, 'size:', file.size);
 
@@ -412,95 +517,168 @@ async function loadAudioFromFile(file) {
     throw new Error(`The "${extension.toUpperCase()}" format is not supported. Please convert your audio file to MP3, WAV, or OGG format.`);
   }
 
-  // Read file as ArrayBuffer
-  const arrayBuffer = await new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(new Error('Failed to read audio file'));
-    reader.readAsArrayBuffer(file);
-  });
+  // File size limits
+  const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB absolute max
+  const WARN_FILE_SIZE = 2 * 1024 * 1024; // 2MB warning threshold
 
-  console.log('File read complete, buffer size:', arrayBuffer.byteLength);
-
-  // Formats that can cause browser to hang - use FFmpeg first
-  const FFMPEG_FIRST_FORMATS = ['mp3', 'ogg', 'flac', 'm4a', 'aac', 'opus', 'webm'];
-  const useFFmpegFirst = FFMPEG_FIRST_FORMATS.includes(extension);
-
-  // Check if FFmpeg is available via IPC
-  const ffmpegAvailable = window.electronAPI && window.electronAPI.transcodeAudio;
-
-  // Helper function to try FFmpeg transcoding
-  async function tryFFmpegTranscode() {
-    if (!ffmpegAvailable) {
-      throw new Error('FFmpeg not available');
-    }
-
-    console.log('Attempting FFmpeg-based transcoding...');
-    const base64Data = arrayBufferToBase64(arrayBuffer);
-    const result = await window.electronAPI.transcodeAudio(base64Data, file.name);
-
-    if (result.success) {
-      console.log('FFmpeg transcoding successful');
-      const wavArrayBuffer = base64ToArrayBuffer(result.wavDataBase64);
-      const audioBuffer = await decodeAudioBuffer(wavArrayBuffer, 'transcoded.wav');
-      const wavDataUrl = 'data:audio/wav;base64,' + result.wavDataBase64;
-      return { audioBuffer, dataUrl: wavDataUrl };
-    } else {
-      if (result.ffmpegMissing) {
-        throw new Error('FFmpeg not installed');
-      } else {
-        throw new Error('FFmpeg transcoding failed: ' + result.error);
-      }
-    }
+  if (file.size > MAX_FILE_SIZE) {
+    throw new Error(`File is too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Please use a file smaller than 10MB.`);
   }
 
-  // Helper function to try browser-based transcoding
-  async function tryBrowserTranscode() {
-    console.log('Attempting browser-based audio decoding...');
-    const { audioBuffer, wavDataUrl } = await transcodeToWav(arrayBuffer, file.name);
-    console.log('Browser-based transcoding successful');
-    return { audioBuffer, dataUrl: wavDataUrl };
+  if (file.size > WARN_FILE_SIZE) {
+    console.warn('loadAudioFromFile: Large file detected:', (file.size / 1024 / 1024).toFixed(2), 'MB');
   }
 
-  // For formats that can hang the browser, try FFmpeg first if available
-  if (useFFmpegFirst && ffmpegAvailable) {
-    try {
-      return await tryFFmpegTranscode();
-    } catch (ffmpegError) {
-      console.warn('FFmpeg failed, trying browser fallback:', ffmpegError.message);
-      // Fall through to browser attempt
-    }
-  }
+  // Show loading overlay before any heavy processing
+  showAudioLoadingOverlay();
 
-  // Try browser-based decoding
   try {
-    return await tryBrowserTranscode();
-  } catch (browserError) {
-    console.warn('Browser-based decoding failed:', browserError.message);
+    // Step 1: Pre-validate the audio file using HTML5 Audio element
+    // This is fast and won't hang the browser
+    console.log('Pre-validating audio file...');
+    try {
+      await preValidateAudioFile(file);
+      console.log('Audio file pre-validation passed');
+    } catch (validationError) {
+      console.warn('Audio file pre-validation failed:', validationError.message);
+      // Continue anyway - some valid files might fail HTML5 Audio but work with Web Audio API
+    }
 
-    // If we haven't tried FFmpeg yet, try it now
-    if (!useFFmpegFirst && ffmpegAvailable) {
-      try {
-        return await tryFFmpegTranscode();
-      } catch (ffmpegError) {
-        console.error('FFmpeg also failed:', ffmpegError.message);
+    // Check if cancelled
+    if (audioLoadingCancelled) {
+      throw new Error('Audio loading cancelled by user');
+    }
+
+    // Step 2: Read file as ArrayBuffer
+    const arrayBuffer = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('Failed to read audio file'));
+      reader.readAsArrayBuffer(file);
+    });
+
+    console.log('File read complete, buffer size:', arrayBuffer.byteLength);
+
+    // Check if cancelled
+    if (audioLoadingCancelled) {
+      throw new Error('Audio loading cancelled by user');
+    }
+
+    // Formats that can cause browser to hang - use FFmpeg first
+    const FFMPEG_FIRST_FORMATS = ['mp3', 'ogg', 'flac', 'm4a', 'aac', 'opus', 'webm'];
+    const useFFmpegFirst = FFMPEG_FIRST_FORMATS.includes(extension);
+
+    // Check if FFmpeg is available via IPC
+    const ffmpegAvailable = window.electronAPI && window.electronAPI.transcodeAudio;
+
+    // Helper function to try FFmpeg transcoding
+    async function tryFFmpegTranscode() {
+      if (!ffmpegAvailable) {
+        throw new Error('FFmpeg not available');
+      }
+
+      if (audioLoadingCancelled) {
+        throw new Error('Audio loading cancelled by user');
+      }
+
+      console.log('Attempting FFmpeg-based transcoding...');
+      const base64Data = arrayBufferToBase64(arrayBuffer);
+      const result = await window.electronAPI.transcodeAudio(base64Data, file.name);
+
+      if (audioLoadingCancelled) {
+        throw new Error('Audio loading cancelled by user');
+      }
+
+      if (result.success) {
+        console.log('FFmpeg transcoding successful');
+        const wavArrayBuffer = base64ToArrayBuffer(result.wavDataBase64);
+        const audioBuffer = await decodeAudioBuffer(wavArrayBuffer, 'transcoded.wav');
+        const wavDataUrl = 'data:audio/wav;base64,' + result.wavDataBase64;
+        return { audioBuffer, dataUrl: wavDataUrl };
+      } else {
+        if (result.ffmpegMissing) {
+          throw new Error('FFmpeg not installed');
+        } else {
+          throw new Error('FFmpeg transcoding failed: ' + result.error);
+        }
       }
     }
 
-    // All methods failed - provide helpful error message
-    if (!ffmpegAvailable) {
-      throw new Error(
-        'Could not decode audio file. The format may not be supported by your browser.\n\n' +
-        'To enable support for all audio formats, please install FFmpeg:\n' +
-        '• Windows: Download from https://ffmpeg.org/download.html and add to PATH\n' +
-        '• Or convert your file to WAV (16-bit PCM) format manually.'
-      );
-    } else {
-      throw new Error(
-        'Could not decode audio file. The file may be corrupted or in an unusual format.\n' +
-        'Please try converting your file to WAV (16-bit PCM) format.'
-      );
+    // Helper function to try browser-based transcoding
+    async function tryBrowserTranscode() {
+      if (audioLoadingCancelled) {
+        throw new Error('Audio loading cancelled by user');
+      }
+
+      console.log('Attempting browser-based audio decoding...');
+      const { audioBuffer, wavDataUrl } = await transcodeToWav(arrayBuffer, file.name);
+
+      if (audioLoadingCancelled) {
+        throw new Error('Audio loading cancelled by user');
+      }
+
+      console.log('Browser-based transcoding successful');
+      return { audioBuffer, dataUrl: wavDataUrl };
     }
+
+    // For formats that can hang the browser, try FFmpeg first if available
+    if (useFFmpegFirst && ffmpegAvailable) {
+      try {
+        const result = await tryFFmpegTranscode();
+        hideAudioLoadingOverlay();
+        return result;
+      } catch (ffmpegError) {
+        if (ffmpegError.message.includes('cancelled')) {
+          throw ffmpegError;
+        }
+        console.warn('FFmpeg failed, trying browser fallback:', ffmpegError.message);
+        // Fall through to browser attempt
+      }
+    }
+
+    // Try browser-based decoding
+    try {
+      const result = await tryBrowserTranscode();
+      hideAudioLoadingOverlay();
+      return result;
+    } catch (browserError) {
+      if (browserError.message.includes('cancelled')) {
+        throw browserError;
+      }
+      console.warn('Browser-based decoding failed:', browserError.message);
+
+      // If we haven't tried FFmpeg yet, try it now
+      if (!useFFmpegFirst && ffmpegAvailable) {
+        try {
+          const result = await tryFFmpegTranscode();
+          hideAudioLoadingOverlay();
+          return result;
+        } catch (ffmpegError) {
+          if (ffmpegError.message.includes('cancelled')) {
+            throw ffmpegError;
+          }
+          console.error('FFmpeg also failed:', ffmpegError.message);
+        }
+      }
+
+      // All methods failed - provide helpful error message
+      if (!ffmpegAvailable) {
+        throw new Error(
+          'Could not decode audio file. The format may not be supported by your browser.\n\n' +
+          'To enable support for all audio formats, please install FFmpeg:\n' +
+          '• Windows: Download from https://ffmpeg.org/download.html and add to PATH\n' +
+          '• Or convert your file to WAV (16-bit PCM) format manually.'
+        );
+      } else {
+        throw new Error(
+          'Could not decode audio file. The file may be corrupted or in an unusual format.\n' +
+          'Please try converting your file to WAV (16-bit PCM) format.'
+        );
+      }
+    }
+  } finally {
+    // Always hide the overlay when done (success or failure)
+    hideAudioLoadingOverlay();
   }
 }
 
