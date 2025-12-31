@@ -3762,7 +3762,11 @@ let dictaphoneState = {
   // For mixing virtual room sounds with microphone
   destinationNode: null,
   microphoneGainNode: null,
-  virtualAudioGainNode: null
+  virtualAudioGainNode: null,
+  // For direct PCM recording (avoids decodeAudioData which can hang)
+  scriptProcessor: null,
+  pcmChunks: [],
+  sampleRate: 48000
 };
 
 // Pure JavaScript WAV encoder - converts AudioBuffer to WAV format
@@ -3827,7 +3831,65 @@ function encodeWav(audioBuffer) {
   }
 }
 
-// Convert webm blob to WAV using AudioContext
+// Encode WAV directly from PCM Float32Array samples (no decoding required)
+// This avoids decodeAudioData() which can hang on certain audio data
+function encodePcmToWav(pcmChunks, sampleRate, numChannels = 1) {
+  // Concatenate all PCM chunks into a single Float32Array
+  const totalLength = pcmChunks.reduce((acc, chunk) => acc + chunk.length, 0);
+  const samples = new Float32Array(totalLength);
+  let offset = 0;
+  for (const chunk of pcmChunks) {
+    samples.set(chunk, offset);
+    offset += chunk.length;
+  }
+
+  // Convert to 16-bit PCM
+  const bitsPerSample = 16;
+  const bytesPerSample = bitsPerSample / 8;
+  const blockAlign = numChannels * bytesPerSample;
+  const dataSize = samples.length * bytesPerSample;
+  const bufferSize = 44 + dataSize;
+  const buffer = new ArrayBuffer(bufferSize);
+  const view = new DataView(buffer);
+
+  function writeString(view, off, string) {
+    for (let i = 0; i < string.length; i++) {
+      view.setUint8(off + i, string.charCodeAt(i));
+    }
+  }
+
+  let pos = 0;
+  // RIFF chunk descriptor
+  writeString(view, pos, 'RIFF'); pos += 4;
+  view.setUint32(pos, bufferSize - 8, true); pos += 4;
+  writeString(view, pos, 'WAVE'); pos += 4;
+
+  // fmt sub-chunk
+  writeString(view, pos, 'fmt '); pos += 4;
+  view.setUint32(pos, 16, true); pos += 4; // Subchunk1Size
+  view.setUint16(pos, 1, true); pos += 2; // AudioFormat (PCM)
+  view.setUint16(pos, numChannels, true); pos += 2;
+  view.setUint32(pos, sampleRate, true); pos += 4;
+  view.setUint32(pos, sampleRate * blockAlign, true); pos += 4; // ByteRate
+  view.setUint16(pos, blockAlign, true); pos += 2;
+  view.setUint16(pos, bitsPerSample, true); pos += 2;
+
+  // data sub-chunk
+  writeString(view, pos, 'data'); pos += 4;
+  view.setUint32(pos, dataSize, true); pos += 4;
+
+  // Write audio data
+  for (let i = 0; i < samples.length; i++) {
+    const sample = Math.max(-1, Math.min(1, samples[i]));
+    const intSample = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
+    view.setInt16(pos, intSample, true);
+    pos += 2;
+  }
+
+  return buffer;
+}
+
+// Convert webm blob to WAV using AudioContext (fallback, may hang on some audio)
 async function convertWebmToWav(webmBlob, audioContext) {
   try {
     const arrayBuffer = await webmBlob.arrayBuffer();
@@ -4083,31 +4145,32 @@ async function startDictaphoneRecording(object) {
       console.log('Virtual audio connected for recording');
     }
 
-    // Create MediaRecorder
-    const options = { mimeType: 'audio/webm;codecs=opus' };
-    if (!MediaRecorder.isTypeSupported(options.mimeType)) {
-      options.mimeType = 'audio/webm';
-    }
+    // Use ScriptProcessorNode to capture raw PCM samples
+    // This avoids webm encoding/decoding which can hang with decodeAudioData()
+    dictaphoneState.pcmChunks = [];
+    dictaphoneState.sampleRate = audioCtx.sampleRate;
 
-    dictaphoneState.recordedChunks = [];
-    dictaphoneState.mediaRecorder = new MediaRecorder(
-      dictaphoneState.destinationNode.stream,
-      options
-    );
+    // Buffer size: 4096 is a good balance between latency and CPU usage
+    const bufferSize = 4096;
+    dictaphoneState.scriptProcessor = audioCtx.createScriptProcessor(bufferSize, 1, 1);
 
-    dictaphoneState.mediaRecorder.ondataavailable = (event) => {
-      if (event.data.size > 0) {
-        dictaphoneState.recordedChunks.push(event.data);
+    dictaphoneState.scriptProcessor.onaudioprocess = (event) => {
+      if (dictaphoneState.isRecording) {
+        // Get the input buffer's channel data and copy it
+        const inputData = event.inputBuffer.getChannelData(0);
+        // Must copy because buffer gets reused
+        dictaphoneState.pcmChunks.push(new Float32Array(inputData));
       }
     };
 
-    dictaphoneState.mediaRecorder.onstop = async () => {
-      // Handle saving when recording stops
-      await saveDictaphoneRecording(object);
-    };
+    // Connect: source -> scriptProcessor -> destination (for monitoring/passthrough)
+    dictaphoneState.destinationNode.stream.getAudioTracks().forEach(track => {
+      const source = audioCtx.createMediaStreamSource(new MediaStream([track]));
+      source.connect(dictaphoneState.scriptProcessor);
+    });
+    dictaphoneState.scriptProcessor.connect(audioCtx.destination);
 
-    // Start recording
-    dictaphoneState.mediaRecorder.start(100); // Collect data every 100ms
+    console.log('PCM recording started, sample rate:', audioCtx.sampleRate);
     dictaphoneState.isRecording = true;
     dictaphoneState.currentRecorderId = object.userData.id;
     object.userData.isRecording = true;
@@ -4130,9 +4193,12 @@ async function stopDictaphoneRecording(object) {
   if (!object || !object.userData.isRecording) return;
 
   try {
-    // Stop MediaRecorder
-    if (dictaphoneState.mediaRecorder && dictaphoneState.mediaRecorder.state !== 'inactive') {
-      dictaphoneState.mediaRecorder.stop();
+    // Stop script processor (PCM recording)
+    if (dictaphoneState.scriptProcessor) {
+      try {
+        dictaphoneState.scriptProcessor.disconnect();
+      } catch (e) {}
+      dictaphoneState.scriptProcessor = null;
     }
 
     // Stop microphone stream
@@ -4160,6 +4226,9 @@ async function stopDictaphoneRecording(object) {
     console.log('Dictaphone recording stopped');
     saveState();
 
+    // Save the recording
+    await saveDictaphoneRecording(object);
+
   } catch (error) {
     console.error('Error stopping dictaphone recording:', error);
   }
@@ -4167,7 +4236,7 @@ async function stopDictaphoneRecording(object) {
 
 // Save recording to file
 async function saveDictaphoneRecording(object) {
-  if (dictaphoneState.recordedChunks.length === 0) {
+  if (dictaphoneState.pcmChunks.length === 0) {
     console.log('No recording data to save');
     return;
   }
@@ -4176,32 +4245,25 @@ async function saveDictaphoneRecording(object) {
   if (!object || !object.userData || !object.userData.recordingsFolderPath) {
     console.error('Cannot save recording: folder path is not set');
     alert('Cannot save recording: please select a folder first');
-    dictaphoneState.recordedChunks = [];
+    dictaphoneState.pcmChunks = [];
     return;
   }
 
   try {
-    // Create webm blob from chunks
-    const webmBlob = new Blob(dictaphoneState.recordedChunks, { type: 'audio/webm' });
-    console.log('Recording webm blob size:', webmBlob.size, 'bytes');
+    console.log('Encoding PCM to WAV, chunks:', dictaphoneState.pcmChunks.length, 'sample rate:', dictaphoneState.sampleRate);
 
-    // Convert webm to WAV in browser (no FFmpeg required)
-    console.log('Converting webm to WAV in browser...');
-    const wavBlob = await convertWebmToWav(webmBlob, dictaphoneState.audioContext);
-    console.log('WAV blob size:', wavBlob.size, 'bytes');
+    // Encode PCM directly to WAV (no decodeAudioData required!)
+    const wavBuffer = encodePcmToWav(dictaphoneState.pcmChunks, dictaphoneState.sampleRate, 1);
+    console.log('WAV buffer size:', wavBuffer.byteLength, 'bytes');
 
-    // Convert WAV to base64
-    const reader = new FileReader();
-    const base64Promise = new Promise((resolve, reject) => {
-      reader.onloadend = () => {
-        const base64 = reader.result.split(',')[1]; // Remove data URL prefix
-        resolve(base64);
-      };
-      reader.onerror = reject;
-    });
-    reader.readAsDataURL(wavBlob);
-
-    const base64Data = await base64Promise;
+    // Convert WAV ArrayBuffer to base64
+    const wavArray = new Uint8Array(wavBuffer);
+    let binary = '';
+    for (let i = 0; i < wavArray.byteLength; i++) {
+      binary += String.fromCharCode(wavArray[i]);
+    }
+    const base64Data = btoa(binary);
+    console.log('Base64 encoded, length:', base64Data.length);
 
     // Save via IPC - always WAV format (MP3 conversion requires FFmpeg on server)
     const format = object.userData.recordingFormat || 'wav';
@@ -4223,13 +4285,13 @@ async function saveDictaphoneRecording(object) {
       alert('Failed to save recording: ' + result.error);
     }
 
-    // Clear chunks
-    dictaphoneState.recordedChunks = [];
+    // Clear PCM chunks
+    dictaphoneState.pcmChunks = [];
 
   } catch (error) {
     console.error('Error saving recording:', error);
     alert('Error saving recording: ' + error.message);
-    dictaphoneState.recordedChunks = [];
+    dictaphoneState.pcmChunks = [];
   }
 }
 
