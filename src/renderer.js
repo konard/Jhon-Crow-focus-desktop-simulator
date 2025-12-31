@@ -5397,7 +5397,7 @@ function togglePenDrawingMode() {
   }
 }
 
-// Enter drawing mode with the held pen
+// Enter drawing mode with the held pen (for toggling when already holding)
 function enterPenDrawingMode() {
   if (!penDrawingMode.heldPen) return;
 
@@ -5409,6 +5409,32 @@ function enterPenDrawingMode() {
 
   // Stop normal dragging - pen is now attached to cursor in drawing mode
   if (isDragging && selectedObject === penDrawingMode.heldPen) {
+    isDragging = false;
+    selectedObject = null;
+  }
+
+  // Show drawing mode indicator
+  showDrawingModeIndicator(true);
+
+  console.log('Drawing mode: ON - Use LMB on notebook/paper to draw');
+}
+
+// Enter drawing mode by hovering over a pen and pressing MMB (new method)
+function enterPenDrawingModeWithPen(pen) {
+  if (!pen || pen.userData.type !== 'pen') return;
+
+  // Set this pen as the held pen for drawing mode
+  penDrawingMode.heldPen = pen;
+  penDrawingMode.active = true;
+
+  // Tilt pen to drawing angle
+  makePenDrawingAngle(pen);
+
+  // Use the pen's line width setting
+  penDrawingMode.lineWidth = pen.userData.lineWidth || 2;
+
+  // If user was dragging this pen, stop dragging
+  if (isDragging && selectedObject === pen) {
     isDragging = false;
     selectedObject = null;
   }
@@ -8214,9 +8240,9 @@ function onMouseDown(event) {
   if (event.button === 1) {
     event.preventDefault();
 
-    // If user is holding a pen and pressing MMB, toggle drawing mode
-    if (penDrawingMode.heldPen && isDragging && selectedObject === penDrawingMode.heldPen) {
-      togglePenDrawingMode();
+    // If drawing mode is active, MMB exits it under any conditions
+    if (penDrawingMode.active) {
+      exitPenDrawingMode();
       return;
     }
 
@@ -8249,6 +8275,12 @@ function onMouseDown(event) {
       }
 
       if (deskObjects.includes(object)) {
+        // If hovering over a pen, enter drawing mode
+        if (object.userData.type === 'pen') {
+          enterPenDrawingModeWithPen(object);
+          return;
+        }
+
         // For books and magazines, check if user is holding for reading mode
         if (object.userData.type === 'books' || object.userData.type === 'magazine') {
           bookReadingState.middleMouseDownTime = Date.now();
