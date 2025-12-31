@@ -683,8 +683,8 @@ let playerModeState = {
   holdTimeout: null,
   // Zoom and pan controls for player mode
   zoomDistance: 0.25, // Distance from player (closer than book for button interaction)
-  panOffsetX: 0,      // Pan offset parallel to player
-  panOffsetZ: 0,      // Pan offset forward/backward
+  panOffsetX: 0,      // Pan offset left/right (A/D keys)
+  panOffsetY: 0,      // Pan offset up/down (W/S keys)
   // Cached player world position to avoid recalculating on every keypress
   playerWorldPos: null
 };
@@ -5858,21 +5858,21 @@ function setupEventListeners() {
         const playerWorldPos = playerModeState.playerWorldPos;
         const viewDistance = playerModeState.zoomDistance;
 
-        // W/S for forward/backward panning, A/D for left/right panning
-        if (wasdKey === 'KeyW') playerModeState.panOffsetZ -= panSpeed;
-        if (wasdKey === 'KeyS') playerModeState.panOffsetZ += panSpeed;
+        // W/S for up/down panning, A/D for left/right panning
+        if (wasdKey === 'KeyW') playerModeState.panOffsetY += panSpeed;
+        if (wasdKey === 'KeyS') playerModeState.panOffsetY -= panSpeed;
         if (wasdKey === 'KeyA') playerModeState.panOffsetX -= panSpeed;
         if (wasdKey === 'KeyD') playerModeState.panOffsetX += panSpeed;
 
         // Clamp pan offsets to reasonable limits
         playerModeState.panOffsetX = Math.max(-0.5, Math.min(0.5, playerModeState.panOffsetX));
-        playerModeState.panOffsetZ = Math.max(-0.5, Math.min(0.5, playerModeState.panOffsetZ));
+        playerModeState.panOffsetY = Math.max(-0.5, Math.min(0.5, playerModeState.panOffsetY));
 
-        // Update camera position - at same Y level as player
+        // Update camera position - pan left/right and up/down
         camera.position.set(
           playerWorldPos.x + playerModeState.panOffsetX,
-          playerWorldPos.y, // At the same level as the player
-          playerWorldPos.z + viewDistance + playerModeState.panOffsetZ
+          playerWorldPos.y + playerModeState.panOffsetY, // Move up/down with W/S
+          playerWorldPos.z + viewDistance
         );
 
         // Update camera pitch to look straight at the player (level view)
@@ -6273,6 +6273,17 @@ function onMouseDown(event) {
       return;
     }
 
+    // In player mode, MMB hold exits player mode, quick click interacts with player buttons
+    if (playerModeState.active && playerModeState.player) {
+      playerModeState.middleMouseDownTime = Date.now();
+      playerModeState.holdTimeout = setTimeout(() => {
+        // Hold for 300ms - exit player mode
+        exitPlayerMode();
+        playerModeState.holdTimeout = null; // Mark as already handled
+      }, 300);
+      return;
+    }
+
     updateMousePosition(event);
 
     raycaster.setFromCamera(mouse, camera);
@@ -6333,40 +6344,16 @@ function onMouseDown(event) {
     return;
   }
 
-  // If in player mode, check if clicking on player buttons
-  // If clicking on player, handle the interaction; otherwise exit player mode
+  // If in player mode:
+  // - LMB clicking on the player does nothing (use MMB for button interaction)
+  // - LMB clicking outside the player exits player mode
   if (playerModeState.active && playerModeState.player) {
     updateMousePosition(event);
     raycaster.setFromCamera(mouse, camera);
     const intersects = raycaster.intersectObjects([playerModeState.player], true);
 
     if (intersects.length > 0) {
-      // Clicked on the player - handle button interaction
-      const clickedMesh = intersects[0].object;
-      let object = playerModeState.player;
-
-      // Check if clicking on a button
-      let buttonType = null;
-      let parent = clickedMesh;
-      while (parent && parent !== object) {
-        if (parent.userData && parent.userData.buttonType) {
-          buttonType = parent.userData.buttonType;
-          break;
-        }
-        if (parent.name === 'prevButton') buttonType = 'prev';
-        else if (parent.name === 'playButton') buttonType = 'play';
-        else if (parent.name === 'stopButton') buttonType = 'stop';
-        else if (parent.name === 'nextButton') buttonType = 'next';
-        if (buttonType) break;
-        parent = parent.parent;
-      }
-
-      if (buttonType) {
-        handleCassetteButtonClick(object, buttonType);
-      } else {
-        // Clicked on player body (not a button) - toggle play/pause
-        toggleCassettePlayback(object);
-      }
+      // Clicked on the player - do nothing (use MMB quick click for button interaction)
       return;
     } else {
       // Clicked outside the player - exit player mode
@@ -6869,8 +6856,25 @@ function onMouseUp(event) {
       return;
     }
 
-    // If in player mode, don't exit on release - stay in mode until user clicks elsewhere
-    if (playerModeState.active) {
+    // If in player mode, MMB quick click interacts with player buttons
+    if (playerModeState.active && playerModeState.player) {
+      // If user releases before the hold timeout fired (300ms), it's a quick click - interact with player
+      if (playerModeState.holdTimeout) {
+        clearTimeout(playerModeState.holdTimeout);
+        playerModeState.holdTimeout = null;
+
+        // Quick click in player mode - handle player button interaction via raycasting
+        updateMousePosition(event);
+        raycaster.setFromCamera(mouse, camera);
+        const intersects = raycaster.intersectObjects([playerModeState.player], true);
+
+        if (intersects.length > 0) {
+          // Clicked on the player - handle button interaction
+          const clickedMesh = intersects[0].object;
+          performQuickInteraction(playerModeState.player, clickedMesh);
+        }
+        // If clicked outside, do nothing (don't exit - that's MMB hold)
+      }
       return;
     }
 
@@ -7297,8 +7301,8 @@ function onMouseWheel(event) {
 
     camera.position.set(
       playerWorldPos.x + playerModeState.panOffsetX,
-      playerWorldPos.y, // At the same level as the player
-      playerWorldPos.z + viewDistance + playerModeState.panOffsetZ
+      playerWorldPos.y + playerModeState.panOffsetY, // Move up/down with W/S
+      playerWorldPos.z + viewDistance
     );
 
     // Update camera pitch to look straight at the player (level view)
@@ -13730,7 +13734,7 @@ function enterPlayerMode(player) {
   // Reset zoom and pan offsets
   playerModeState.zoomDistance = 0.25;
   playerModeState.panOffsetX = 0;
-  playerModeState.panOffsetZ = 0;
+  playerModeState.panOffsetY = 0;
 
   // Store original camera state
   playerModeState.originalCameraPos = camera.position.clone();
