@@ -3726,7 +3726,7 @@ function createPaper(options = {}) {
     interactive: true, // Interactive - can draw with pen
     drawingLines: [], // Array of drawing line data
     fileName: options.fileName || 'drawing.png',
-    mainColor: options.mainColor || '#fffff5',
+    mainColor: options.mainColor || '#ffffff', // Pure white for drawing
     accentColor: options.accentColor || '#cccccc'
   };
 
@@ -3742,7 +3742,7 @@ function createPaper(options = {}) {
   const paperHeight = 0.4;
   const paperThickness = 0.002;
 
-  // Main paper sheet
+  // Main paper sheet - blank white for drawing
   const paperGeometry = new THREE.BoxGeometry(paperWidth, paperThickness, paperHeight);
   const paper = new THREE.Mesh(paperGeometry, paperMaterial);
   paper.position.y = paperThickness / 2;
@@ -3750,23 +3750,7 @@ function createPaper(options = {}) {
   paper.receiveShadow = true;
   group.add(paper);
 
-  // Add some subtle lines to represent text/content
-  const lineMaterial = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(group.userData.accentColor),
-    roughness: 0.9
-  });
-
-  for (let i = 0; i < 15; i++) {
-    const lineWidth = 0.18 + Math.random() * 0.06;
-    const lineGeometry = new THREE.BoxGeometry(lineWidth, 0.001, 0.008);
-    const line = new THREE.Mesh(lineGeometry, lineMaterial);
-    line.position.set(
-      (Math.random() - 0.5) * 0.02, // Slight offset
-      paperThickness + 0.001,
-      -0.15 + i * 0.022
-    );
-    group.add(line);
-  }
+  // Note: No decorative lines - paper is blank for drawing with pen
 
   group.position.y = getDeskSurfaceY();
 
@@ -5741,15 +5725,34 @@ async function saveDrawingToFile(drawableObject) {
     drawableObject.userData.drawingFileName = generateDrawingFilename(drawableObject);
   }
 
-  // Save using the object data storage (like PDFs)
+  // Save using the object data storage (like PDFs) for state persistence
   const objectId = drawableObject.userData.id;
   try {
     if (window.electronAPI && window.electronAPI.saveObjectData) {
       await window.electronAPI.saveObjectData(objectId, 'drawing', dataUrl);
-      console.log('Drawing saved:', drawableObject.userData.drawingFileName);
+      console.log('Drawing saved to app data:', drawableObject.userData.drawingFileName);
     }
   } catch (err) {
-    console.error('Error saving drawing:', err);
+    console.error('Error saving drawing to app data:', err);
+  }
+
+  // Also save to custom folder if set in the pen's settings
+  const customFolder = penDrawingMode.saveFolder;
+  if (customFolder && window.electronAPI && window.electronAPI.saveDrawingFile) {
+    try {
+      const result = await window.electronAPI.saveDrawingFile(
+        customFolder,
+        drawableObject.userData.drawingFileName,
+        dataUrl
+      );
+      if (result.success) {
+        console.log('Drawing also saved to custom folder:', result.filePath);
+      } else {
+        console.error('Error saving to custom folder:', result.error);
+      }
+    } catch (err) {
+      console.error('Error saving drawing to custom folder:', err);
+    }
   }
 
   // Also update the state save
@@ -9882,6 +9885,7 @@ function updateCustomizationPanel(object) {
       const penBodyColor = object.userData.mainColor || '#3b82f6';
       const penInkColor = object.userData.inkColor || object.userData.mainColor || '#3b82f6';
       const penLineWidth = object.userData.lineWidth || 2;
+      const penSaveFolder = object.userData.drawingsSaveFolder || '';
       dynamicOptions.innerHTML = `
         <div class="customization-group" style="margin-top: 20px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.1);">
           <label>Body Color</label>
@@ -9915,6 +9919,22 @@ function updateCustomizationPanel(object) {
             <input type="range" id="pen-line-width" min="1" max="10" value="${penLineWidth}"
                    style="flex: 1; cursor: pointer;">
             <span id="pen-line-width-val" style="color: rgba(255,255,255,0.7); font-size: 12px; min-width: 30px;">${penLineWidth}px</span>
+          </div>
+        </div>
+        <div class="customization-group" style="margin-top: 15px;">
+          <label>Save Drawings To</label>
+          <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 8px;">
+            <div id="pen-save-folder-display" style="font-size: 11px; color: rgba(255,255,255,0.6); word-break: break-all; min-height: 20px;">
+              ${penSaveFolder || 'Default (app data folder)'}
+            </div>
+            <button id="pen-select-folder-btn" style="padding: 8px 12px; background: rgba(79, 70, 229, 0.3); border: 1px solid rgba(79, 70, 229, 0.5); border-radius: 6px; color: #fff; cursor: pointer; font-size: 12px;">
+              📁 Select Folder
+            </button>
+            ${penSaveFolder ? `
+              <button id="pen-clear-folder-btn" style="padding: 8px 12px; background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 6px; color: #ef4444; cursor: pointer; font-size: 12px;">
+                Clear (use default)
+              </button>
+            ` : ''}
           </div>
         </div>
         <div class="customization-group" style="margin-top: 15px;">
@@ -10938,6 +10958,47 @@ function setupPenCustomizationHandlers(object) {
         // Also update the global penDrawingMode line width
         penDrawingMode.lineWidth = width;
         saveState();
+      });
+    }
+
+    // Drawings save folder selection
+    const selectFolderBtn = document.getElementById('pen-select-folder-btn');
+    const clearFolderBtn = document.getElementById('pen-clear-folder-btn');
+    const folderDisplay = document.getElementById('pen-save-folder-display');
+
+    if (selectFolderBtn) {
+      selectFolderBtn.addEventListener('click', async () => {
+        if (window.electronAPI && window.electronAPI.selectDrawingsFolder) {
+          try {
+            const result = await window.electronAPI.selectDrawingsFolder();
+            if (result.success && !result.canceled && result.folderPath) {
+              object.userData.drawingsSaveFolder = result.folderPath;
+              // Also update the global penDrawingMode saveFolder
+              penDrawingMode.saveFolder = result.folderPath;
+              if (folderDisplay) {
+                folderDisplay.textContent = result.folderPath;
+              }
+              saveState();
+              // Refresh the customization panel to show the clear button
+              updateCustomizationPanel(object);
+            }
+          } catch (err) {
+            console.error('Error selecting drawings folder:', err);
+          }
+        }
+      });
+    }
+
+    if (clearFolderBtn) {
+      clearFolderBtn.addEventListener('click', () => {
+        object.userData.drawingsSaveFolder = null;
+        penDrawingMode.saveFolder = null;
+        if (folderDisplay) {
+          folderDisplay.textContent = 'Default (app data folder)';
+        }
+        saveState();
+        // Refresh the customization panel to hide the clear button
+        updateCustomizationPanel(object);
       });
     }
   }, 0);
@@ -17274,6 +17335,10 @@ async function saveStateImmediate() {
           data.penColor = obj.userData.penColor;
           data.inkColor = obj.userData.inkColor;
           data.lineWidth = obj.userData.lineWidth || 2;
+          // Save drawings folder path if set
+          if (obj.userData.drawingsSaveFolder) {
+            data.drawingsSaveFolder = obj.userData.drawingsSaveFolder;
+          }
           // Save holder info if pen is in a holder
           if (obj.userData.inHolder) {
             const holderIndex = deskObjects.indexOf(obj.userData.inHolder);
@@ -17746,6 +17811,10 @@ async function loadState() {
                 }
                 if (objData.lineWidth) {
                   obj.userData.lineWidth = objData.lineWidth;
+                }
+                // Restore drawings save folder
+                if (objData.drawingsSaveFolder) {
+                  obj.userData.drawingsSaveFolder = objData.drawingsSaveFolder;
                 }
                 // Update pen body color from mainColor
                 if (objData.mainColor) {
