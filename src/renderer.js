@@ -503,11 +503,13 @@ async function transcodeToWav(inputBuffer, fileName = '', maxDuration = 10) {
 }
 
 // Safe wrapper for loading audio files from File objects
-// This uses a smart approach:
-// 1. Pre-validate using HTML5 Audio element (fast, won't hang)
-// 2. For MP3/OGG files, use FFmpeg first (browser decoding can hang on these)
-// 3. For WAV files, try browser first, fall back to FFmpeg
-// 4. FFmpeg handles any format that the browser can't decode
+// This uses a simple, reliable approach:
+// 1. Validate using HTML5 Audio element (fast, won't hang)
+// 2. Read file as data URL
+// 3. Return dataUrl for HTML5 Audio playback (no decodeAudioData which can hang)
+//
+// This approach avoids the Web Audio API's decodeAudioData which can hang
+// indefinitely on certain audio files in Electron, causing a grey screen.
 async function loadAudioFromFile(file) {
   console.log('loadAudioFromFile:', file.name, 'type:', file.type, 'size:', file.size);
 
@@ -529,19 +531,19 @@ async function loadAudioFromFile(file) {
     console.warn('loadAudioFromFile: Large file detected:', (file.size / 1024 / 1024).toFixed(2), 'MB');
   }
 
-  // Show loading overlay before any heavy processing
+  // Show loading overlay
   showAudioLoadingOverlay();
 
   try {
-    // Step 1: Pre-validate the audio file using HTML5 Audio element
-    // This is fast and won't hang the browser
-    console.log('Pre-validating audio file...');
+    // Step 1: Validate the audio file using HTML5 Audio element
+    // This is fast, won't hang, and confirms the browser can play it
+    console.log('Validating audio file with HTML5 Audio...');
     try {
       await preValidateAudioFile(file);
-      console.log('Audio file pre-validation passed');
+      console.log('Audio file validation passed');
     } catch (validationError) {
-      console.warn('Audio file pre-validation failed:', validationError.message);
-      // Continue anyway - some valid files might fail HTML5 Audio but work with Web Audio API
+      // If HTML5 Audio can't play it, the file is likely corrupted or unsupported
+      throw new Error(`Cannot load audio file: ${validationError.message}`);
     }
 
     // Check if cancelled
@@ -549,133 +551,28 @@ async function loadAudioFromFile(file) {
       throw new Error('Audio loading cancelled by user');
     }
 
-    // Step 2: Read file as ArrayBuffer
-    const arrayBuffer = await new Promise((resolve, reject) => {
+    // Step 2: Read file as data URL for HTML5 Audio playback
+    // This avoids decodeAudioData which can hang on certain files
+    console.log('Reading file as data URL...');
+    const dataUrl = await new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve(reader.result);
       reader.onerror = () => reject(new Error('Failed to read audio file'));
-      reader.readAsArrayBuffer(file);
+      reader.readAsDataURL(file);
     });
 
-    console.log('File read complete, buffer size:', arrayBuffer.byteLength);
+    console.log('File read complete, dataUrl length:', dataUrl.length);
 
     // Check if cancelled
     if (audioLoadingCancelled) {
       throw new Error('Audio loading cancelled by user');
     }
 
-    // Formats that can cause browser to hang - use FFmpeg first
-    const FFMPEG_FIRST_FORMATS = ['mp3', 'ogg', 'flac', 'm4a', 'aac', 'opus', 'webm'];
-    const useFFmpegFirst = FFMPEG_FIRST_FORMATS.includes(extension);
+    // Return just the dataUrl - no audioBuffer needed
+    // The playback code will use HTML5 Audio element instead of Web Audio API BufferSource
+    hideAudioLoadingOverlay();
+    return { audioBuffer: null, dataUrl };
 
-    // Check if FFmpeg is available via IPC
-    const ffmpegAvailable = window.electronAPI && window.electronAPI.transcodeAudio;
-
-    // Helper function to try FFmpeg transcoding
-    async function tryFFmpegTranscode() {
-      if (!ffmpegAvailable) {
-        throw new Error('FFmpeg not available');
-      }
-
-      if (audioLoadingCancelled) {
-        throw new Error('Audio loading cancelled by user');
-      }
-
-      console.log('Attempting FFmpeg-based transcoding...');
-      const base64Data = arrayBufferToBase64(arrayBuffer);
-      const result = await window.electronAPI.transcodeAudio(base64Data, file.name);
-
-      if (audioLoadingCancelled) {
-        throw new Error('Audio loading cancelled by user');
-      }
-
-      if (result.success) {
-        console.log('FFmpeg transcoding successful');
-        const wavArrayBuffer = base64ToArrayBuffer(result.wavDataBase64);
-        const audioBuffer = await decodeAudioBuffer(wavArrayBuffer, 'transcoded.wav');
-        const wavDataUrl = 'data:audio/wav;base64,' + result.wavDataBase64;
-        return { audioBuffer, dataUrl: wavDataUrl };
-      } else {
-        if (result.ffmpegMissing) {
-          throw new Error('FFmpeg not installed');
-        } else {
-          throw new Error('FFmpeg transcoding failed: ' + result.error);
-        }
-      }
-    }
-
-    // Helper function to try browser-based transcoding
-    async function tryBrowserTranscode() {
-      if (audioLoadingCancelled) {
-        throw new Error('Audio loading cancelled by user');
-      }
-
-      console.log('Attempting browser-based audio decoding...');
-      const { audioBuffer, wavDataUrl } = await transcodeToWav(arrayBuffer, file.name);
-
-      if (audioLoadingCancelled) {
-        throw new Error('Audio loading cancelled by user');
-      }
-
-      console.log('Browser-based transcoding successful');
-      return { audioBuffer, dataUrl: wavDataUrl };
-    }
-
-    // For formats that can hang the browser, try FFmpeg first if available
-    if (useFFmpegFirst && ffmpegAvailable) {
-      try {
-        const result = await tryFFmpegTranscode();
-        hideAudioLoadingOverlay();
-        return result;
-      } catch (ffmpegError) {
-        if (ffmpegError.message.includes('cancelled')) {
-          throw ffmpegError;
-        }
-        console.warn('FFmpeg failed, trying browser fallback:', ffmpegError.message);
-        // Fall through to browser attempt
-      }
-    }
-
-    // Try browser-based decoding
-    try {
-      const result = await tryBrowserTranscode();
-      hideAudioLoadingOverlay();
-      return result;
-    } catch (browserError) {
-      if (browserError.message.includes('cancelled')) {
-        throw browserError;
-      }
-      console.warn('Browser-based decoding failed:', browserError.message);
-
-      // If we haven't tried FFmpeg yet, try it now
-      if (!useFFmpegFirst && ffmpegAvailable) {
-        try {
-          const result = await tryFFmpegTranscode();
-          hideAudioLoadingOverlay();
-          return result;
-        } catch (ffmpegError) {
-          if (ffmpegError.message.includes('cancelled')) {
-            throw ffmpegError;
-          }
-          console.error('FFmpeg also failed:', ffmpegError.message);
-        }
-      }
-
-      // All methods failed - provide helpful error message
-      if (!ffmpegAvailable) {
-        throw new Error(
-          'Could not decode audio file. The format may not be supported by your browser.\n\n' +
-          'To enable support for all audio formats, please install FFmpeg:\n' +
-          '• Windows: Download from https://ffmpeg.org/download.html and add to PATH\n' +
-          '• Or convert your file to WAV (16-bit PCM) format manually.'
-        );
-      } else {
-        throw new Error(
-          'Could not decode audio file. The file may be corrupted or in an unusual format.\n' +
-          'Please try converting your file to WAV (16-bit PCM) format.'
-        );
-      }
-    }
   } finally {
     // Always hide the overlay when done (success or failure)
     hideAudioLoadingOverlay();
@@ -7540,9 +7437,8 @@ function setupMetronomeCustomizationHandlers(object) {
 
         try {
           // Use the robust audio loading helper
-          const { audioBuffer, dataUrl } = await loadAudioFromFile(file);
+          const { dataUrl } = await loadAudioFromFile(file);
 
-          object.userData.customSoundBuffer = audioBuffer;
           object.userData.tickSoundType = 'custom';
           object.userData.customSoundDataUrl = dataUrl;
           saveState();
@@ -7571,7 +7467,6 @@ function setupMetronomeCustomizationHandlers(object) {
     if (clearSoundBtn) {
       clearSoundBtn.addEventListener('click', () => {
         object.userData.customSoundDataUrl = null;
-        object.userData.customSoundBuffer = null;
         if (object.userData.tickSoundType === 'custom') {
           object.userData.tickSoundType = 'strike';
         }
@@ -7583,27 +7478,43 @@ function setupMetronomeCustomizationHandlers(object) {
   }, 0);
 }
 
-// Preload custom sound for metronome to avoid delay on first play
+// Preload custom sound for metronome - validates saved sound is still playable
 async function preloadMetronomeCustomSound(object) {
   if (!object.userData.customSoundDataUrl) return;
 
   try {
-    console.log('Preloading metronome custom sound...');
+    console.log('Validating metronome custom sound...');
 
-    // Use the robust audio loading helper
-    const audioBuffer = await loadAudioFromDataUrl(object.userData.customSoundDataUrl);
+    // Just validate that the data URL can create a playable audio element
+    // No need to decode - HTML5 Audio handles it at play time
+    const testAudio = new Audio(object.userData.customSoundDataUrl);
 
-    object.userData.customSoundBuffer = audioBuffer;
+    // Wait for the audio to be ready to play
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Audio validation timeout')), 5000);
+
+      testAudio.oncanplaythrough = () => {
+        clearTimeout(timeout);
+        resolve();
+      };
+
+      testAudio.onerror = () => {
+        clearTimeout(timeout);
+        reject(new Error('Audio validation failed'));
+      };
+
+      testAudio.load();
+    });
+
     // Automatically switch to custom sound when loaded successfully
     object.userData.tickSoundType = 'custom';
-    console.log('Metronome custom sound preloaded successfully, duration:', audioBuffer.duration);
+    console.log('Metronome custom sound validated successfully');
     // Don't call saveState() here - this function is called during loading
     // and calling saveState during load causes race conditions
   } catch (e) {
-    console.error('Error preloading metronome custom sound:', e);
+    console.error('Error validating metronome custom sound:', e);
     // Reset custom sound state on error - but don't show alert during preload
     // as this could be triggered during page load
-    object.userData.customSoundBuffer = null;
     object.userData.customSoundDataUrl = null;
   }
 }
@@ -9080,9 +8991,8 @@ function setupTimerHandlers() {
 
       try {
         // Use the robust audio loading helper
-        const { audioBuffer, dataUrl } = await loadAudioFromFile(file);
+        const { dataUrl } = await loadAudioFromFile(file);
 
-        timerState.customSoundBuffer = audioBuffer;
         timerState.useCustomSound = true;
         timerState.customSoundDataUrl = dataUrl;
 
@@ -9122,7 +9032,6 @@ function setupTimerHandlers() {
   if (clearSoundBtn) {
     clearSoundBtn.addEventListener('click', () => {
       timerState.customSoundDataUrl = null;
-      timerState.customSoundBuffer = null;
       timerState.useCustomSound = false;
       // Refresh the modal
       if (interactionObject && interactionObject.userData.type === 'clock') {
@@ -9163,20 +9072,36 @@ async function preloadTimerCustomSound() {
   if (!timerState.customSoundDataUrl) return;
 
   try {
-    console.log('Preloading timer custom sound...');
+    console.log('Validating timer custom sound...');
 
-    // Use the robust audio loading helper
-    const audioBuffer = await loadAudioFromDataUrl(timerState.customSoundDataUrl);
+    // Just validate that the data URL can create a playable audio element
+    // No need to decode - HTML5 Audio handles it at play time
+    const testAudio = new Audio(timerState.customSoundDataUrl);
 
-    timerState.customSoundBuffer = audioBuffer;
-    // Automatically enable custom sound when loaded successfully
+    // Wait for the audio to be ready to play
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Audio validation timeout')), 5000);
+
+      testAudio.oncanplaythrough = () => {
+        clearTimeout(timeout);
+        resolve();
+      };
+
+      testAudio.onerror = () => {
+        clearTimeout(timeout);
+        reject(new Error('Audio validation failed'));
+      };
+
+      testAudio.load();
+    });
+
+    // Automatically enable custom sound when validated successfully
     timerState.useCustomSound = true;
-    console.log('Timer custom sound preloaded successfully, duration:', audioBuffer.duration);
+    console.log('Timer custom sound validated successfully');
   } catch (e) {
-    console.error('Error preloading timer custom sound:', e);
+    console.error('Error validating timer custom sound:', e);
     // Reset custom sound state on error - but don't show alert during preload
     // as this could be triggered during page load
-    timerState.customSoundBuffer = null;
     timerState.customSoundDataUrl = null;
     timerState.useCustomSound = false;
   }
@@ -9235,38 +9160,39 @@ function playTimerAlert() {
   const pitch = timerState.alertPitch || 800;
 
   // Check if custom sound is available and should be used
-  // Use the shared audio context since the buffer was decoded with it
-  if (timerState.useCustomSound && timerState.customSoundBuffer) {
+  // Use HTML5 Audio element for playback (doesn't hang like Web Audio API decodeAudioData)
+  if (timerState.useCustomSound && timerState.customSoundDataUrl) {
     try {
-      // Use shared audio context - the buffer is bound to it
-      const audioCtx = getSharedAudioContext();
-      timerState.alertAudioCtx = audioCtx;
       timerState.isAlerting = true;
+
+      // Create and store the audio element for the custom sound
+      const audio = new Audio(timerState.customSoundDataUrl);
+      timerState.customAudioElement = audio;
+      audio.volume = volume;
+      audio.playbackRate = pitch / 800; // Pitch adjustment via playback rate
 
       // Play custom sound in a loop
       const playCustomLoop = () => {
         if (!timerState.isAlerting) return;
 
         try {
-          const source = audioCtx.createBufferSource();
-          const gainNode = audioCtx.createGain();
-          source.buffer = timerState.customSoundBuffer;
-          source.playbackRate.value = pitch / 800; // Pitch adjustment
-          source.connect(gainNode);
-          gainNode.connect(audioCtx.destination);
-          gainNode.gain.value = volume;
-          source.start();
-
-          // Schedule next play after buffer duration
-          source.onended = () => {
-            if (timerState.isAlerting) {
-              setTimeout(playCustomLoop, 500); // 500ms pause between plays
-            }
-          };
+          audio.currentTime = 0;
+          audio.play().catch(err => {
+            console.error('Error playing custom sound:', err);
+            stopTimerAlert();
+            playDefaultTimerAlert(volume, pitch);
+          });
         } catch (playErr) {
           console.error('Error playing custom sound:', playErr);
           stopTimerAlert();
           playDefaultTimerAlert(volume, pitch);
+        }
+      };
+
+      // Loop the sound
+      audio.onended = () => {
+        if (timerState.isAlerting) {
+          setTimeout(playCustomLoop, 500); // 500ms pause between plays
         }
       };
 
@@ -9326,6 +9252,18 @@ function playDefaultTimerAlert(volume, pitch) {
 function stopTimerAlert() {
   timerState.isAlerting = false; // Stop any custom sound loops first
 
+  // Stop HTML5 Audio element if playing (custom sound)
+  if (timerState.customAudioElement) {
+    try {
+      timerState.customAudioElement.pause();
+      timerState.customAudioElement.currentTime = 0;
+    } catch (e) {
+      // Ignore if already stopped
+    }
+    timerState.customAudioElement = null;
+  }
+
+  // Stop Web Audio API oscillator if playing (default alert)
   if (timerState.alertOscillator) {
     try {
       timerState.alertOscillator.stop();
@@ -14400,16 +14338,19 @@ function animate() {
                 pitchMultiplier = startPitch + (endPitch - startPitch) * easedProgress;
               }
 
-              if (obj.userData.tickSoundType === 'custom' && obj.userData.customSoundBuffer) {
-                // Play custom sound with pitch adjustment
-                const source = audioCtx.createBufferSource();
-                const gain = audioCtx.createGain();
-                source.buffer = obj.userData.customSoundBuffer;
-                source.playbackRate.value = pitchMultiplier; // Pitch adjustment via playback rate
-                source.connect(gain);
-                gain.connect(audioCtx.destination);
-                gain.gain.setValueAtTime(volume, currentTime);
-                source.start(currentTime);
+              if (obj.userData.tickSoundType === 'custom' && obj.userData.customSoundDataUrl) {
+                // Play custom sound using HTML5 Audio element
+                // This avoids Web Audio API's decodeAudioData which can hang
+                try {
+                  const audio = new Audio(obj.userData.customSoundDataUrl);
+                  audio.volume = volume;
+                  audio.playbackRate = pitchMultiplier; // Pitch adjustment via playback rate
+                  audio.play().catch(err => {
+                    console.warn('Failed to play custom metronome sound:', err);
+                  });
+                } catch (e) {
+                  console.warn('Error creating audio element:', e);
+                }
               } else if (obj.userData.tickSoundType === 'beep') {
                 // Simple beep sound with pitch adjustment
                 const osc = audioCtx.createOscillator();
