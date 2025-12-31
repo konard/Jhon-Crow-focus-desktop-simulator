@@ -11,5 +11,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Cassette player - music folder selection and audio file reading
   selectMusicFolder: () => ipcRenderer.invoke('select-music-folder'),
   readAudioFile: (filePath) => ipcRenderer.invoke('read-audio-file', filePath),
-  refreshMusicFolder: (folderPath) => ipcRenderer.invoke('refresh-music-folder', folderPath)
+  refreshMusicFolder: (folderPath) => ipcRenderer.invoke('refresh-music-folder', folderPath),
+  // Markdown editor - notes folder selection and saving
+  getDefaultNotesFolder: () => ipcRenderer.invoke('get-default-notes-folder'),
+  selectNotesFolder: () => ipcRenderer.invoke('select-notes-folder'),
+  saveMarkdownFile: (folderPath, fileName, content) => ipcRenderer.invoke('save-markdown-file', folderPath, fileName, content)
 });
