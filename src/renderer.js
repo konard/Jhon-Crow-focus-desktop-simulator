@@ -64,6 +64,12 @@ let isLoadingState = false; // Flag to prevent saving during load
 let saveStateDebounceTimer = null; // Debounce timer for saveState
 let isSavingState = false; // Flag to prevent concurrent saves
 
+// Debug visualization state
+let debugState = {
+  showCollisionRadii: false,
+  collisionHelpers: []  // Array of THREE.Mesh objects for visualizing collisions
+};
+
 // Pixel art post-processing state
 let pixelRenderTarget, normalRenderTarget;
 let pixelatedMaterial, normalMaterial;
@@ -2368,6 +2374,11 @@ function addObjectToDesk(type, options = {}) {
   deskObjects.push(object);
   scene.add(object);
 
+  // Update debug visualization if active
+  if (debugState.showCollisionRadii) {
+    updateCollisionDebugHelpers();
+  }
+
   // Don't save state during loading to avoid overwriting loaded data
   if (!isLoadingState) {
     saveState();
@@ -2386,6 +2397,12 @@ function removeObject(object) {
     physicsState.angularVelocities.delete(object.userData.id);
     physicsState.tiltState.delete(object.userData.id);
     physicsState.tiltVelocities.delete(object.userData.id);
+
+    // Update debug visualization if active
+    if (debugState.showCollisionRadii) {
+      updateCollisionDebugHelpers();
+    }
+
     saveState();
   }
 }
@@ -2401,6 +2418,11 @@ function clearAllObjects() {
     physicsState.angularVelocities.delete(obj.userData.id);
     physicsState.tiltState.delete(obj.userData.id);
     physicsState.tiltVelocities.delete(obj.userData.id);
+  }
+
+  // Clear debug visualization helpers
+  if (debugState.showCollisionRadii) {
+    updateCollisionDebugHelpers();
   }
 
   // Close any open panels/modals
@@ -2831,6 +2853,136 @@ function initPhysicsForObject(object) {
 function getObjectPhysics(object) {
   const type = object.userData.type;
   return OBJECT_PHYSICS[type] || { weight: 1.0, stability: 0.5, height: 0.3, friction: 0.5 };
+}
+
+// ============================================================================
+// DEBUG VISUALIZATION - Show collision radii for debugging
+// ============================================================================
+
+// Create a semi-transparent cylinder to visualize collision radius
+function createCollisionHelper(object) {
+  const collisionRadius = getObjectBounds(object);
+  const stackingRadius = getStackingRadius(object);
+  const physics = getObjectPhysics(object);
+
+  // Create a group to hold both collision and stacking helpers
+  const helperGroup = new THREE.Group();
+  helperGroup.userData.isDebugHelper = true;
+  helperGroup.userData.targetObjectId = object.userData.id;
+
+  // Collision radius visualization (red/orange - used for push physics)
+  const collisionGeometry = new THREE.CylinderGeometry(collisionRadius, collisionRadius, physics.height, 16, 1, true);
+  const collisionMaterial = new THREE.MeshBasicMaterial({
+    color: 0xff6600,
+    transparent: true,
+    opacity: 0.3,
+    side: THREE.DoubleSide,
+    depthWrite: false
+  });
+  const collisionHelper = new THREE.Mesh(collisionGeometry, collisionMaterial);
+  collisionHelper.position.y = physics.height / 2;
+  helperGroup.add(collisionHelper);
+
+  // Add collision radius ring at the base
+  const collisionRing = new THREE.RingGeometry(collisionRadius - 0.01, collisionRadius + 0.01, 32);
+  const ringMaterial = new THREE.MeshBasicMaterial({
+    color: 0xff6600,
+    transparent: true,
+    opacity: 0.6,
+    side: THREE.DoubleSide,
+    depthWrite: false
+  });
+  const collisionRingMesh = new THREE.Mesh(collisionRing, ringMaterial);
+  collisionRingMesh.rotation.x = -Math.PI / 2;
+  collisionRingMesh.position.y = 0.01;
+  helperGroup.add(collisionRingMesh);
+
+  // Stacking radius visualization (blue/cyan - used for stacking detection)
+  const stackingGeometry = new THREE.CylinderGeometry(stackingRadius, stackingRadius, physics.height, 16, 1, true);
+  const stackingMaterial = new THREE.MeshBasicMaterial({
+    color: 0x00aaff,
+    transparent: true,
+    opacity: 0.15,
+    side: THREE.DoubleSide,
+    depthWrite: false
+  });
+  const stackingHelper = new THREE.Mesh(stackingGeometry, stackingMaterial);
+  stackingHelper.position.y = physics.height / 2;
+  helperGroup.add(stackingHelper);
+
+  // Add stacking radius ring at the base
+  const stackingRing = new THREE.RingGeometry(stackingRadius - 0.01, stackingRadius + 0.01, 32);
+  const stackingRingMaterial = new THREE.MeshBasicMaterial({
+    color: 0x00aaff,
+    transparent: true,
+    opacity: 0.4,
+    side: THREE.DoubleSide,
+    depthWrite: false
+  });
+  const stackingRingMesh = new THREE.Mesh(stackingRing, stackingRingMaterial);
+  stackingRingMesh.rotation.x = -Math.PI / 2;
+  stackingRingMesh.position.y = 0.02;
+  helperGroup.add(stackingRingMesh);
+
+  // Position helper at the object's position
+  helperGroup.position.copy(object.position);
+
+  return helperGroup;
+}
+
+// Update all debug collision helpers
+function updateCollisionDebugHelpers() {
+  // Remove old helpers
+  debugState.collisionHelpers.forEach(helper => {
+    scene.remove(helper);
+    helper.traverse(child => {
+      if (child.geometry) child.geometry.dispose();
+      if (child.material) child.material.dispose();
+    });
+  });
+  debugState.collisionHelpers = [];
+
+  // If debug mode is off, we're done
+  if (!debugState.showCollisionRadii) return;
+
+  // Create helpers for all desk objects
+  deskObjects.forEach(object => {
+    if (object.userData.isFallen) return;
+    if (object.userData.isExamining || object.userData.isReturning) return;
+
+    const helper = createCollisionHelper(object);
+    scene.add(helper);
+    debugState.collisionHelpers.push(helper);
+  });
+}
+
+// Update positions of debug helpers each frame
+function updateCollisionDebugPositions() {
+  if (!debugState.showCollisionRadii) return;
+
+  debugState.collisionHelpers.forEach(helper => {
+    const targetId = helper.userData.targetObjectId;
+    const targetObject = deskObjects.find(obj => obj.userData.id === targetId);
+    if (targetObject) {
+      helper.position.copy(targetObject.position);
+    }
+  });
+}
+
+// Toggle collision debug visualization
+function toggleCollisionDebug() {
+  debugState.showCollisionRadii = !debugState.showCollisionRadii;
+
+  // Update button text
+  const btn = document.getElementById('toggle-collision-debug-btn');
+  if (btn) {
+    btn.textContent = debugState.showCollisionRadii ? '🔳 Hide Collision Radii' : '🔲 Show Collision Radii';
+    btn.style.background = debugState.showCollisionRadii ? 'rgba(34, 197, 94, 0.2)' : 'rgba(79, 70, 229, 0.2)';
+    btn.style.borderColor = debugState.showCollisionRadii ? 'rgba(34, 197, 94, 0.4)' : 'rgba(79, 70, 229, 0.4)';
+    btn.style.color = debugState.showCollisionRadii ? '#4ade80' : '#818cf8';
+  }
+
+  updateCollisionDebugHelpers();
 }
 
 // ============================================================================
@@ -3924,6 +4076,14 @@ function setupEventListeners() {
     }
   });
 
+  // Debug collision visualization toggle
+  const toggleCollisionBtn = document.getElementById('toggle-collision-debug-btn');
+  if (toggleCollisionBtn) {
+    toggleCollisionBtn.addEventListener('click', () => {
+      toggleCollisionDebug();
+    });
+  }
+
   // Color swatches
   document.querySelectorAll('#main-colors .color-swatch').forEach(swatch => {
     swatch.addEventListener('click', () => {
@@ -4141,9 +4301,22 @@ function onMouseDown(event) {
       isDragging = true;
       dragLayerOffset = 0;
 
-      // Lift the object
-      object.userData.isLifted = true;
-      object.userData.targetY = object.userData.originalY + CONFIG.physics.liftHeight;
+      // Check if there are objects stacked on top of this one
+      const objectsOnTop = findObjectsOnTop(object);
+      const hasObjectsOnTop = objectsOnTop.length > 0;
+
+      // If there are objects on top, don't lift - drag horizontally to pull out from under
+      // This allows the user to "pull out" an object from a stack without lifting the whole stack
+      if (hasObjectsOnTop) {
+        object.userData.isLifted = false;
+        object.userData.isPullingOut = true; // Mark as pulling out from under a stack
+        // Keep the current Y position, don't lift
+      } else {
+        // No objects on top - lift normally
+        object.userData.isLifted = true;
+        object.userData.isPullingOut = false;
+        object.userData.targetY = object.userData.originalY + CONFIG.physics.liftHeight;
+      }
 
       document.getElementById('customization-panel').classList.remove('open');
       return;
@@ -4296,9 +4469,22 @@ function onMouseDown(event) {
         resetFallenObject(object);
       }
 
-      // Lift the object
-      object.userData.isLifted = true;
-      object.userData.targetY = object.userData.originalY + CONFIG.physics.liftHeight;
+      // Check if there are objects stacked on top of this one
+      const objectsOnTop = findObjectsOnTop(object);
+      const hasObjectsOnTop = objectsOnTop.length > 0;
+
+      // If there are objects on top, don't lift - drag horizontally to pull out from under
+      // This allows the user to "pull out" an object from a stack without lifting the whole stack
+      if (hasObjectsOnTop) {
+        object.userData.isLifted = false;
+        object.userData.isPullingOut = true; // Mark as pulling out from under a stack
+        // Keep the current Y position, don't lift
+      } else {
+        // No objects on top - lift normally
+        object.userData.isLifted = true;
+        object.userData.isPullingOut = false;
+        object.userData.targetY = object.userData.originalY + CONFIG.physics.liftHeight;
+      }
 
       // Close customization panel when starting drag
       document.getElementById('customization-panel').classList.remove('open');
@@ -4493,13 +4679,24 @@ function onMouseMove(event) {
 
     // Move objects stacked on top using friction physics
     // They get pulled along due to friction, but may slip at high speeds
-    moveStackedObjects(selectedObject, deltaX, deltaZ, dragSpeed);
+    // Only move stacked objects if we're lifting (not pulling out from under)
+    if (!selectedObject.userData.isPullingOut) {
+      moveStackedObjects(selectedObject, deltaX, deltaZ, dragSpeed);
+    }
 
-    // Dynamically adjust Y position to stay above objects while dragging
-    // This allows the dragged object to "ride" on top of static objects
-    const dragStackY = calculateDragStackingY(selectedObject, newX, newZ);
-    const liftedY = dragStackY + CONFIG.physics.liftHeight;
-    selectedObject.userData.targetY = liftedY;
+    // Dynamically adjust Y position while dragging
+    if (selectedObject.userData.isPullingOut) {
+      // When pulling out from under a stack, stay at current Y level
+      // Don't lift - this allows sliding out horizontally from under objects
+      // The Y position stays at the original position on the desk surface
+      selectedObject.userData.targetY = selectedObject.userData.originalY;
+    } else {
+      // Normal dragging - ride on top of other objects
+      // This allows the dragged object to "ride" on top of static objects
+      const dragStackY = calculateDragStackingY(selectedObject, newX, newZ);
+      const liftedY = dragStackY + CONFIG.physics.liftHeight;
+      selectedObject.userData.targetY = liftedY;
+    }
   }
 
   // Update tooltip
@@ -4581,6 +4778,7 @@ function onMouseUp(event) {
     if (insertionResult.inserted) {
       // Pen was inserted into a holder - animate to position inside holder
       selectedObject.userData.isLifted = false;
+      selectedObject.userData.isPullingOut = false; // Clear pulling out state
       selectedObject.userData.inHolder = insertionResult.holder;
       selectedObject.userData.holderSlot = insertionResult.slot;
       selectedObject.userData.originalY = insertionResult.y;
@@ -4606,6 +4804,7 @@ function onMouseUp(event) {
 
       // Drop the object
       selectedObject.userData.isLifted = false;
+      selectedObject.userData.isPullingOut = false; // Clear pulling out state
       selectedObject.userData.targetY = dropY;
 
       // Clear holder reference if pen was removed from holder
@@ -4776,6 +4975,14 @@ function calculateDragStackingY(draggedObject, posX, posZ) {
     // Find the highest object
     const highestTop = overlappingObjects.reduce((max, o) => Math.max(max, o.topY), 0);
 
+    // Safety check: don't stack on objects that are themselves lifted/dragged
+    // or objects that are unreasonably high (likely a bug)
+    const MAX_REASONABLE_HEIGHT = baseY + 3.0; // 3 units above desk is plenty
+    if (highestTop > MAX_REASONABLE_HEIGHT) {
+      // Ignore unreasonably high objects - they're likely stuck/bugged
+      return stackY;
+    }
+
     if (dragLayerOffset > 0) {
       // User scrolled up - definitely stack on top with extra height
       stackY = Math.max(stackY, highestTop + draggedBaseOffset + dragLayerOffset * 0.02);
@@ -4785,6 +4992,10 @@ function calculateDragStackingY(draggedObject, posX, posZ) {
       stackY = Math.max(stackY, highestTop + draggedBaseOffset * objectScale);
     }
   }
+
+  // Final safety clamp to prevent objects from flying too high
+  const MAX_STACK_HEIGHT = baseY + 2.5;
+  stackY = Math.min(stackY, MAX_STACK_HEIGHT);
 
   return stackY;
 }
@@ -4840,6 +5051,13 @@ function calculateStackingY(droppedObject) {
     // Find the highest overlapping object
     const highestTop = overlappingObjects.reduce((max, o) => Math.max(max, o.topY), 0);
 
+    // Safety check: don't stack on objects that are unreasonably high (likely a bug)
+    const MAX_REASONABLE_HEIGHT = baseY + 3.0; // 3 units above desk is plenty
+    if (highestTop > MAX_REASONABLE_HEIGHT) {
+      // Ignore unreasonably high objects - they're likely stuck/bugged
+      return stackY;
+    }
+
     // Check if the dropped object was above desk level (lifted/stacking)
     const wasLifted = droppedObject.position.y > baseY + droppedBaseOffset * objectScale + 0.05;
 
@@ -4849,6 +5067,10 @@ function calculateStackingY(droppedObject) {
     }
     // If not lifted and not scrolled, use desk level (slide under)
   }
+
+  // Final safety clamp to prevent objects from flying too high
+  const MAX_STACK_HEIGHT = baseY + 2.5;
+  stackY = Math.min(stackY, MAX_STACK_HEIGHT);
 
   return stackY;
 }
@@ -11771,6 +11993,9 @@ function animate() {
 
   // Update physics
   updatePhysics();
+
+  // Update debug collision visualization positions
+  updateCollisionDebugPositions();
 
   // Update object positions (lift/drop animation)
   deskObjects.forEach(obj => {
