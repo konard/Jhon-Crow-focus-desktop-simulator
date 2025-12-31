@@ -672,6 +672,23 @@ let bookReadingState = {
   bookWorldPos: null
 };
 
+// Cassette player mode state (similar to book reading mode)
+let playerModeState = {
+  active: false,
+  player: null,
+  originalCameraPos: null,
+  originalCameraYaw: null,
+  originalCameraPitch: null,
+  middleMouseDownTime: 0,
+  holdTimeout: null,
+  // Zoom and pan controls for player mode
+  zoomDistance: 0.25, // Distance from player (closer than book for button interaction)
+  panOffsetX: 0,      // Pan offset parallel to player
+  panOffsetZ: 0,      // Pan offset forward/backward
+  // Cached player world position to avoid recalculating on every keypress
+  playerWorldPos: null
+};
+
 // Double-click tracking for laptop desktop
 let laptopDoubleClickState = {
   lastClickTime: 0,
@@ -5833,6 +5850,41 @@ function setupEventListeners() {
         return;
       }
 
+      // In player mode, WASD is used for panning the view
+      if (playerModeState.active && playerModeState.player && playerModeState.playerWorldPos) {
+        e.preventDefault();
+        const panSpeed = 0.03; // Smaller pan speed for player (it's smaller object)
+        // Use cached player position to avoid recalculating on every keypress
+        const playerWorldPos = playerModeState.playerWorldPos;
+        const viewDistance = playerModeState.zoomDistance;
+
+        // W/S for forward/backward panning, A/D for left/right panning
+        if (wasdKey === 'KeyW') playerModeState.panOffsetZ -= panSpeed;
+        if (wasdKey === 'KeyS') playerModeState.panOffsetZ += panSpeed;
+        if (wasdKey === 'KeyA') playerModeState.panOffsetX -= panSpeed;
+        if (wasdKey === 'KeyD') playerModeState.panOffsetX += panSpeed;
+
+        // Clamp pan offsets to reasonable limits
+        playerModeState.panOffsetX = Math.max(-0.5, Math.min(0.5, playerModeState.panOffsetX));
+        playerModeState.panOffsetZ = Math.max(-0.5, Math.min(0.5, playerModeState.panOffsetZ));
+
+        // Update camera position
+        camera.position.set(
+          playerWorldPos.x + playerModeState.panOffsetX,
+          playerWorldPos.y + viewDistance * 0.8,
+          playerWorldPos.z + viewDistance * 0.6 + playerModeState.panOffsetZ
+        );
+
+        // Update camera pitch to look at player
+        const lookAtY = playerWorldPos.y + 0.02;
+        const verticalDist = camera.position.y - lookAtY;
+        const horizontalDist = Math.abs(camera.position.z - playerWorldPos.z);
+        cameraLookState.pitch = -Math.atan2(verticalDist, horizontalDist);
+        updateCameraLook();
+
+        return;
+      }
+
       const moveSpeed = 0.1;
 
       // Normal mode and inspection mode - camera movement
@@ -6249,6 +6301,15 @@ function onMouseDown(event) {
               bookReadingState.holdTimeout = null; // Mark as already handled
             }
           }, 300);
+        } else if (object.userData.type === 'cassette-player') {
+          // For cassette player, enter player mode after holding for 300ms
+          playerModeState.middleMouseDownTime = Date.now();
+          playerModeState.player = object;
+          playerModeState.holdTimeout = setTimeout(() => {
+            // Enter player mode after holding for 300ms
+            enterPlayerMode(object);
+            playerModeState.holdTimeout = null; // Mark as already handled
+          }, 300);
         } else {
           // Perform quick toggle interaction based on object type
           // Pass the clicked mesh so we can detect sub-component clicks (like power button)
@@ -6272,6 +6333,12 @@ function onMouseDown(event) {
   // If in book reading mode, LMB click exits reading mode
   if (bookReadingState.active) {
     exitBookReadingMode();
+    return;
+  }
+
+  // If in player mode, LMB click exits player mode
+  if (playerModeState.active) {
+    exitPlayerMode();
     return;
   }
 
@@ -6769,6 +6836,11 @@ function onMouseUp(event) {
       return;
     }
 
+    // If in player mode, don't exit on release - stay in mode until user clicks elsewhere
+    if (playerModeState.active) {
+      return;
+    }
+
     // If user releases before the hold timeout fired, it's a quick click - toggle book/magazine
     if (bookReadingState.holdTimeout) {
       clearTimeout(bookReadingState.holdTimeout);
@@ -6782,6 +6854,18 @@ function onMouseUp(event) {
           toggleBookOpen(bookReadingState.book);
         }
         bookReadingState.book = null;
+      }
+    }
+
+    // If user releases before the player mode hold timeout fired, cancel it and perform quick interaction
+    if (playerModeState.holdTimeout) {
+      clearTimeout(playerModeState.holdTimeout);
+      playerModeState.holdTimeout = null;
+
+      // Quick click on cassette player - perform quick interaction
+      if (playerModeState.player) {
+        performQuickInteraction(playerModeState.player, null);
+        playerModeState.player = null;
       }
     }
     return;
@@ -7165,6 +7249,35 @@ function onMouseWheel(event) {
     return;
   }
 
+  // If in player mode: scroll zooms in/out on the player (no rotation)
+  if (playerModeState.active && playerModeState.player && playerModeState.playerWorldPos) {
+    event.preventDefault();
+
+    // Zoom: scroll up = zoom in (closer), scroll down = zoom out (further)
+    const zoomDelta = event.deltaY > 0 ? 0.05 : -0.05;
+    const playerScale = playerModeState.player.scale.x || 1;
+    playerModeState.zoomDistance = Math.max(0.1 * playerScale, Math.min(0.8 * playerScale, playerModeState.zoomDistance + zoomDelta));
+
+    // Update camera position using cached player position
+    const playerWorldPos = playerModeState.playerWorldPos;
+    const viewDistance = playerModeState.zoomDistance;
+
+    camera.position.set(
+      playerWorldPos.x + playerModeState.panOffsetX,
+      playerWorldPos.y + viewDistance * 0.8,
+      playerWorldPos.z + viewDistance * 0.6 + playerModeState.panOffsetZ
+    );
+
+    // Update camera pitch to look at player
+    const lookAtY = playerWorldPos.y + 0.02;
+    const verticalDist = camera.position.y - lookAtY;
+    const horizontalDist = Math.abs(camera.position.z - playerWorldPos.z);
+    cameraLookState.pitch = -Math.atan2(verticalDist, horizontalDist);
+    updateCameraLook();
+
+    return;
+  }
+
   // If in examine mode: scroll rotates object, LMB held + scroll UP exits, Shift+scroll scales
   // Check if modal is open - Shift+scroll for scaling should work even with modal open
   const modal = document.getElementById('interaction-modal');
@@ -7180,9 +7293,9 @@ function onMouseWheel(event) {
       // Scale object (preserving proportions) with Shift+scroll
       const scaleDelta = event.deltaY > 0 ? 0.95 : 1.05;
       const minScale = 0.3;
-      // Books and magazines can be scaled larger for reading (magazines can go up to 10.0)
+      // Books, magazines and cassette player can be scaled larger for reading/interaction
       let maxScale = 3.0;
-      if (object.userData.type === 'magazine') {
+      if (object.userData.type === 'magazine' || object.userData.type === 'cassette-player') {
         maxScale = 10.0;
       } else if (object.userData.type === 'books') {
         maxScale = 5.0;
@@ -7267,9 +7380,9 @@ function onMouseWheel(event) {
         // Scale object (preserving proportions)
         const scaleDelta = event.deltaY > 0 ? 0.95 : 1.05;
         const minScale = 0.3;
-        // Books and magazines can be scaled larger for reading (magazines can go up to 10.0)
+        // Books, magazines and cassette player can be scaled larger for reading/interaction
         let maxScale = 3.0;
-        if (object.userData.type === 'magazine') {
+        if (object.userData.type === 'magazine' || object.userData.type === 'cassette-player') {
           maxScale = 10.0;
         } else if (object.userData.type === 'books') {
           maxScale = 5.0;
@@ -13572,6 +13685,111 @@ function exitBookReadingMode() {
 
   bookReadingState.book = null;
   bookReadingState.bookWorldPos = null;
+}
+
+// ============================================================================
+// CASSETTE PLAYER MODE (similar to book reading mode for convenient button interaction)
+// ============================================================================
+
+function enterPlayerMode(player) {
+  if (playerModeState.active) return;
+
+  playerModeState.active = true;
+  playerModeState.player = player;
+
+  // Reset zoom and pan offsets
+  playerModeState.zoomDistance = 0.25;
+  playerModeState.panOffsetX = 0;
+  playerModeState.panOffsetZ = 0;
+
+  // Store original camera state
+  playerModeState.originalCameraPos = camera.position.clone();
+  playerModeState.originalCameraYaw = cameraLookState.yaw;
+  playerModeState.originalCameraPitch = cameraLookState.pitch;
+
+  // Get player position in world coordinates and cache it
+  const playerWorldPos = new THREE.Vector3();
+  player.getWorldPosition(playerWorldPos);
+  playerModeState.playerWorldPos = playerWorldPos;
+
+  // Get the player's scale to adjust viewing distance
+  const playerScale = player.scale.x || 1;
+
+  // Calculate target camera position - closer to the player for button interaction
+  // Position camera at an angle to see both buttons on top and the screen
+  const viewDistance = playerModeState.zoomDistance * playerScale;
+  const targetCameraPos = new THREE.Vector3(
+    playerWorldPos.x,
+    playerWorldPos.y + viewDistance * 0.8, // Above the player
+    playerWorldPos.z + viewDistance * 0.6  // Slightly in front for angled view
+  );
+
+  // Animate camera to player viewing position
+  const startPos = camera.position.clone();
+  const startTime = Date.now();
+  const duration = 400;
+
+  function animateToPlayer() {
+    const elapsed = Date.now() - startTime;
+    const progress = Math.min(elapsed / duration, 1);
+    const eased = 1 - Math.pow(1 - progress, 3); // Ease out cubic
+
+    camera.position.lerpVectors(startPos, targetCameraPos, eased);
+
+    // Point camera down at player (similar to book reading mode)
+    const lookAtY = playerWorldPos.y + 0.02; // Look at center of player
+    const verticalDist = camera.position.y - lookAtY;
+    const horizontalDist = Math.abs(camera.position.z - playerWorldPos.z);
+    const targetPitch = -Math.atan2(verticalDist, horizontalDist);
+    cameraLookState.pitch = playerModeState.originalCameraPitch + (targetPitch - playerModeState.originalCameraPitch) * eased;
+    updateCameraLook();
+
+    if (progress < 1) {
+      requestAnimationFrame(animateToPlayer);
+    }
+  }
+
+  animateToPlayer();
+}
+
+function exitPlayerMode() {
+  if (!playerModeState.active) return;
+
+  playerModeState.active = false;
+
+  // Animate camera back to original position
+  if (playerModeState.originalCameraPos) {
+    const startPos = camera.position.clone();
+    const targetPos = playerModeState.originalCameraPos;
+    const startPitch = cameraLookState.pitch;
+    const targetPitch = playerModeState.originalCameraPitch;
+    const startYaw = cameraLookState.yaw;
+    const targetYaw = playerModeState.originalCameraYaw;
+    const startTime = Date.now();
+    const duration = 300;
+
+    function animateFromPlayer() {
+      const elapsed = Date.now() - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+      const eased = 1 - Math.pow(1 - progress, 3);
+
+      camera.position.lerpVectors(startPos, targetPos, eased);
+
+      // Restore camera look direction
+      cameraLookState.pitch = startPitch + (targetPitch - startPitch) * eased;
+      cameraLookState.yaw = startYaw + (targetYaw - startYaw) * eased;
+      updateCameraLook();
+
+      if (progress < 1) {
+        requestAnimationFrame(animateFromPlayer);
+      }
+    }
+
+    animateFromPlayer();
+  }
+
+  playerModeState.player = null;
+  playerModeState.playerWorldPos = null;
 }
 
 // Create laptop desktop texture with Obsidian icon
