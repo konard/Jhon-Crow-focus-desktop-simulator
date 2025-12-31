@@ -1167,7 +1167,8 @@ const PRESET_CREATORS = {
   hourglass: createHourglass,
   paper: createPaper,
   metronome: createMetronome,
-  'cassette-player': createCassettePlayer
+  'cassette-player': createCassettePlayer,
+  'big-cassette-player': createBigCassettePlayer
 };
 
 // ============================================================================
@@ -1225,7 +1226,8 @@ const PALETTE_CATEGORIES = {
     icon: '🎵',
     variants: [
       { id: 'metronome', name: 'Metronome', icon: '🎵' },
-      { id: 'cassette-player', name: 'Cassette Player', icon: '📼' }
+      { id: 'cassette-player', name: 'Mini Player', icon: '📼' },
+      { id: 'big-cassette-player', name: 'Big Player', icon: '📻' }
     ],
     activeIndex: 0
   },
@@ -3332,6 +3334,352 @@ function createCassettePlayer(options = {}) {
   return group;
 }
 
+// ============================================================================
+// BIG CASSETTE PLAYER - Classic large portable cassette player design
+// ============================================================================
+// This is the original "Big player" design - a larger, more boxy cassette player
+// similar to classic portable players from the 80s/90s
+
+function createBigCassettePlayer(options = {}) {
+  const group = new THREE.Group();
+  group.userData = {
+    type: 'big-cassette-player',
+    name: 'Big Cassette Player',
+    interactive: false, // Uses button clicks, not modal interaction
+    // Playback state
+    isPlaying: false,
+    currentTrackIndex: 0,
+    currentTime: options.currentTime || 0, // Track position for persistence
+    // Music folder
+    musicFolderPath: options.musicFolderPath || null,
+    audioFiles: options.audioFiles || [], // Array of {name, fullName, path}
+    // Audio effects settings
+    tapeHissLevel: options.tapeHissLevel !== undefined ? options.tapeHissLevel : 0.3, // 0-1
+    wowFlutterLevel: options.wowFlutterLevel !== undefined ? options.wowFlutterLevel : 0.5, // 0-1
+    saturationLevel: options.saturationLevel !== undefined ? options.saturationLevel : 0.4, // 0-1
+    lowCutoff: options.lowCutoff !== undefined ? options.lowCutoff : 80, // Hz
+    highCutoff: options.highCutoff !== undefined ? options.highCutoff : 12000, // Hz
+    volume: options.volume !== undefined ? options.volume : 0.7, // 0-1
+    // Cassette animation state
+    reelRotation: 0,
+    // Colors - Classic dark blue-gray body with silver accents
+    mainColor: options.mainColor || '#2c3e50', // Dark blue-gray body
+    accentColor: options.accentColor || '#c0c0c0' // Silver accents
+  };
+
+  const bodyMaterial = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(group.userData.mainColor),
+    roughness: 0.6,
+    metalness: 0.2
+  });
+
+  const metalMaterial = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(group.userData.accentColor),
+    roughness: 0.3,
+    metalness: 0.7
+  });
+
+  const blackMaterial = new THREE.MeshStandardMaterial({
+    color: 0x1a1a1a,
+    roughness: 0.8,
+    metalness: 0.1
+  });
+
+  // Main body - larger rectangular portable player (classic boombox-style)
+  const bodyWidth = 0.6;
+  const bodyHeight = 0.15;
+  const bodyDepth = 0.4;
+
+  const bodyGeometry = new THREE.BoxGeometry(bodyWidth, bodyHeight, bodyDepth);
+  const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+  body.position.y = bodyHeight / 2;
+  body.castShadow = true;
+  group.add(body);
+
+  // Front panel (slightly recessed area for cassette window)
+  const frontPanelGeometry = new THREE.BoxGeometry(bodyWidth * 0.85, bodyHeight * 0.6, 0.02);
+  const frontPanelMaterial = new THREE.MeshStandardMaterial({
+    color: 0x1a1a1a,
+    roughness: 0.9,
+    metalness: 0.0
+  });
+  const frontPanel = new THREE.Mesh(frontPanelGeometry, frontPanelMaterial);
+  frontPanel.position.set(0, bodyHeight / 2, bodyDepth / 2 + 0.01);
+  group.add(frontPanel);
+
+  // Cassette window (transparent area showing reels)
+  const windowGeometry = new THREE.BoxGeometry(bodyWidth * 0.5, bodyHeight * 0.35, 0.01);
+  const windowMaterial = new THREE.MeshStandardMaterial({
+    color: 0x87ceeb,
+    roughness: 0.1,
+    metalness: 0.0,
+    transparent: true,
+    opacity: 0.3
+  });
+  const cassetteWindow = new THREE.Mesh(windowGeometry, windowMaterial);
+  cassetteWindow.position.set(0, bodyHeight / 2 + 0.02, bodyDepth / 2 + 0.015);
+  group.add(cassetteWindow);
+
+  // Cassette reels (visible through window)
+  const reelGroup = new THREE.Group();
+  reelGroup.name = 'reels';
+
+  const reelGeometry = new THREE.CylinderGeometry(0.04, 0.04, 0.02, 16);
+  const reelMaterial = new THREE.MeshStandardMaterial({
+    color: 0x2d2d2d,
+    roughness: 0.5,
+    metalness: 0.3
+  });
+
+  // Left reel (supply)
+  const leftReelGroup = new THREE.Group();
+  leftReelGroup.name = 'leftReel';
+  leftReelGroup.position.set(-0.08, bodyHeight / 2 + 0.02, bodyDepth / 2 + 0.02);
+  const leftReelMesh = new THREE.Mesh(reelGeometry, reelMaterial);
+  leftReelMesh.rotation.x = Math.PI / 2;
+  leftReelGroup.add(leftReelMesh);
+  reelGroup.add(leftReelGroup);
+
+  // Right reel (take-up)
+  const rightReelGroup = new THREE.Group();
+  rightReelGroup.name = 'rightReel';
+  rightReelGroup.position.set(0.08, bodyHeight / 2 + 0.02, bodyDepth / 2 + 0.02);
+  const rightReelMesh = new THREE.Mesh(reelGeometry, reelMaterial);
+  rightReelMesh.rotation.x = Math.PI / 2;
+  rightReelGroup.add(rightReelMesh);
+  reelGroup.add(rightReelGroup);
+
+  // Reel center hubs
+  const hubGeometry = new THREE.CylinderGeometry(0.015, 0.015, 0.025, 8);
+  const hubMaterial = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    roughness: 0.3
+  });
+
+  const leftHub = new THREE.Mesh(hubGeometry, hubMaterial);
+  leftHub.rotation.x = Math.PI / 2;
+  leftHub.position.set(-0.08, bodyHeight / 2 + 0.02, bodyDepth / 2 + 0.025);
+  reelGroup.add(leftHub);
+
+  const rightHub = new THREE.Mesh(hubGeometry, hubMaterial);
+  rightHub.rotation.x = Math.PI / 2;
+  rightHub.position.set(0.08, bodyHeight / 2 + 0.02, bodyDepth / 2 + 0.025);
+  reelGroup.add(rightHub);
+
+  group.add(reelGroup);
+
+  // Display screen for track name (LCD-style)
+  const screenWidth = bodyWidth * 0.7;
+  const screenHeight = 0.035;
+  const screenBackGeometry = new THREE.PlaneGeometry(screenWidth, screenHeight);
+  const screenBackMaterial = new THREE.MeshStandardMaterial({
+    color: 0x2d4a3e, // Dark green LCD background
+    roughness: 0.8,
+    metalness: 0.0
+  });
+  const screenBack = new THREE.Mesh(screenBackGeometry, screenBackMaterial);
+  screenBack.position.set(0, bodyHeight / 2 - 0.035, bodyDepth / 2 + 0.011);
+  screenBack.name = 'screen';
+  group.add(screenBack);
+
+  // Screen text will be created dynamically when track changes
+  // Create a canvas texture for the screen
+  const screenCanvas = document.createElement('canvas');
+  screenCanvas.width = 256;
+  screenCanvas.height = 32;
+  const screenCtx = screenCanvas.getContext('2d');
+
+  // Initial screen display with matching font style to clock
+  screenCtx.fillStyle = '#2d4a3e';
+  screenCtx.fillRect(0, 0, 256, 32);
+  screenCtx.fillStyle = '#7cfc7c'; // Green LCD text
+  screenCtx.font = '300 14px "Segoe UI", Arial, sans-serif';
+  screenCtx.letterSpacing = '2px';
+  screenCtx.textAlign = 'center';
+  screenCtx.textBaseline = 'middle';
+  screenCtx.fillText('NO FOLDER', 128, 16);
+
+  const screenTexture = new THREE.CanvasTexture(screenCanvas);
+  screenTexture.needsUpdate = true;
+
+  const screenDisplayMaterial = new THREE.MeshBasicMaterial({
+    map: screenTexture,
+    transparent: true
+  });
+  const screenDisplay = new THREE.Mesh(
+    new THREE.PlaneGeometry(screenWidth * 0.95, screenHeight * 0.85),
+    screenDisplayMaterial
+  );
+  screenDisplay.position.set(0, bodyHeight / 2 - 0.035, bodyDepth / 2 + 0.012);
+  screenDisplay.name = 'screenDisplay';
+  group.add(screenDisplay);
+
+  // Store canvas reference for updates
+  group.userData.screenCanvas = screenCanvas;
+  group.userData.screenCtx = screenCtx;
+  group.userData.screenTexture = screenTexture;
+
+  // Control buttons on the front (below the screen)
+  const buttonWidth = 0.06;
+  const buttonHeight = 0.025;
+  const buttonDepth = 0.015;
+  const buttonY = bodyHeight / 2 - 0.065;
+  const buttonZ = bodyDepth / 2 + 0.005;
+  const buttonSpacing = 0.08;
+
+  const buttonGeometry = new THREE.BoxGeometry(buttonWidth, buttonHeight, buttonDepth);
+
+  // Button materials with different colors
+  const buttonMaterials = {
+    prev: new THREE.MeshStandardMaterial({ color: 0x4a4a4a, roughness: 0.6, metalness: 0.3 }),
+    play: new THREE.MeshStandardMaterial({ color: 0x2ecc71, roughness: 0.6, metalness: 0.3 }),
+    stop: new THREE.MeshStandardMaterial({ color: 0xe74c3c, roughness: 0.6, metalness: 0.3 }),
+    next: new THREE.MeshStandardMaterial({ color: 0x4a4a4a, roughness: 0.6, metalness: 0.3 })
+  };
+
+  // Create buttons group
+  const buttonsGroup = new THREE.Group();
+  buttonsGroup.name = 'buttons';
+
+  // Play/Pause button (▶/❚❚) - first in the order for navigation
+  const playButton = new THREE.Mesh(buttonGeometry, buttonMaterials.play);
+  playButton.position.set(-buttonSpacing * 0.5, buttonY, buttonZ);
+  playButton.name = 'playButton';
+  playButton.userData.buttonType = 'play';
+  buttonsGroup.add(playButton);
+
+  // Stop button (■)
+  const stopButton = new THREE.Mesh(buttonGeometry, buttonMaterials.stop);
+  stopButton.position.set(buttonSpacing * 0.5, buttonY, buttonZ);
+  stopButton.name = 'stopButton';
+  stopButton.userData.buttonType = 'stop';
+  buttonsGroup.add(stopButton);
+
+  // Previous track button (|◀)
+  const prevButton = new THREE.Mesh(buttonGeometry, buttonMaterials.prev);
+  prevButton.position.set(-buttonSpacing * 1.5, buttonY, buttonZ);
+  prevButton.name = 'prevButton';
+  prevButton.userData.buttonType = 'prev';
+  buttonsGroup.add(prevButton);
+
+  // Next track button (▶|)
+  const nextButton = new THREE.Mesh(buttonGeometry, buttonMaterials.next);
+  nextButton.position.set(buttonSpacing * 1.5, buttonY, buttonZ);
+  nextButton.name = 'nextButton';
+  nextButton.userData.buttonType = 'next';
+  buttonsGroup.add(nextButton);
+
+  // Add button symbols using small geometries
+  const symbolMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5 });
+
+  // Play symbol (▶)
+  const playSymbol = new THREE.Mesh(
+    new THREE.ConeGeometry(0.01, 0.018, 3),
+    symbolMaterial
+  );
+  playSymbol.rotation.z = -Math.PI / 2;
+  playSymbol.position.set(-buttonSpacing * 0.5, buttonY, buttonZ + buttonDepth / 2 + 0.002);
+  playSymbol.name = 'playSymbol';
+  playSymbol.userData.buttonType = 'play';
+  buttonsGroup.add(playSymbol);
+
+  // Stop symbol (■)
+  const stopSymbol = new THREE.Mesh(
+    new THREE.BoxGeometry(0.012, 0.012, 0.002),
+    symbolMaterial
+  );
+  stopSymbol.position.set(buttonSpacing * 0.5, buttonY, buttonZ + buttonDepth / 2 + 0.002);
+  stopSymbol.userData.buttonType = 'stop';
+  buttonsGroup.add(stopSymbol);
+
+  // Prev symbol (◀|)
+  const prevSymbol1 = new THREE.Mesh(
+    new THREE.ConeGeometry(0.008, 0.015, 3),
+    symbolMaterial
+  );
+  prevSymbol1.rotation.z = Math.PI / 2;
+  prevSymbol1.position.set(-buttonSpacing * 1.5 + 0.005, buttonY, buttonZ + buttonDepth / 2 + 0.002);
+  prevSymbol1.userData.buttonType = 'prev';
+  buttonsGroup.add(prevSymbol1);
+
+  const prevSymbol2 = new THREE.Mesh(
+    new THREE.BoxGeometry(0.003, 0.015, 0.002),
+    symbolMaterial
+  );
+  prevSymbol2.position.set(-buttonSpacing * 1.5 - 0.015, buttonY, buttonZ + buttonDepth / 2 + 0.002);
+  prevSymbol2.userData.buttonType = 'prev';
+  buttonsGroup.add(prevSymbol2);
+
+  // Next symbol (|▶)
+  const nextSymbol1 = new THREE.Mesh(
+    new THREE.BoxGeometry(0.003, 0.015, 0.002),
+    symbolMaterial
+  );
+  nextSymbol1.position.set(buttonSpacing * 1.5 - 0.015, buttonY, buttonZ + buttonDepth / 2 + 0.002);
+  nextSymbol1.userData.buttonType = 'next';
+  buttonsGroup.add(nextSymbol1);
+
+  const nextSymbol2 = new THREE.Mesh(
+    new THREE.ConeGeometry(0.008, 0.015, 3),
+    symbolMaterial
+  );
+  nextSymbol2.rotation.z = -Math.PI / 2;
+  nextSymbol2.position.set(buttonSpacing * 1.5 + 0.005, buttonY, buttonZ + buttonDepth / 2 + 0.002);
+  nextSymbol2.userData.buttonType = 'next';
+  buttonsGroup.add(nextSymbol2);
+
+  group.add(buttonsGroup);
+
+  // Volume wheel on the side
+  const volumeWheelGeometry = new THREE.CylinderGeometry(0.02, 0.02, 0.015, 16);
+  const volumeWheel = new THREE.Mesh(volumeWheelGeometry, metalMaterial);
+  volumeWheel.rotation.z = Math.PI / 2;
+  volumeWheel.position.set(bodyWidth / 2 + 0.008, bodyHeight / 2, 0);
+  volumeWheel.name = 'volumeWheel';
+  group.add(volumeWheel);
+
+  // Speaker grill on the side (small holes pattern)
+  const grillGroup = new THREE.Group();
+  grillGroup.name = 'speakerGrill';
+
+  const holeGeometry = new THREE.CircleGeometry(0.005, 8);
+  const holeMaterial = new THREE.MeshStandardMaterial({
+    color: 0x1a1a1a,
+    roughness: 1.0
+  });
+
+  for (let row = 0; row < 3; row++) {
+    for (let col = 0; col < 5; col++) {
+      const hole = new THREE.Mesh(holeGeometry, holeMaterial);
+      hole.position.set(
+        -bodyWidth / 2 - 0.001,
+        bodyHeight / 2 - 0.03 + row * 0.02,
+        -0.06 + col * 0.03
+      );
+      hole.rotation.y = -Math.PI / 2;
+      grillGroup.add(hole);
+    }
+  }
+  group.add(grillGroup);
+
+  // Headphone jack
+  const jackGeometry = new THREE.CylinderGeometry(0.008, 0.008, 0.02, 8);
+  const jack = new THREE.Mesh(jackGeometry, blackMaterial);
+  jack.rotation.x = Math.PI / 2;
+  jack.position.set(bodyWidth / 4, 0, -bodyDepth / 2 - 0.01);
+  group.add(jack);
+
+  // Belt clip on the back
+  const clipGeometry = new THREE.BoxGeometry(0.08, 0.02, 0.03);
+  const clip = new THREE.Mesh(clipGeometry, metalMaterial);
+  clip.position.set(0, bodyHeight - 0.01, -bodyDepth / 2 + 0.015);
+  group.add(clip);
+
+  group.position.y = getDeskSurfaceY();
+
+  return group;
+}
+
 // Update cassette player screen display
 function updateCassetteScreen(object, text, scrolling = false) {
   if (!object.userData.screenCtx || !object.userData.screenTexture) return;
@@ -4260,7 +4608,8 @@ const OBJECT_COLLISION_RADII_BASE = {
   'hourglass': 0.06,   // CylinderGeometry radius 0.12
   'paper': 0.08,       // BoxGeometry 0.28 x 0.4
   'metronome': 0.07,   // Base radius 0.15
-  'cassette-player': 0.07 // Sony Walkman WM-10 style horizontal player (0.11 x 0.08)
+  'cassette-player': 0.07, // Sony Walkman WM-10 style horizontal player (0.11 x 0.08)
+  'big-cassette-player': 0.35 // Classic large portable player (0.6 x 0.4)
 };
 
 // Global collision radius multiplier (adjustable in settings, 0.5 to 2.0)
@@ -4287,7 +4636,8 @@ const OBJECT_COLLISION_HEIGHTS_BASE = {
   'hourglass': 0.3,    // Medium hourglass
   'paper': 0.005,      // Paper sheet is very flat
   'metronome': 0.4,    // Medium metronome
-  'cassette-player': 0.08 // Sony Walkman WM-10 style horizontal player (height 0.08)
+  'cassette-player': 0.08, // Sony Walkman WM-10 style horizontal player (height 0.08)
+  'big-cassette-player': 0.15 // Classic large portable player (height 0.15)
 };
 
 // Default collision height for unknown object types
@@ -4325,7 +4675,8 @@ const OBJECT_STACKING_RADII = {
   'hourglass': 0.12,   // Hourglass base
   'paper': 0.24,       // BoxGeometry 0.28 x 0.4, half diagonal
   'metronome': 0.15,   // Metronome base
-  'cassette-player': 0.07 // Sony Walkman WM-10 style horizontal (0.11 x 0.08 diagonal / 2)
+  'cassette-player': 0.07, // Sony Walkman WM-10 style horizontal (0.11 x 0.08 diagonal / 2)
+  'big-cassette-player': 0.36 // Classic large portable player (0.6 x 0.4 diagonal / 2)
 };
 
 // Default collision radius for unknown object types
@@ -6329,8 +6680,8 @@ function onMouseDown(event) {
               bookReadingState.holdTimeout = null; // Mark as already handled
             }
           }, 300);
-        } else if (object.userData.type === 'cassette-player') {
-          // For cassette player, enter player mode after holding for 300ms
+        } else if (object.userData.type === 'cassette-player' || object.userData.type === 'big-cassette-player') {
+          // For cassette player (mini or big), enter player mode after holding for 300ms
           playerModeState.middleMouseDownTime = Date.now();
           playerModeState.player = object;
           playerModeState.holdTimeout = setTimeout(() => {
@@ -7356,7 +7707,7 @@ function onMouseWheel(event) {
       const minScale = 0.3;
       // Books, magazines and cassette player can be scaled larger for reading/interaction
       let maxScale = 3.0;
-      if (object.userData.type === 'magazine' || object.userData.type === 'cassette-player') {
+      if (object.userData.type === 'magazine' || object.userData.type === 'cassette-player' || object.userData.type === 'big-cassette-player') {
         maxScale = 10.0;
       } else if (object.userData.type === 'books') {
         maxScale = 5.0;
@@ -8108,6 +8459,7 @@ function updateCustomizationPanel(object) {
       break;
 
     case 'cassette-player':
+    case 'big-cassette-player':
       const volumePercentCassette = Math.round((object.userData.volume || 0.7) * 100);
       const hissLevel = Math.round((object.userData.tapeHissLevel || 0.3) * 100);
       const wowFlutterLevel = Math.round((object.userData.wowFlutterLevel || 0.5) * 100);
@@ -12266,7 +12618,8 @@ function performQuickInteraction(object, clickedMesh = null) {
       break;
 
     case 'cassette-player':
-      // Handle button clicks on the cassette player
+    case 'big-cassette-player':
+      // Handle button clicks on the cassette player (mini or big)
       if (clickedMesh && clickedMesh.userData && clickedMesh.userData.buttonType) {
         handleCassetteButtonClick(object, clickedMesh.userData.buttonType);
       } else {
@@ -13777,17 +14130,25 @@ function enterPlayerMode(player) {
   // Get the player's scale to adjust viewing distance
   const playerScale = player.scale.x || 1;
 
-  // Calculate target camera position - at the same level as the player
-  // Position camera at the same Y level for comfortable viewing
-  const viewDistance = playerModeState.zoomDistance * playerScale;
+  // Get player's rotation to calculate correct camera position
+  const playerRotationY = player.rotation.y;
+
+  // Calculate target camera position - same as front view when navigating with arrows
+  // Front view positions camera slightly above center to see the screen
+  const viewDistance = 0.15 * playerScale;
   const targetCameraPos = new THREE.Vector3(
-    playerWorldPos.x,
-    playerWorldPos.y, // At the same level as the player (not above)
-    playerWorldPos.z + viewDistance  // In front of the player
+    playerWorldPos.x + Math.sin(playerRotationY) * viewDistance,
+    playerWorldPos.y + 0.04 * playerScale, // Slightly above center to see screen
+    playerWorldPos.z + Math.cos(playerRotationY) * viewDistance
   );
+
+  // Calculate target yaw from look direction (looking at player)
+  const lookDir = new THREE.Vector3().subVectors(playerWorldPos, targetCameraPos);
+  const targetYaw = Math.atan2(lookDir.x, lookDir.z);
 
   // Animate camera to player viewing position
   const startPos = camera.position.clone();
+  const startYaw = cameraLookState.yaw;
   const startTime = Date.now();
   const duration = 400;
 
@@ -13801,6 +14162,7 @@ function enterPlayerMode(player) {
     // Look straight at the player (level view, not looking down)
     const targetPitch = 0; // Level view
     cameraLookState.pitch = playerModeState.originalCameraPitch + (targetPitch - playerModeState.originalCameraPitch) * eased;
+    cameraLookState.yaw = startYaw + (targetYaw - startYaw) * eased;
     updateCameraLook();
 
     if (progress < 1) {
@@ -13903,10 +14265,15 @@ function navigatePlayerButtons(direction) {
         const buttonWorldPos = new THREE.Vector3();
         button.getWorldPosition(buttonWorldPos);
 
-        // Position camera above and angled to see the button on top edge
-        // Buttons are on top of the player, so camera should be above looking down
-        const viewDistance = 0.08 * playerScale;
-        const cameraHeight = 0.06 * playerScale;
+        // Position camera above and angled to see the button
+        // Different positioning based on player type:
+        // - Mini player (cassette-player): buttons on TOP EDGE, need to look down more
+        // - Big player (big-cassette-player): buttons on FRONT FACE, look more level
+        const isBigPlayer = player.userData.type === 'big-cassette-player';
+        const viewDistance = isBigPlayer ? 0.12 * playerScale : 0.08 * playerScale;
+        const cameraHeight = isBigPlayer ? 0.04 * playerScale : 0.08 * playerScale;
+        // Increased tilt for better button visibility (more tilted down)
+        const buttonTilt = isBigPlayer ? -0.4 : -0.6;
 
         const targetCameraPos = new THREE.Vector3(
           buttonWorldPos.x + Math.sin(playerRotationY) * viewDistance,
@@ -13914,10 +14281,10 @@ function navigatePlayerButtons(direction) {
           buttonWorldPos.z + Math.cos(playerRotationY) * viewDistance
         );
 
-        // Look at the button with a slight downward angle
+        // Look at the button with a downward angle
         const lookAtPos = buttonWorldPos.clone();
 
-        animateCameraToPosition(targetCameraPos, lookAtPos, -0.3, 200);
+        animateCameraToPosition(targetCameraPos, lookAtPos, buttonTilt, 200);
       }
     }
   }
@@ -15309,7 +15676,8 @@ async function saveStateImmediate() {
           }
           break;
         case 'cassette-player':
-          // Save music folder and track info
+        case 'big-cassette-player':
+          // Save music folder and track info (for both mini and big player)
           if (obj.userData.musicFolderPath) {
             data.musicFolderPath = obj.userData.musicFolderPath;
             data.audioFiles = obj.userData.audioFiles;
@@ -15760,7 +16128,8 @@ async function loadState() {
                 }
                 break;
               case 'cassette-player':
-                // Restore music folder and track info
+              case 'big-cassette-player':
+                // Restore music folder and track info (for both mini and big player)
                 if (objData.musicFolderPath) {
                   obj.userData.musicFolderPath = objData.musicFolderPath;
                   obj.userData.audioFiles = objData.audioFiles || [];
@@ -16080,8 +16449,8 @@ function animate() {
       }
     }
 
-    // Animate cassette player reels when playing
-    if (obj.userData.type === 'cassette-player') {
+    // Animate cassette player reels when playing (both mini and big player)
+    if (obj.userData.type === 'cassette-player' || obj.userData.type === 'big-cassette-player') {
       const reels = obj.getObjectByName('reels');
       if (reels) {
         // Only spin reels when this player is actively playing
