@@ -2278,6 +2278,14 @@ function createMetronome(options = {}) {
     pitchCurveDuration: options.pitchCurveDuration !== undefined ? options.pitchCurveDuration : 60, // Duration in seconds
     pitchCurveLoop: options.pitchCurveLoop !== undefined ? options.pitchCurveLoop : false, // Loop the curve
     pitchCurveStartTime: 0, // Timestamp when curve started
+    // Tempo curve settings - allows BPM to change over time
+    tempoCurveEnabled: options.tempoCurveEnabled !== undefined ? options.tempoCurveEnabled : false,
+    tempoCurveType: options.tempoCurveType || 'linear', // 'linear', 'ease-in', 'ease-out', 'sine'
+    tempoCurveStart: options.tempoCurveStart !== undefined ? options.tempoCurveStart : 60, // Start BPM
+    tempoCurveEnd: options.tempoCurveEnd !== undefined ? options.tempoCurveEnd : 120, // End BPM
+    tempoCurveDuration: options.tempoCurveDuration !== undefined ? options.tempoCurveDuration : 60, // Duration in seconds
+    tempoCurveLoop: options.tempoCurveLoop !== undefined ? options.tempoCurveLoop : false, // Loop the curve
+    tempoCurveStartTime: 0, // Timestamp when curve started
     mainColor: options.mainColor || '#8b4513',
     accentColor: options.accentColor || '#ffd700'
   };
@@ -6078,6 +6086,13 @@ function updateCustomizationPanel(object) {
       const pitchCurveEnd = object.userData.pitchCurveEnd || 100;
       const pitchCurveDuration = object.userData.pitchCurveDuration || 60;
       const pitchCurveLoop = object.userData.pitchCurveLoop || false;
+      // Tempo curve settings
+      const tempoCurveEnabled = object.userData.tempoCurveEnabled || false;
+      const tempoCurveType = object.userData.tempoCurveType || 'linear';
+      const tempoCurveStart = object.userData.tempoCurveStart || 60;
+      const tempoCurveEnd = object.userData.tempoCurveEnd || 120;
+      const tempoCurveDuration = object.userData.tempoCurveDuration || 60;
+      const tempoCurveLoop = object.userData.tempoCurveLoop || false;
       dynamicOptions.innerHTML = `
         <div class="customization-group" style="margin-top: 20px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.1);">
           <label>BPM: <span id="bpm-display">${object.userData.bpm}</span></label>
@@ -6132,6 +6147,49 @@ function updateCustomizationPanel(object) {
             <div>
               <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
                 <input type="checkbox" id="pitch-curve-loop" ${pitchCurveLoop ? 'checked' : ''} style="width: 16px; height: 16px; accent-color: #4f46e5;">
+                Loop Curve
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tempo Curve Accordion -->
+        <div class="customization-group" style="margin-top: 15px;">
+          <div id="tempo-curve-toggle" style="display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; cursor: pointer;">
+            <span style="color: rgba(255,255,255,0.8); font-size: 12px;">Tempo Curve Over Time</span>
+            <span id="tempo-curve-arrow" style="color: rgba(255,255,255,0.5); font-size: 12px;">▼</span>
+          </div>
+          <div id="tempo-curve-content" style="display: none; padding: 12px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); border-top: none; border-radius: 0 0 8px 8px;">
+            <div style="margin-bottom: 12px;">
+              <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                <input type="checkbox" id="tempo-curve-enabled" ${tempoCurveEnabled ? 'checked' : ''} style="width: 16px; height: 16px; accent-color: #4f46e5;">
+                Enable Tempo Curve
+              </label>
+            </div>
+            <div style="margin-bottom: 12px;">
+              <label style="display: block; color: rgba(255,255,255,0.7); font-size: 11px; margin-bottom: 6px;">Curve Type</label>
+              <select id="tempo-curve-type" style="width: 100%; padding: 8px; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); border-radius: 6px; color: #fff;">
+                <option value="linear" ${tempoCurveType === 'linear' ? 'selected' : ''}>Linear</option>
+                <option value="ease-in" ${tempoCurveType === 'ease-in' ? 'selected' : ''}>Ease In (Slow Start)</option>
+                <option value="ease-out" ${tempoCurveType === 'ease-out' ? 'selected' : ''}>Ease Out (Slow End)</option>
+                <option value="sine" ${tempoCurveType === 'sine' ? 'selected' : ''}>Sine Wave</option>
+              </select>
+            </div>
+            <div style="margin-bottom: 12px;">
+              <label style="display: block; color: rgba(255,255,255,0.7); font-size: 11px; margin-bottom: 6px;">Start BPM: <span id="tempo-curve-start-display">${tempoCurveStart}</span></label>
+              <input type="range" id="tempo-curve-start" min="10" max="220" value="${tempoCurveStart}" style="width: 100%; accent-color: #4f46e5;">
+            </div>
+            <div style="margin-bottom: 12px;">
+              <label style="display: block; color: rgba(255,255,255,0.7); font-size: 11px; margin-bottom: 6px;">End BPM: <span id="tempo-curve-end-display">${tempoCurveEnd}</span></label>
+              <input type="range" id="tempo-curve-end" min="10" max="220" value="${tempoCurveEnd}" style="width: 100%; accent-color: #4f46e5;">
+            </div>
+            <div style="margin-bottom: 12px;">
+              <label style="display: block; color: rgba(255,255,255,0.7); font-size: 11px; margin-bottom: 6px;">Duration: <span id="tempo-curve-duration-display">${tempoCurveDuration}s</span></label>
+              <input type="range" id="tempo-curve-duration" min="5" max="300" value="${tempoCurveDuration}" style="width: 100%; accent-color: #4f46e5;">
+            </div>
+            <div>
+              <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                <input type="checkbox" id="tempo-curve-loop" ${tempoCurveLoop ? 'checked' : ''} style="width: 16px; height: 16px; accent-color: #4f46e5;">
                 Loop Curve
               </label>
             </div>
@@ -6700,6 +6758,86 @@ function setupMetronomeCustomizationHandlers(object) {
       });
     }
 
+    // Tempo Curve accordion toggle
+    const tempoCurveToggle = document.getElementById('tempo-curve-toggle');
+    const tempoCurveContent = document.getElementById('tempo-curve-content');
+    const tempoCurveArrow = document.getElementById('tempo-curve-arrow');
+    if (tempoCurveToggle && tempoCurveContent) {
+      tempoCurveToggle.addEventListener('click', () => {
+        const isOpen = tempoCurveContent.style.display !== 'none';
+        tempoCurveContent.style.display = isOpen ? 'none' : 'block';
+        tempoCurveArrow.textContent = isOpen ? '▼' : '▲';
+        tempoCurveToggle.style.borderRadius = isOpen ? '8px' : '8px 8px 0 0';
+      });
+    }
+
+    // Tempo Curve enabled checkbox
+    const tempoCurveEnabledCheckbox = document.getElementById('tempo-curve-enabled');
+    if (tempoCurveEnabledCheckbox) {
+      tempoCurveEnabledCheckbox.addEventListener('change', (e) => {
+        object.userData.tempoCurveEnabled = e.target.checked;
+        // Reset curve start time when enabling
+        if (e.target.checked) {
+          object.userData.tempoCurveStartTime = Date.now();
+        }
+        saveState();
+      });
+    }
+
+    // Tempo Curve type dropdown
+    const tempoCurveTypeSelect = document.getElementById('tempo-curve-type');
+    if (tempoCurveTypeSelect) {
+      tempoCurveTypeSelect.addEventListener('change', (e) => {
+        object.userData.tempoCurveType = e.target.value;
+        saveState();
+      });
+    }
+
+    // Tempo Curve start slider
+    const tempoCurveStartSlider = document.getElementById('tempo-curve-start');
+    const tempoCurveStartDisplay = document.getElementById('tempo-curve-start-display');
+    if (tempoCurveStartSlider) {
+      tempoCurveStartSlider.addEventListener('input', (e) => {
+        object.userData.tempoCurveStart = parseInt(e.target.value);
+        tempoCurveStartDisplay.textContent = e.target.value;
+        saveState();
+      });
+      addScrollToSlider(tempoCurveStartSlider);
+    }
+
+    // Tempo Curve end slider
+    const tempoCurveEndSlider = document.getElementById('tempo-curve-end');
+    const tempoCurveEndDisplay = document.getElementById('tempo-curve-end-display');
+    if (tempoCurveEndSlider) {
+      tempoCurveEndSlider.addEventListener('input', (e) => {
+        object.userData.tempoCurveEnd = parseInt(e.target.value);
+        tempoCurveEndDisplay.textContent = e.target.value;
+        saveState();
+      });
+      addScrollToSlider(tempoCurveEndSlider);
+    }
+
+    // Tempo Curve duration slider
+    const tempoCurveDurationSlider = document.getElementById('tempo-curve-duration');
+    const tempoCurveDurationDisplay = document.getElementById('tempo-curve-duration-display');
+    if (tempoCurveDurationSlider) {
+      tempoCurveDurationSlider.addEventListener('input', (e) => {
+        object.userData.tempoCurveDuration = parseInt(e.target.value);
+        tempoCurveDurationDisplay.textContent = e.target.value + 's';
+        saveState();
+      });
+      addScrollToSlider(tempoCurveDurationSlider);
+    }
+
+    // Tempo Curve loop checkbox
+    const tempoCurveLoopCheckbox = document.getElementById('tempo-curve-loop');
+    if (tempoCurveLoopCheckbox) {
+      tempoCurveLoopCheckbox.addEventListener('change', (e) => {
+        object.userData.tempoCurveLoop = e.target.checked;
+        saveState();
+      });
+    }
+
     const tickCheckbox = document.getElementById('tick-sound');
     if (tickCheckbox) {
       tickCheckbox.addEventListener('change', (e) => {
@@ -6757,19 +6895,39 @@ function setupMetronomeCustomizationHandlers(object) {
     // Custom sound file upload
     const customSoundInput = document.getElementById('metronome-custom-sound');
     if (customSoundInput) {
-      customSoundInput.addEventListener('change', (e) => {
+      customSoundInput.addEventListener('change', async (e) => {
         const file = e.target.files[0];
         if (file && file.type.startsWith('audio/')) {
-          const reader = new FileReader();
-          reader.onload = (event) => {
-            object.userData.customSoundDataUrl = event.target.result;
-            // Pre-decode the audio for faster playback
-            preloadMetronomeCustomSound(object);
-            saveState();
+          try {
+            // Read directly as ArrayBuffer for efficient audio decoding
+            const arrayBuffer = await file.arrayBuffer();
+
+            // Decode the audio immediately
+            const audioCtx = getSharedAudioContext();
+            if (audioCtx.state === 'suspended') {
+              await audioCtx.resume();
+            }
+
+            const buffer = await audioCtx.decodeAudioData(arrayBuffer);
+            object.userData.customSoundBuffer = buffer;
+            object.userData.tickSoundType = 'custom';
+
+            // Also store as data URL for persistence (but do this asynchronously to not block)
+            const dataUrlReader = new FileReader();
+            dataUrlReader.onload = (event) => {
+              object.userData.customSoundDataUrl = event.target.result;
+              saveState();
+            };
+            dataUrlReader.readAsDataURL(file);
+
+            console.log('Metronome custom sound loaded successfully');
+
             // Refresh the customization panel to show the new buttons
             openCustomizationPanel(object);
-          };
-          reader.readAsDataURL(file);
+          } catch (err) {
+            console.error('Error loading custom sound:', err);
+            alert('Could not load audio file. Please try a different file format.');
+          }
         }
       });
     }
@@ -8262,22 +8420,42 @@ function setupTimerHandlers() {
   // Custom sound upload
   const customSoundInput = document.getElementById('timer-custom-sound');
   if (customSoundInput) {
-    customSoundInput.addEventListener('change', (e) => {
+    customSoundInput.addEventListener('change', async (e) => {
       const file = e.target.files[0];
       if (file && file.type.startsWith('audio/')) {
-        const reader = new FileReader();
-        reader.onload = (event) => {
-          timerState.customSoundDataUrl = event.target.result;
-          // Pre-decode the audio
-          preloadTimerCustomSound();
+        try {
+          // Read directly as ArrayBuffer for efficient audio decoding
+          const arrayBuffer = await file.arrayBuffer();
+
+          // Decode the audio immediately
+          const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+          if (audioCtx.state === 'suspended') {
+            await audioCtx.resume();
+          }
+
+          const buffer = await audioCtx.decodeAudioData(arrayBuffer);
+          timerState.customSoundBuffer = buffer;
+          timerState.useCustomSound = true;
+
+          // Also store as data URL for persistence (but do this asynchronously to not block)
+          const dataUrlReader = new FileReader();
+          dataUrlReader.onload = (event) => {
+            timerState.customSoundDataUrl = event.target.result;
+          };
+          dataUrlReader.readAsDataURL(file);
+
+          console.log('Timer custom sound loaded successfully');
+
           // Refresh the modal to show new buttons
           if (interactionObject && interactionObject.userData.type === 'clock') {
             const content = document.getElementById('interaction-content');
             content.innerHTML = getInteractionContent(interactionObject);
             setupTimerHandlers();
           }
-        };
-        reader.readAsDataURL(file);
+        } catch (err) {
+          console.error('Error loading custom sound:', err);
+          alert('Could not load audio file. Please try a different file format.');
+        }
       }
     });
   }
@@ -10081,8 +10259,9 @@ function performQuickInteraction(object, clickedMesh = null) {
       // Toggle metronome on/off with middle-click
       object.userData.isRunning = !object.userData.isRunning;
       if (object.userData.isRunning) {
-        // Reset pitch curve start time when starting
+        // Reset pitch and tempo curve start times when starting
         object.userData.pitchCurveStartTime = Date.now();
+        object.userData.tempoCurveStartTime = Date.now();
       } else {
         // Reset pendulum when stopped
         object.userData.pendulumAngle = 0;
@@ -12805,6 +12984,52 @@ async function saveStateImmediate() {
           data.volume = obj.userData.volume;
           data.tickSound = obj.userData.tickSound;
           data.tickSoundType = obj.userData.tickSoundType;
+          // Save pitch settings
+          if (obj.userData.tickPitch !== undefined) {
+            data.tickPitch = obj.userData.tickPitch;
+          }
+          // Save custom sound data URL for persistence
+          if (obj.userData.customSoundDataUrl) {
+            data.customSoundDataUrl = obj.userData.customSoundDataUrl;
+          }
+          // Save pitch curve settings
+          if (obj.userData.pitchCurveEnabled !== undefined) {
+            data.pitchCurveEnabled = obj.userData.pitchCurveEnabled;
+          }
+          if (obj.userData.pitchCurveType) {
+            data.pitchCurveType = obj.userData.pitchCurveType;
+          }
+          if (obj.userData.pitchCurveStart !== undefined) {
+            data.pitchCurveStart = obj.userData.pitchCurveStart;
+          }
+          if (obj.userData.pitchCurveEnd !== undefined) {
+            data.pitchCurveEnd = obj.userData.pitchCurveEnd;
+          }
+          if (obj.userData.pitchCurveDuration !== undefined) {
+            data.pitchCurveDuration = obj.userData.pitchCurveDuration;
+          }
+          if (obj.userData.pitchCurveLoop !== undefined) {
+            data.pitchCurveLoop = obj.userData.pitchCurveLoop;
+          }
+          // Save tempo curve settings
+          if (obj.userData.tempoCurveEnabled !== undefined) {
+            data.tempoCurveEnabled = obj.userData.tempoCurveEnabled;
+          }
+          if (obj.userData.tempoCurveType) {
+            data.tempoCurveType = obj.userData.tempoCurveType;
+          }
+          if (obj.userData.tempoCurveStart !== undefined) {
+            data.tempoCurveStart = obj.userData.tempoCurveStart;
+          }
+          if (obj.userData.tempoCurveEnd !== undefined) {
+            data.tempoCurveEnd = obj.userData.tempoCurveEnd;
+          }
+          if (obj.userData.tempoCurveDuration !== undefined) {
+            data.tempoCurveDuration = obj.userData.tempoCurveDuration;
+          }
+          if (obj.userData.tempoCurveLoop !== undefined) {
+            data.tempoCurveLoop = obj.userData.tempoCurveLoop;
+          }
           break;
         case 'laptop':
           data.bootTime = obj.userData.bootTime;
@@ -12872,6 +13097,16 @@ async function saveStateImmediate() {
       z: camera.position.z,
       yaw: cameraLookState.yaw,
       pitch: cameraLookState.pitch
+    },
+    // Save timer/alarm state (for clock objects)
+    timerState: {
+      alarmEnabled: timerState.alarmEnabled,
+      alarmHours: timerState.alarmHours,
+      alarmMinutes: timerState.alarmMinutes,
+      alertVolume: timerState.alertVolume,
+      alertPitch: timerState.alertPitch,
+      customSoundDataUrl: timerState.customSoundDataUrl,
+      useCustomSound: timerState.useCustomSound
     }
   };
 
@@ -12905,6 +13140,22 @@ async function loadState() {
           cameraLookState.pitch = result.state.camera.pitch;
         }
         updateCameraLook();
+      }
+
+      // Load timer/alarm state
+      if (result.state.timerState) {
+        const savedTimer = result.state.timerState;
+        if (savedTimer.alarmEnabled !== undefined) timerState.alarmEnabled = savedTimer.alarmEnabled;
+        if (savedTimer.alarmHours !== undefined) timerState.alarmHours = savedTimer.alarmHours;
+        if (savedTimer.alarmMinutes !== undefined) timerState.alarmMinutes = savedTimer.alarmMinutes;
+        if (savedTimer.alertVolume !== undefined) timerState.alertVolume = savedTimer.alertVolume;
+        if (savedTimer.alertPitch !== undefined) timerState.alertPitch = savedTimer.alertPitch;
+        if (savedTimer.useCustomSound !== undefined) timerState.useCustomSound = savedTimer.useCustomSound;
+        if (savedTimer.customSoundDataUrl) {
+          timerState.customSoundDataUrl = savedTimer.customSoundDataUrl;
+          // Pre-decode the audio from data URL
+          preloadTimerCustomSound();
+        }
       }
 
       // Load objects
@@ -13149,6 +13400,28 @@ async function loadState() {
                 if (objData.volume !== undefined) obj.userData.volume = objData.volume;
                 if (objData.tickSound !== undefined) obj.userData.tickSound = objData.tickSound;
                 if (objData.tickSoundType) obj.userData.tickSoundType = objData.tickSoundType;
+                // Restore pitch settings
+                if (objData.tickPitch !== undefined) obj.userData.tickPitch = objData.tickPitch;
+                // Restore custom sound data URL and pre-decode it
+                if (objData.customSoundDataUrl) {
+                  obj.userData.customSoundDataUrl = objData.customSoundDataUrl;
+                  // Pre-decode the audio from data URL
+                  preloadMetronomeCustomSound(obj);
+                }
+                // Restore pitch curve settings
+                if (objData.pitchCurveEnabled !== undefined) obj.userData.pitchCurveEnabled = objData.pitchCurveEnabled;
+                if (objData.pitchCurveType) obj.userData.pitchCurveType = objData.pitchCurveType;
+                if (objData.pitchCurveStart !== undefined) obj.userData.pitchCurveStart = objData.pitchCurveStart;
+                if (objData.pitchCurveEnd !== undefined) obj.userData.pitchCurveEnd = objData.pitchCurveEnd;
+                if (objData.pitchCurveDuration !== undefined) obj.userData.pitchCurveDuration = objData.pitchCurveDuration;
+                if (objData.pitchCurveLoop !== undefined) obj.userData.pitchCurveLoop = objData.pitchCurveLoop;
+                // Restore tempo curve settings
+                if (objData.tempoCurveEnabled !== undefined) obj.userData.tempoCurveEnabled = objData.tempoCurveEnabled;
+                if (objData.tempoCurveType) obj.userData.tempoCurveType = objData.tempoCurveType;
+                if (objData.tempoCurveStart !== undefined) obj.userData.tempoCurveStart = objData.tempoCurveStart;
+                if (objData.tempoCurveEnd !== undefined) obj.userData.tempoCurveEnd = objData.tempoCurveEnd;
+                if (objData.tempoCurveDuration !== undefined) obj.userData.tempoCurveDuration = objData.tempoCurveDuration;
+                if (objData.tempoCurveLoop !== undefined) obj.userData.tempoCurveLoop = objData.tempoCurveLoop;
                 break;
               case 'laptop':
                 if (objData.bootTime) obj.userData.bootTime = objData.bootTime;
@@ -13350,7 +13623,45 @@ function animate() {
       if (pendulum) {
         // Calculate swing timing based on BPM
         // One beat = one swing to the left + one swing to the right, so 2 direction changes per beat
-        const bpm = obj.userData.bpm || 120;
+        let bpm = obj.userData.bpm || 120;
+
+        // Apply tempo curve if enabled
+        if (obj.userData.tempoCurveEnabled) {
+          const curveStartTime = obj.userData.tempoCurveStartTime || Date.now();
+          const elapsed = (Date.now() - curveStartTime) / 1000; // seconds
+          const duration = obj.userData.tempoCurveDuration || 60;
+          let progress = elapsed / duration;
+
+          // Handle looping
+          if (obj.userData.tempoCurveLoop) {
+            progress = progress % 1; // Wrap around for looping
+          } else {
+            progress = Math.min(progress, 1); // Clamp at 1 for non-looping
+          }
+
+          // Apply easing based on curve type
+          let easedProgress = progress;
+          const curveType = obj.userData.tempoCurveType || 'linear';
+          switch (curveType) {
+            case 'ease-in':
+              easedProgress = progress * progress; // Quadratic ease-in
+              break;
+            case 'ease-out':
+              easedProgress = 1 - (1 - progress) * (1 - progress); // Quadratic ease-out
+              break;
+            case 'sine':
+              // Sine wave: goes from start to end and back
+              easedProgress = (Math.sin(progress * Math.PI * 2 - Math.PI / 2) + 1) / 2;
+              break;
+            // 'linear' uses progress as-is
+          }
+
+          // Interpolate between start and end BPM
+          const startBPM = obj.userData.tempoCurveStart || 60;
+          const endBPM = obj.userData.tempoCurveEnd || 120;
+          bpm = startBPM + (endBPM - startBPM) * easedProgress;
+        }
+
         const msPerBeat = 60000 / bpm; // Milliseconds per beat
         const msPerSwing = msPerBeat / 2; // Each half-swing (tick) takes half a beat
         const now = Date.now();
