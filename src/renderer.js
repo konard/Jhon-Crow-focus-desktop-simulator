@@ -74,6 +74,7 @@ let objectIdCounter = 0;
 let isLoadingState = false; // Flag to prevent saving during load
 let saveStateDebounceTimer = null; // Debounce timer for saveState
 let isSavingState = false; // Flag to prevent concurrent saves
+let ffmpegAvailable = false; // FFmpeg availability status from main process
 
 // Debug visualization state
 let debugState = {
@@ -1870,6 +1871,20 @@ function init() {
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   document.getElementById('canvas-container').appendChild(renderer.domElement);
 
+  // Handle WebGL context lost and restored events to prevent gray screen
+  renderer.domElement.addEventListener('webglcontextlost', (event) => {
+    event.preventDefault();
+    console.warn('WebGL context lost - attempting recovery');
+  }, false);
+
+  renderer.domElement.addEventListener('webglcontextrestored', () => {
+    console.log('WebGL context restored - reinitializing');
+    // Reinitialize pixel art post-processing if enabled
+    if (CONFIG.pixelation.enabled) {
+      setupPixelArtPostProcessing();
+    }
+  }, false);
+
   // Setup pixel art post-processing if enabled
   if (CONFIG.pixelation.enabled) {
     setupPixelArtPostProcessing();
@@ -1905,6 +1920,9 @@ function init() {
   // Load saved state
   loadState();
 
+  // Initialize FFmpeg status
+  initializeFfmpegStatus();
+
   // Start animation loop
   animate();
 
@@ -1916,6 +1934,31 @@ function init() {
   setTimeout(() => {
     document.getElementById('loading').classList.add('hidden');
   }, 500);
+}
+
+// ============================================================================
+// FFMPEG STATUS INITIALIZATION
+// ============================================================================
+async function initializeFfmpegStatus() {
+  // Listen for FFmpeg status updates from main process (sent on app start)
+  if (window.electronAPI && window.electronAPI.onFfmpegStatus) {
+    window.electronAPI.onFfmpegStatus((available) => {
+      console.log('FFmpeg status received from main process:', available);
+      ffmpegAvailable = available;
+    });
+  }
+
+  // Also request current status immediately
+  if (window.electronAPI && window.electronAPI.getFfmpegStatus) {
+    try {
+      const result = await window.electronAPI.getFfmpegStatus();
+      ffmpegAvailable = result.available;
+      console.log('FFmpeg status on init:', ffmpegAvailable ? 'available' : 'not available');
+    } catch (error) {
+      console.error('Failed to get FFmpeg status:', error);
+      ffmpegAvailable = false;
+    }
+  }
 }
 
 // ============================================================================
@@ -2157,7 +2200,8 @@ const PRESET_CREATORS = {
   paper: createPaper,
   metronome: createMetronome,
   'cassette-player': createCassettePlayer,
-  'big-cassette-player': createBigCassettePlayer
+  'big-cassette-player': createBigCassettePlayer,
+  dictaphone: createDictaphone
 };
 
 // ============================================================================
@@ -2216,7 +2260,8 @@ const PALETTE_CATEGORIES = {
     variants: [
       { id: 'metronome', name: 'Metronome', icon: '🎵' },
       { id: 'cassette-player', name: 'Mini Player', icon: '📼' },
-      { id: 'big-cassette-player', name: 'Big Player', icon: '📻' }
+      { id: 'big-cassette-player', name: 'Big Player', icon: '📻' },
+      { id: 'dictaphone', name: 'Dictaphone', icon: '🎙️' }
     ],
     activeIndex: 0
   },
@@ -3888,6 +3933,329 @@ function createMetronome(options = {}) {
 }
 
 // ============================================================================
+// SHARED AUDIO SYSTEM
+// ============================================================================
+// Shared audio infrastructure for all audio sources (cassette, dictaphone, etc.)
+// This allows the dictaphone to capture audio from all virtual room sources
+let sharedAudioSystem = {
+  audioContext: null,
+  masterGain: null,        // Master output node - all audio passes through here
+  recordingGain: null,     // Gain node for mono recording (no spatial audio)
+  recordingGainPanorama: null, // Gain node for panoramic recording (dictaphone-centered spatial audio)
+  activePlayers: new Set(), // Set of active audio sources (cassette players, etc.)
+  spatialNodes: new Map(),   // Map of object ID -> { pannerNode, gainNode, object } for playback spatial audio
+  recordingSpatialNodes: new Map() // Map of object ID -> { pannerNode, gainNode, sourceNode } for recording with dictaphone-centered spatial
+};
+
+// ============================================================================
+// SPATIAL AUDIO SYSTEM
+// ============================================================================
+// Calculates stereo panning and volume based on object position relative to camera
+// Takes camera rotation into account for accurate left/right positioning
+
+/**
+ * Calculate spatial audio parameters (pan and volume) for an object
+ * @param {THREE.Object3D} object - The 3D object with sound source
+ * @param {THREE.Object3D} referenceObject - Optional reference object (default: camera).
+ *        If provided, spatial audio is calculated relative to this object instead of camera.
+ * @returns {{ pan: number, volume: number }} - Pan (-1 to 1) and volume (0 to 1) multipliers
+ */
+function calculateSpatialAudio(object, referenceObject = null) {
+  if (!object) {
+    return { pan: 0, volume: 1 };
+  }
+
+  // Get object's world position
+  const objectPos = new THREE.Vector3();
+  object.getWorldPosition(objectPos);
+
+  // Get reference position (either provided object or camera)
+  const refPos = new THREE.Vector3();
+  if (referenceObject) {
+    referenceObject.getWorldPosition(refPos);
+  } else if (camera) {
+    camera.getWorldPosition(refPos);
+  } else {
+    return { pan: 0, volume: 1 };
+  }
+
+  // Calculate relative position from reference to object (in world coordinates)
+  const relativeX = objectPos.x - refPos.x;
+  const relativeZ = objectPos.z - refPos.z;
+
+  // Calculate distance for volume attenuation (unchanged by rotation)
+  const distance = Math.sqrt(relativeX * relativeX + relativeZ * relativeZ);
+
+  // Desk width is 10 units, depth is 7 units
+  // Use shorter max distance for more aggressive falloff
+  // Table width should feel "far" - noticeable volume difference
+  const maxDistance = 6; // Reduced from 10 to make distance more noticeable
+  const minDistance = 0.3; // Objects closer than this are at full volume
+
+  // Calculate volume based on distance using inverse square law for more realistic falloff
+  // This creates more dramatic difference between close and far sounds
+  let volume = 1;
+  if (distance > minDistance) {
+    // Use inverse square falloff for more realistic sound attenuation
+    // Formula: volume = 1 / (1 + k * distance^2), where k controls falloff speed
+    const falloffFactor = 0.15; // Higher = faster falloff
+    volume = 1 / (1 + falloffFactor * Math.pow(distance - minDistance, 2));
+    // Very low minimum volume - objects at table edges should be quite quiet
+    volume = Math.max(0.05, volume);
+  }
+
+  // Calculate panning based on position relative to camera's viewing direction
+  // When the camera rotates, the sound panorama should change accordingly
+  // Transform world-space relative position to camera-local space using yaw rotation
+
+  // Get the camera's yaw angle (horizontal rotation)
+  // For reference objects other than camera, we don't apply rotation transform
+  let localX = relativeX;
+  if (!referenceObject && cameraLookState) {
+    // Transform world-space position to screen-space position
+    // When looking down -Z (at desk), positive X should be on the RIGHT
+    // We use the negative of the standard right-vector projection because:
+    // - Standard 3D: Camera right = (cos(yaw), 0, -sin(yaw))
+    // - But for a user sitting at a desk looking at their screen:
+    //   Objects to the right of center (positive X) should be in the right speaker
+    // The negation accounts for this perceptual convention
+    const yaw = cameraLookState.yaw;
+    const cosYaw = Math.cos(yaw);
+    const sinYaw = Math.sin(yaw);
+
+    // Negated projection to match perceptual left/right:
+    // localX = -(relativeX * cos(yaw) - relativeZ * sin(yaw))
+    localX = -relativeX * cosYaw + relativeZ * sinYaw;
+  }
+
+  // Pan range: -1 (full left) to 1 (full right)
+  // Desk width is ~10 units, so max offset is ~5 units
+  const panRange = 5; // Units from center for full pan
+  let pan = localX / panRange;
+  pan = Math.max(-1, Math.min(1, pan)); // Clamp to [-1, 1]
+
+  return { pan, volume };
+}
+
+/**
+ * Create or update spatial audio nodes for an object
+ * Creates a StereoPannerNode for panning
+ * @param {THREE.Object3D} object - The object to add spatial audio to
+ * @param {GainNode} sourceGain - The gain node that outputs the audio
+ * @returns {{ pannerNode: StereoPannerNode, gainNode: GainNode }} - The spatial audio nodes
+ */
+function createSpatialAudioNodes(object, sourceGain) {
+  const audioCtx = getSharedAudioContext();
+
+  // Create stereo panner node for left/right panning
+  const pannerNode = audioCtx.createStereoPanner();
+
+  // Create gain node for distance-based volume attenuation
+  const gainNode = audioCtx.createGain();
+
+  // Connect: source -> panner -> gain -> master
+  pannerNode.connect(gainNode);
+
+  // Calculate initial spatial parameters
+  const spatial = calculateSpatialAudio(object);
+  pannerNode.pan.value = spatial.pan;
+  gainNode.gain.value = spatial.volume;
+
+  // Store reference for updates
+  if (object.userData && object.userData.id) {
+    sharedAudioSystem.spatialNodes.set(object.userData.id, {
+      pannerNode,
+      gainNode,
+      object
+    });
+  }
+
+  return { pannerNode, gainNode };
+}
+
+/**
+ * Create spatial audio nodes for recording (dictaphone-centered)
+ * These nodes calculate pan/volume relative to the dictaphone, not the camera
+ * @param {THREE.Object3D} object - The object to add spatial audio to
+ * @param {AudioNode} sourceNode - The audio node that outputs the audio
+ * @returns {{ pannerNode: StereoPannerNode, gainNode: GainNode }} - The spatial audio nodes for recording
+ */
+function createRecordingSpatialNodes(object, sourceNode) {
+  const audioCtx = getSharedAudioContext();
+
+  // Create stereo panner node for left/right panning (relative to dictaphone)
+  const pannerNode = audioCtx.createStereoPanner();
+
+  // Create gain node for distance-based volume attenuation
+  const gainNode = audioCtx.createGain();
+
+  // Connect: source -> panner -> gain -> recordingGainPanorama
+  sourceNode.connect(pannerNode);
+  pannerNode.connect(gainNode);
+  gainNode.connect(sharedAudioSystem.recordingGainPanorama);
+
+  // Initial values (will be updated when recording starts with dictaphone reference)
+  pannerNode.pan.value = 0;
+  gainNode.gain.value = 1;
+
+  // Store reference for updates during recording
+  if (object.userData && object.userData.id) {
+    sharedAudioSystem.recordingSpatialNodes.set(object.userData.id, {
+      pannerNode,
+      gainNode,
+      object
+    });
+  }
+
+  return { pannerNode, gainNode };
+}
+
+/**
+ * Update spatial audio parameters for an object (call during drag or animation)
+ * @param {THREE.Object3D} object - The object that moved
+ */
+function updateSpatialAudio(object) {
+  if (!object || !object.userData || !object.userData.id) return;
+
+  const nodes = sharedAudioSystem.spatialNodes.get(object.userData.id);
+  if (!nodes) return;
+
+  const spatial = calculateSpatialAudio(object);
+
+  // Smoothly update panning and volume to avoid clicks
+  const audioCtx = sharedAudioSystem.audioContext;
+  if (audioCtx && nodes.pannerNode && nodes.gainNode) {
+    const now = audioCtx.currentTime;
+    nodes.pannerNode.pan.setTargetAtTime(spatial.pan, now, 0.05);
+    nodes.gainNode.gain.setTargetAtTime(spatial.volume, now, 0.05);
+  }
+}
+
+/**
+ * Update spatial audio for all active sound sources
+ * Called from the animation loop
+ */
+function updateAllSpatialAudio() {
+  // Update playback spatial audio (camera-relative) for all sound sources
+  sharedAudioSystem.spatialNodes.forEach((nodes, objectId) => {
+    if (nodes.object) {
+      const spatial = calculateSpatialAudio(nodes.object);
+      if (nodes.pannerNode && nodes.gainNode) {
+        nodes.pannerNode.pan.value = spatial.pan;
+        // Apply baseVolume if defined (for custom alarm sounds with user-set volume)
+        const baseVolume = nodes.baseVolume !== undefined ? nodes.baseVolume : 1;
+        nodes.gainNode.gain.value = spatial.volume * baseVolume;
+      }
+    }
+  });
+
+  // Update recording spatial audio (dictaphone-relative) when recording with environment panorama
+  if (dictaphoneState.isRecording &&
+      dictaphoneState.usePanoramicEnvironment &&
+      dictaphoneState.currentRecordingObject) {
+    const dictaphone = dictaphoneState.currentRecordingObject;
+
+    // Update recording spatial nodes for all sound sources relative to dictaphone
+    sharedAudioSystem.recordingSpatialNodes.forEach((nodes, objectId) => {
+      if (nodes.object) {
+        // Calculate spatial audio relative to dictaphone position, not camera
+        const spatial = calculateSpatialAudio(nodes.object, dictaphone);
+        if (nodes.pannerNode && nodes.gainNode) {
+          nodes.pannerNode.pan.value = spatial.pan;
+          const baseVolume = nodes.baseVolume !== undefined ? nodes.baseVolume : 1;
+          nodes.gainNode.gain.value = spatial.volume * baseVolume;
+        }
+      }
+    });
+  }
+
+  // Update dictaphone microphone panner if recording with panorama enabled
+  // The pan is INVERTED because from the camera's perspective, if the dictaphone
+  // is on the right, the recorded voice should appear on the LEFT in the recording
+  // (as if the sound source is at the camera's position looking toward the dictaphone)
+  // The volume is based on distance from camera - farther = quieter
+  if (dictaphoneState.isRecording &&
+      dictaphoneState.useMicrophonePanorama &&
+      dictaphoneState.microphonePannerNode &&
+      dictaphoneState.currentRecordingObject) {
+    const spatial = calculateSpatialAudio(dictaphoneState.currentRecordingObject);
+    // Invert the pan: if dictaphone is on the right (+pan), voice should be on the left (-pan)
+    dictaphoneState.microphonePannerNode.pan.value = -spatial.pan;
+    // Apply distance-based volume attenuation
+    if (dictaphoneState.microphoneSpatialGainNode) {
+      dictaphoneState.microphoneSpatialGainNode.gain.value = spatial.volume;
+    }
+  }
+}
+
+/**
+ * Remove spatial audio nodes for an object
+ * @param {string|number} objectId - The object ID
+ */
+function removeSpatialAudioNodes(objectId) {
+  // Remove playback spatial nodes
+  const nodes = sharedAudioSystem.spatialNodes.get(objectId);
+  if (nodes) {
+    try {
+      if (nodes.pannerNode) nodes.pannerNode.disconnect();
+      if (nodes.gainNode) nodes.gainNode.disconnect();
+    } catch (e) {
+      // Ignore disconnection errors
+    }
+    sharedAudioSystem.spatialNodes.delete(objectId);
+  }
+
+  // Remove recording spatial nodes
+  const recordingNodes = sharedAudioSystem.recordingSpatialNodes.get(objectId);
+  if (recordingNodes) {
+    try {
+      if (recordingNodes.pannerNode) recordingNodes.pannerNode.disconnect();
+      if (recordingNodes.gainNode) recordingNodes.gainNode.disconnect();
+    } catch (e) {
+      // Ignore disconnection errors
+    }
+    sharedAudioSystem.recordingSpatialNodes.delete(objectId);
+  }
+}
+
+// Get or create the shared audio context
+function getSharedAudioContext() {
+  if (!sharedAudioSystem.audioContext) {
+    sharedAudioSystem.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
+    // Create master gain node - all audio goes through here
+    sharedAudioSystem.masterGain = sharedAudioSystem.audioContext.createGain();
+    sharedAudioSystem.masterGain.gain.value = 1.0;
+    sharedAudioSystem.masterGain.connect(sharedAudioSystem.audioContext.destination);
+
+    // Create recording tap gain node - this is where dictaphone connects (mono recording)
+    sharedAudioSystem.recordingGain = sharedAudioSystem.audioContext.createGain();
+    sharedAudioSystem.recordingGain.gain.value = 1.0;
+    sharedAudioSystem.masterGain.connect(sharedAudioSystem.recordingGain);
+
+    // Create panoramic recording tap node - preserves stereo spatial audio
+    // This is connected directly to spatial audio outputs (after panner nodes)
+    sharedAudioSystem.recordingGainPanorama = sharedAudioSystem.audioContext.createGain();
+    sharedAudioSystem.recordingGainPanorama.gain.value = 1.0;
+
+    console.log('Shared audio system initialized with spatial audio support');
+  }
+  return sharedAudioSystem.audioContext;
+}
+
+// Register an active audio player (cassette player starts playing)
+function registerActivePlayer(playerId, audioNodes) {
+  sharedAudioSystem.activePlayers.add(playerId);
+  console.log('Registered active player:', playerId, '- total:', sharedAudioSystem.activePlayers.size);
+}
+
+// Unregister an audio player (stops playing)
+function unregisterActivePlayer(playerId) {
+  sharedAudioSystem.activePlayers.delete(playerId);
+  console.log('Unregistered player:', playerId, '- total:', sharedAudioSystem.activePlayers.size);
+}
+
+// ============================================================================
 // CASSETTE PLAYER
 // ============================================================================
 // Cassette player state for audio effects
@@ -4914,12 +5282,10 @@ async function playCassetteTrack(object, trackIndex, startTime = 0) {
       return;
     }
 
-    // Create audio context if needed
-    if (!cassettePlayerState.audioContext) {
-      cassettePlayerState.audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    }
-
-    const audioCtx = cassettePlayerState.audioContext;
+    // Use shared audio context for all audio sources
+    // This allows the dictaphone to capture audio from cassette players
+    const audioCtx = getSharedAudioContext();
+    cassettePlayerState.audioContext = audioCtx;
 
     // Resume context if suspended
     if (audioCtx.state === 'suspended') {
@@ -4948,7 +5314,8 @@ async function playCassetteTrack(object, trackIndex, startTime = 0) {
     const volume = object.userData.volume || 0.7;
 
     // Adjust effect levels
-    nodes.noiseGain.gain.value = 0.015 * hissLevel;
+    // Noise gain is scaled by both hissLevel and volume so white noise respects the main volume
+    nodes.noiseGain.gain.value = 0.015 * hissLevel * volume;
     nodes.wowLFOGain.gain.value = 0.001 * wowFlutterLevel;
     nodes.flutterLFOGain.gain.value = 0.0005 * wowFlutterLevel;
     nodes.saturation.curve = createSaturationCurve(saturationLevel);
@@ -4971,8 +5338,30 @@ async function playCassetteTrack(object, trackIndex, startTime = 0) {
     // Connect noise (tape hiss) to merger
     nodes.noiseGain.connect(nodes.merger);
 
-    // Connect to output
-    nodes.merger.connect(audioCtx.destination);
+    // Create spatial audio nodes for position-based panning and volume
+    // This enables sound to change based on object position relative to camera
+    const spatialNodes = createSpatialAudioNodes(object, nodes.merger);
+
+    // Connect merger -> spatial panner -> spatial gain -> master (for playback)
+    nodes.merger.connect(spatialNodes.pannerNode);
+    spatialNodes.gainNode.connect(sharedAudioSystem.masterGain);
+
+    // Connect merger to mono recording (no spatial processing)
+    nodes.merger.connect(sharedAudioSystem.recordingGain);
+
+    // Create separate spatial nodes for recording (dictaphone-centered)
+    // These are updated relative to dictaphone position, not camera
+    const recordingSpatialNodes = createRecordingSpatialNodes(object, nodes.merger);
+    nodes.recordingSpatialPanner = recordingSpatialNodes.pannerNode;
+    nodes.recordingSpatialGain = recordingSpatialNodes.gainNode;
+
+    // Store spatial nodes for position updates
+    nodes.spatialPanner = spatialNodes.pannerNode;
+    nodes.spatialGain = spatialNodes.gainNode;
+
+    // Register this player as active for dictaphone to know about
+    registerActivePlayer(object.userData.id, nodes);
+    object.userData.connectedToSharedAudio = true;
 
     // Store nodes for cleanup per-player
     object.userData.effectNodes = nodes;
@@ -5046,8 +5435,20 @@ function stopPlayerAudio(object) {
       if (nodes.wowLFO) nodes.wowLFO.stop();
       if (nodes.flutterLFO) nodes.flutterLFO.stop();
       if (nodes.noiseSource) nodes.noiseSource.stop();
+      // Disconnect spatial audio nodes
+      if (nodes.spatialPanner) nodes.spatialPanner.disconnect();
+      if (nodes.spatialGain) nodes.spatialGain.disconnect();
     } catch (e) {}
     object.userData.effectNodes = null;
+  }
+
+  // Remove spatial audio nodes from tracking
+  removeSpatialAudioNodes(object.userData.id);
+
+  // Unregister from shared audio system
+  if (object.userData.connectedToSharedAudio) {
+    unregisterActivePlayer(object.userData.id);
+    object.userData.connectedToSharedAudio = false;
   }
 
   object.userData.isPlaying = false;
@@ -5096,10 +5497,11 @@ function toggleCassettePlayback(object) {
   if (object.userData.audioElement.paused) {
     object.userData.audioElement.play();
     object.userData.isPlaying = true;
-    // Resume tape hiss when resuming playback
+    // Resume tape hiss when resuming playback (scaled by volume)
     if (object.userData.effectNodes && object.userData.effectNodes.noiseGain) {
       const hissLevel = object.userData.tapeHissLevel || 0.3;
-      object.userData.effectNodes.noiseGain.gain.value = 0.015 * hissLevel;
+      const volume = object.userData.volume || 0.7;
+      object.userData.effectNodes.noiseGain.gain.value = 0.015 * hissLevel * volume;
     }
   } else {
     object.userData.audioElement.pause();
@@ -5178,6 +5580,964 @@ function handleCassetteButtonClick(object, buttonType) {
 }
 
 // ============================================================================
+// DICTAPHONE
+// ============================================================================
+// Dictaphone state for recording
+let dictaphoneState = {
+  audioContext: null,
+  mediaRecorder: null,
+  recordedChunks: [],
+  isRecording: false,
+  currentRecorderId: null,
+  microphoneStream: null,
+  // For mixing virtual room sounds with microphone
+  destinationNode: null,
+  microphoneGainNode: null,
+  microphonePannerNode: null, // For panoramic microphone recording (left/right panning)
+  microphoneSpatialGainNode: null, // For panoramic microphone recording (distance-based volume)
+  virtualAudioGainNode: null,
+  sampleRate: 48000,
+  // For volume level visualization
+  analyserNode: null,
+  microphoneSource: null,
+  // For dynamic panorama switching during recording
+  currentRecordingObject: null,  // Reference to the dictaphone object being recorded
+  usePanoramicEnvironment: false,  // Current environment panorama state
+  useMicrophonePanorama: false     // Current microphone panorama state
+};
+
+// Pure JavaScript WAV encoder - converts AudioBuffer to WAV format
+function encodeWav(audioBuffer) {
+  const numChannels = audioBuffer.numberOfChannels;
+  const sampleRate = audioBuffer.sampleRate;
+  const bitsPerSample = 16;
+  const bytesPerSample = bitsPerSample / 8;
+  const blockAlign = numChannels * bytesPerSample;
+
+  // Get all channel data
+  const channels = [];
+  for (let i = 0; i < numChannels; i++) {
+    channels.push(audioBuffer.getChannelData(i));
+  }
+  const numSamples = channels[0].length;
+
+  // Calculate buffer size
+  const dataSize = numSamples * blockAlign;
+  const bufferSize = 44 + dataSize;
+  const buffer = new ArrayBuffer(bufferSize);
+  const view = new DataView(buffer);
+
+  // Write WAV header
+  let offset = 0;
+
+  // RIFF chunk descriptor
+  writeString(view, offset, 'RIFF'); offset += 4;
+  view.setUint32(offset, bufferSize - 8, true); offset += 4;
+  writeString(view, offset, 'WAVE'); offset += 4;
+
+  // fmt sub-chunk
+  writeString(view, offset, 'fmt '); offset += 4;
+  view.setUint32(offset, 16, true); offset += 4; // Subchunk1Size (16 for PCM)
+  view.setUint16(offset, 1, true); offset += 2; // AudioFormat (1 = PCM)
+  view.setUint16(offset, numChannels, true); offset += 2;
+  view.setUint32(offset, sampleRate, true); offset += 4;
+  view.setUint32(offset, sampleRate * blockAlign, true); offset += 4; // ByteRate
+  view.setUint16(offset, blockAlign, true); offset += 2;
+  view.setUint16(offset, bitsPerSample, true); offset += 2;
+
+  // data sub-chunk
+  writeString(view, offset, 'data'); offset += 4;
+  view.setUint32(offset, dataSize, true); offset += 4;
+
+  // Write interleaved audio data
+  for (let i = 0; i < numSamples; i++) {
+    for (let ch = 0; ch < numChannels; ch++) {
+      const sample = Math.max(-1, Math.min(1, channels[ch][i]));
+      const intSample = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
+      view.setInt16(offset, intSample, true);
+      offset += 2;
+    }
+  }
+
+  return buffer;
+
+  function writeString(view, offset, string) {
+    for (let i = 0; i < string.length; i++) {
+      view.setUint8(offset + i, string.charCodeAt(i));
+    }
+  }
+}
+
+// Encode WAV directly from PCM Float32Array samples (no decoding required)
+// This avoids decodeAudioData() which can hang on certain audio data
+function encodePcmToWav(pcmChunks, sampleRate, numChannels = 1) {
+  // Concatenate all PCM chunks into a single Float32Array
+  const totalLength = pcmChunks.reduce((acc, chunk) => acc + chunk.length, 0);
+  const samples = new Float32Array(totalLength);
+  let offset = 0;
+  for (const chunk of pcmChunks) {
+    samples.set(chunk, offset);
+    offset += chunk.length;
+  }
+
+  // Convert to 16-bit PCM
+  const bitsPerSample = 16;
+  const bytesPerSample = bitsPerSample / 8;
+  const blockAlign = numChannels * bytesPerSample;
+  const dataSize = samples.length * bytesPerSample;
+  const bufferSize = 44 + dataSize;
+  const buffer = new ArrayBuffer(bufferSize);
+  const view = new DataView(buffer);
+
+  function writeString(view, off, string) {
+    for (let i = 0; i < string.length; i++) {
+      view.setUint8(off + i, string.charCodeAt(i));
+    }
+  }
+
+  let pos = 0;
+  // RIFF chunk descriptor
+  writeString(view, pos, 'RIFF'); pos += 4;
+  view.setUint32(pos, bufferSize - 8, true); pos += 4;
+  writeString(view, pos, 'WAVE'); pos += 4;
+
+  // fmt sub-chunk
+  writeString(view, pos, 'fmt '); pos += 4;
+  view.setUint32(pos, 16, true); pos += 4; // Subchunk1Size
+  view.setUint16(pos, 1, true); pos += 2; // AudioFormat (PCM)
+  view.setUint16(pos, numChannels, true); pos += 2;
+  view.setUint32(pos, sampleRate, true); pos += 4;
+  view.setUint32(pos, sampleRate * blockAlign, true); pos += 4; // ByteRate
+  view.setUint16(pos, blockAlign, true); pos += 2;
+  view.setUint16(pos, bitsPerSample, true); pos += 2;
+
+  // data sub-chunk
+  writeString(view, pos, 'data'); pos += 4;
+  view.setUint32(pos, dataSize, true); pos += 4;
+
+  // Write audio data
+  for (let i = 0; i < samples.length; i++) {
+    const sample = Math.max(-1, Math.min(1, samples[i]));
+    const intSample = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
+    view.setInt16(pos, intSample, true);
+    pos += 2;
+  }
+
+  return buffer;
+}
+
+// Convert webm blob to WAV using AudioContext
+// Note: decodeAudioData may not support WebM/Opus in all browsers/versions
+// Adding timeout to prevent hanging
+async function convertWebmToWav(webmBlob, audioContext) {
+  const DECODE_TIMEOUT = 10000; // 10 second timeout
+
+  try {
+    console.log('convertWebmToWav: Starting conversion, blob size:', webmBlob.size);
+    const arrayBuffer = await webmBlob.arrayBuffer();
+    console.log('convertWebmToWav: ArrayBuffer created, size:', arrayBuffer.byteLength);
+
+    // Wrap decodeAudioData with timeout to prevent hanging
+    const audioBuffer = await Promise.race([
+      audioContext.decodeAudioData(arrayBuffer.slice(0)), // Use slice to create a copy (decodeAudioData detaches the buffer)
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('decodeAudioData timeout - WebM format may not be supported')), DECODE_TIMEOUT)
+      )
+    ]);
+
+    console.log('convertWebmToWav: Audio decoded, duration:', audioBuffer.duration, 'seconds, channels:', audioBuffer.numberOfChannels);
+
+    const wavBuffer = encodeWav(audioBuffer);
+    console.log('convertWebmToWav: WAV encoded, size:', wavBuffer.byteLength);
+
+    return new Blob([wavBuffer], { type: 'audio/wav' });
+  } catch (error) {
+    console.error('convertWebmToWav: Error converting WebM to WAV:', error.message);
+    console.error('convertWebmToWav: This may be because decodeAudioData does not support WebM/Opus format');
+    throw error;
+  }
+}
+
+function createDictaphone(options = {}) {
+  const group = new THREE.Group();
+  group.userData = {
+    type: 'dictaphone',
+    name: 'Dictaphone',
+    interactive: false, // Uses button clicks, not modal interaction
+    // Recording state
+    isRecording: false,
+    recordingNumber: options.recordingNumber || 1,
+    // Folder for saving recordings
+    recordingsFolderPath: options.recordingsFolderPath || null,
+    // Recording format: 'wav' (default), 'mp3', or 'webm'
+    recordingFormat: options.recordingFormat || 'wav',
+    // Recording volume: 0-200% (default 100%)
+    recordingVolume: options.recordingVolume !== undefined ? options.recordingVolume : 100,
+    // Panoramic recording options (for spatial audio)
+    recordMicrophonePanorama: options.recordMicrophonePanorama !== undefined ? options.recordMicrophonePanorama : false,
+    recordEnvironmentPanorama: options.recordEnvironmentPanorama !== undefined ? options.recordEnvironmentPanorama : true,
+    // Colors - all black minimalist design
+    mainColor: options.mainColor || '#1a1a1a', // Black
+    accentColor: options.accentColor || '#2a2a2a' // Dark gray accent
+  };
+
+  // Materials - black plastic
+  const blackPlasticMaterial = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(group.userData.mainColor),
+    roughness: 0.7,
+    metalness: 0.1
+  });
+
+  const darkGrayMaterial = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(group.userData.accentColor),
+    roughness: 0.6,
+    metalness: 0.2
+  });
+
+  // Flat base/stand - rectangular, flat
+  const baseWidth = 0.12;
+  const baseDepth = 0.08;
+  const baseHeight = 0.015;
+  const baseGeometry = new THREE.BoxGeometry(baseWidth, baseHeight, baseDepth);
+  const base = new THREE.Mesh(baseGeometry, blackPlasticMaterial);
+  base.position.y = baseHeight / 2;
+  base.castShadow = true;
+  base.receiveShadow = true;
+  group.add(base);
+
+  // Long neck/stem - angled and slightly curved using TubeGeometry
+  const neckRadius = 0.008;
+  const neckHeight = 0.25;
+
+  // Create a curved path for the neck - tilted forward and slightly curved
+  class NeckCurve extends THREE.Curve {
+    constructor() {
+      super();
+    }
+    getPoint(t) {
+      // Start at base, curve forward as it goes up
+      const y = t * neckHeight;
+      // Add forward tilt (negative z) that increases with height
+      const tiltAngle = 0.25; // About 15 degrees forward
+      const curveAmount = 0.015; // Slight curve
+      const z = -t * neckHeight * Math.tan(tiltAngle) - curveAmount * Math.sin(t * Math.PI);
+      return new THREE.Vector3(0, y, z);
+    }
+  }
+
+  const neckCurve = new NeckCurve();
+  const neckGeometry = new THREE.TubeGeometry(neckCurve, 20, neckRadius, 16, false);
+  const neck = new THREE.Mesh(neckGeometry, blackPlasticMaterial);
+  neck.position.set(0, baseHeight, 0);
+  neck.castShadow = true;
+  group.add(neck);
+
+  // Calculate the end position of the neck for placing the foam
+  const neckEndPoint = neckCurve.getPoint(1);
+
+  // Microphone head - small oval foam (capsule shape)
+  const foamRadiusX = 0.025;
+  const foamRadiusY = 0.035;
+  const foamGeometry = new THREE.SphereGeometry(foamRadiusX, 16, 12);
+  foamGeometry.scale(1, foamRadiusY / foamRadiusX, 1); // Make it oval
+
+  const foamMaterial = new THREE.MeshStandardMaterial({
+    color: 0x1a1a1a, // Black foam
+    roughness: 0.95,
+    metalness: 0
+  });
+  const foam = new THREE.Mesh(foamGeometry, foamMaterial);
+  // Position at the end of the curved neck
+  foam.position.set(
+    neckEndPoint.x,
+    baseHeight + neckEndPoint.y + foamRadiusY * 0.7,
+    neckEndPoint.z
+  );
+  foam.castShadow = true;
+  foam.name = 'microphoneFoam';
+  group.add(foam);
+
+  // Power button on the base (like laptop power button) - circular
+  const buttonRadius = 0.012;
+  const buttonHeight = 0.004;
+  const buttonGeometry = new THREE.CylinderGeometry(buttonRadius, buttonRadius, buttonHeight, 16);
+
+  const buttonMaterial = new THREE.MeshStandardMaterial({
+    color: 0x3a3a3a,
+    roughness: 0.4,
+    metalness: 0.3
+  });
+  const powerButton = new THREE.Mesh(buttonGeometry, buttonMaterial);
+  powerButton.position.set(0, baseHeight + buttonHeight / 2, baseDepth / 2 - 0.015);
+  powerButton.rotation.x = Math.PI / 2; // Lay flat facing user
+  powerButton.name = 'powerButton';
+  powerButton.userData.buttonType = 'power';
+  powerButton.castShadow = true;
+  group.add(powerButton);
+
+  // Power button symbol (circle with line) - decorative
+  const symbolGeometry = new THREE.RingGeometry(0.005, 0.007, 16);
+  const symbolMaterial = new THREE.MeshBasicMaterial({
+    color: 0x666666,
+    side: THREE.DoubleSide
+  });
+  const powerSymbol = new THREE.Mesh(symbolGeometry, symbolMaterial);
+  powerSymbol.position.set(0, baseHeight + buttonHeight + 0.001, baseDepth / 2 - 0.015);
+  powerSymbol.rotation.x = -Math.PI / 2;
+  powerSymbol.userData.buttonType = 'power';
+  group.add(powerSymbol);
+
+  // Power symbol line at top
+  const lineGeometry = new THREE.BoxGeometry(0.002, 0.006, 0.001);
+  const powerLine = new THREE.Mesh(lineGeometry, symbolMaterial);
+  powerLine.position.set(0, baseHeight + buttonHeight + 0.001, baseDepth / 2 - 0.015 + 0.006);
+  powerLine.rotation.x = -Math.PI / 2;
+  powerLine.userData.buttonType = 'power';
+  group.add(powerLine);
+
+  // LED indicator - small, hidden when not recording
+  const ledRadius = 0.004;
+  const ledGeometry = new THREE.SphereGeometry(ledRadius, 12, 8);
+
+  // LED off material (barely visible dark)
+  const ledOffMaterial = new THREE.MeshStandardMaterial({
+    color: 0x330000,
+    roughness: 0.3,
+    metalness: 0.5,
+    transparent: true,
+    opacity: 0.3
+  });
+
+  const led = new THREE.Mesh(ledGeometry, ledOffMaterial);
+  led.position.set(buttonRadius + 0.008, baseHeight + 0.003, baseDepth / 2 - 0.015);
+  led.name = 'recordingLed';
+  group.add(led);
+
+  // LED point light (red glow when recording) - starts invisible
+  const ledLight = new THREE.PointLight(0xff0000, 0, 0.5, 2);
+  ledLight.position.copy(led.position);
+  ledLight.name = 'ledLight';
+  group.add(ledLight);
+
+  group.position.y = getDeskSurfaceY();
+
+  return group;
+}
+
+// Toggle dictaphone recording
+async function toggleDictaphoneRecording(object) {
+  if (!object || object.userData.type !== 'dictaphone') {
+    console.log('toggleDictaphoneRecording: invalid object or not a dictaphone', object?.userData?.type);
+    return;
+  }
+
+  // Use both object.userData.isRecording AND dictaphoneState.isRecording for robustness
+  // This handles cases where state might get out of sync
+  const isRecordingLocal = object.userData.isRecording;
+  const isRecordingGlobal = dictaphoneState.isRecording && dictaphoneState.currentRecorderId === object.userData.id;
+
+  console.log('toggleDictaphoneRecording called:');
+  console.log('  - object.userData.isRecording:', isRecordingLocal);
+  console.log('  - dictaphoneState.isRecording:', dictaphoneState.isRecording);
+  console.log('  - dictaphoneState.currentRecorderId:', dictaphoneState.currentRecorderId);
+  console.log('  - object.userData.id:', object.userData.id);
+
+  if (isRecordingLocal || isRecordingGlobal) {
+    // Stop recording
+    console.log('Stopping recording...');
+    await stopDictaphoneRecording(object);
+  } else {
+    // Start recording
+    console.log('Starting recording...');
+    await startDictaphoneRecording(object);
+  }
+}
+
+// Start recording
+async function startDictaphoneRecording(object) {
+  if (!object || object.userData.isRecording) return;
+
+  // Check if folder is set
+  if (!object.userData.recordingsFolderPath) {
+    console.log('No recordings folder set - opening folder selection');
+    const result = await window.electronAPI.selectRecordingsFolder();
+    if (!result.success || result.canceled) {
+      console.log('Folder selection canceled');
+      return;
+    }
+    object.userData.recordingsFolderPath = result.folderPath;
+    object.userData.recordingNumber = result.nextRecordingNumber;
+    saveState();
+  }
+
+  try {
+    // Use the shared audio context - same as cassette player
+    // This is critical for capturing virtual room sounds!
+    const audioCtx = getSharedAudioContext();
+    dictaphoneState.audioContext = audioCtx;
+
+    // Resume audio context if suspended
+    if (audioCtx.state === 'suspended') {
+      await audioCtx.resume();
+    }
+
+    // Create destination for mixing audio sources
+    dictaphoneState.destinationNode = audioCtx.createMediaStreamDestination();
+
+    // Request microphone access
+    try {
+      const micStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false
+        }
+      });
+      dictaphoneState.microphoneStream = micStream;
+
+      // Connect microphone to destination with volume control
+      const micSource = audioCtx.createMediaStreamSource(micStream);
+      dictaphoneState.microphoneSource = micSource;
+      dictaphoneState.microphoneGainNode = audioCtx.createGain();
+      // Apply recording volume setting (0-200%)
+      const volumeMultiplier = (object.userData.recordingVolume || 100) / 100;
+      dictaphoneState.microphoneGainNode.gain.value = volumeMultiplier;
+
+      // Create analyser node for volume level visualization
+      dictaphoneState.analyserNode = audioCtx.createAnalyser();
+      dictaphoneState.analyserNode.fftSize = 256;
+      dictaphoneState.analyserNode.smoothingTimeConstant = 0.3;
+
+      // Check if microphone panorama is enabled
+      // If enabled, apply spatial panning based on dictaphone position
+      const useMicPanorama = object.userData.recordMicrophonePanorama === true;
+
+      if (useMicPanorama) {
+        // Create panner node for microphone spatial positioning (left/right)
+        dictaphoneState.microphonePannerNode = audioCtx.createStereoPanner();
+        // Create gain node for distance-based volume attenuation
+        dictaphoneState.microphoneSpatialGainNode = audioCtx.createGain();
+
+        const spatial = calculateSpatialAudio(object);
+        // Invert pan: if dictaphone is on the right (+pan), voice should be on the left (-pan)
+        // This simulates recording from the camera's perspective
+        dictaphoneState.microphonePannerNode.pan.value = -spatial.pan;
+        // Apply distance-based volume attenuation
+        dictaphoneState.microphoneSpatialGainNode.gain.value = spatial.volume;
+
+        // Chain: micSource -> analyserNode -> microphoneGainNode -> pannerNode -> spatialGain -> destinationNode
+        micSource.connect(dictaphoneState.analyserNode);
+        dictaphoneState.analyserNode.connect(dictaphoneState.microphoneGainNode);
+        dictaphoneState.microphoneGainNode.connect(dictaphoneState.microphonePannerNode);
+        dictaphoneState.microphonePannerNode.connect(dictaphoneState.microphoneSpatialGainNode);
+        dictaphoneState.microphoneSpatialGainNode.connect(dictaphoneState.destinationNode);
+
+        console.log('Microphone connected with panoramic panning (inverted):', -spatial.pan, 'volume:', spatial.volume);
+      } else {
+        // Chain: micSource -> analyserNode -> microphoneGainNode -> destinationNode (no panning)
+        micSource.connect(dictaphoneState.analyserNode);
+        dictaphoneState.analyserNode.connect(dictaphoneState.microphoneGainNode);
+        dictaphoneState.microphoneGainNode.connect(dictaphoneState.destinationNode);
+      }
+
+      console.log('Microphone connected for recording with volume:', volumeMultiplier, 'panorama:', useMicPanorama);
+    } catch (micError) {
+      console.warn('Could not access microphone:', micError);
+      // Continue without microphone - will record only virtual sounds
+    }
+
+    // Connect virtual room sounds from the shared audio system
+    // This captures all audio going through the room (cassette players, etc.)
+    // If environment panorama is enabled, use the panoramic gain node (preserves stereo panning)
+    const usePanoramicEnvironment = object.userData.recordEnvironmentPanorama !== false;
+
+    // Store reference to the object and panorama states for dynamic switching
+    dictaphoneState.currentRecordingObject = object;
+    dictaphoneState.usePanoramicEnvironment = usePanoramicEnvironment;
+    dictaphoneState.useMicrophonePanorama = object.userData.recordMicrophonePanorama === true;
+
+    if (sharedAudioSystem.recordingGain || sharedAudioSystem.recordingGainPanorama) {
+      dictaphoneState.virtualAudioGainNode = audioCtx.createGain();
+      dictaphoneState.virtualAudioGainNode.gain.value = 0.7; // Mix at 70%
+      dictaphoneState.virtualAudioGainNode.connect(dictaphoneState.destinationNode);
+
+      // Connect from the appropriate shared recording tap based on panorama setting
+      const environmentSource = usePanoramicEnvironment
+        ? sharedAudioSystem.recordingGainPanorama
+        : sharedAudioSystem.recordingGain;
+
+      if (environmentSource) {
+        environmentSource.connect(dictaphoneState.virtualAudioGainNode);
+      }
+
+      console.log('Virtual room audio connected for recording via shared audio system');
+      console.log('  Using panoramic recording:', usePanoramicEnvironment);
+      console.log('  Active players:', sharedAudioSystem.activePlayers.size);
+    } else {
+      console.log('Shared audio system not initialized - recording microphone only');
+    }
+
+    // Use MediaRecorder for recording (runs on background thread, won't block rendering)
+    // This prevents the gray screen issue that occurred with ScriptProcessorNode
+    dictaphoneState.recordedChunks = [];
+    dictaphoneState.sampleRate = audioCtx.sampleRate;
+
+    // Choose best available codec
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus'
+      : 'audio/webm';
+
+    console.log('Using MediaRecorder with mimeType:', mimeType);
+
+    dictaphoneState.mediaRecorder = new MediaRecorder(
+      dictaphoneState.destinationNode.stream,
+      { mimeType }
+    );
+
+    dictaphoneState.mediaRecorder.ondataavailable = (event) => {
+      if (event.data.size > 0) {
+        dictaphoneState.recordedChunks.push(event.data);
+      }
+    };
+
+    // Start recording - collect data every 100ms for smooth recording
+    dictaphoneState.mediaRecorder.start(100);
+    console.log('MediaRecorder started, sample rate:', audioCtx.sampleRate);
+    dictaphoneState.isRecording = true;
+    dictaphoneState.currentRecorderId = object.userData.id;
+    object.userData.isRecording = true;
+
+    // Update LED visual
+    updateDictaphoneLed(object, true);
+
+    console.log('Dictaphone recording started');
+    saveState();
+
+  } catch (error) {
+    console.error('Error starting dictaphone recording:', error);
+    object.userData.isRecording = false;
+    dictaphoneState.isRecording = false;
+  }
+}
+
+/**
+ * Switch the environment panorama setting during recording.
+ * This dynamically re-routes audio to/from the stereo panning node.
+ * @param {boolean} usePanoramic - Whether to use panoramic (stereo panning) recording
+ */
+function switchDictaphoneEnvironmentPanorama(usePanoramic) {
+  if (!dictaphoneState.isRecording || !dictaphoneState.virtualAudioGainNode) {
+    console.log('Cannot switch environment panorama: not recording or no virtual audio');
+    return;
+  }
+
+  // If already in the requested state, do nothing
+  if (dictaphoneState.usePanoramicEnvironment === usePanoramic) {
+    return;
+  }
+
+  try {
+    // Disconnect the current source from virtualAudioGainNode
+    const oldSource = dictaphoneState.usePanoramicEnvironment
+      ? sharedAudioSystem.recordingGainPanorama
+      : sharedAudioSystem.recordingGain;
+
+    if (oldSource) {
+      try {
+        oldSource.disconnect(dictaphoneState.virtualAudioGainNode);
+      } catch (e) {
+        // May fail if not connected, ignore
+      }
+    }
+
+    // Connect the new source to virtualAudioGainNode
+    const newSource = usePanoramic
+      ? sharedAudioSystem.recordingGainPanorama
+      : sharedAudioSystem.recordingGain;
+
+    if (newSource) {
+      newSource.connect(dictaphoneState.virtualAudioGainNode);
+    }
+
+    dictaphoneState.usePanoramicEnvironment = usePanoramic;
+    console.log('Switched environment panorama to:', usePanoramic);
+  } catch (e) {
+    console.error('Error switching environment panorama:', e);
+  }
+}
+
+/**
+ * Switch the microphone panorama setting during recording.
+ * This dynamically adds/removes the stereo panner on the microphone input.
+ * @param {boolean} usePanoramic - Whether to apply stereo panning to microphone
+ */
+function switchDictaphoneMicrophonePanorama(usePanoramic) {
+  if (!dictaphoneState.isRecording || !dictaphoneState.audioContext) {
+    console.log('Cannot switch microphone panorama: not recording');
+    return;
+  }
+
+  // If already in the requested state, do nothing
+  if (dictaphoneState.useMicrophonePanorama === usePanoramic) {
+    return;
+  }
+
+  const audioCtx = dictaphoneState.audioContext;
+
+  try {
+    if (usePanoramic) {
+      // Add panning and spatial gain: disconnect microphoneGainNode from destinationNode, add panner and spatial gain between them
+      if (dictaphoneState.microphoneGainNode && dictaphoneState.destinationNode) {
+        // Create panner node if it doesn't exist
+        if (!dictaphoneState.microphonePannerNode) {
+          dictaphoneState.microphonePannerNode = audioCtx.createStereoPanner();
+        }
+        // Create spatial gain node if it doesn't exist
+        if (!dictaphoneState.microphoneSpatialGainNode) {
+          dictaphoneState.microphoneSpatialGainNode = audioCtx.createGain();
+        }
+
+        // Calculate current spatial position based on dictaphone object
+        // Invert pan: if dictaphone is on the right (+pan), voice should be on the left (-pan)
+        // Volume is based on distance from camera
+        const object = dictaphoneState.currentRecordingObject;
+        if (object) {
+          const spatial = calculateSpatialAudio(object);
+          dictaphoneState.microphonePannerNode.pan.value = -spatial.pan;
+          dictaphoneState.microphoneSpatialGainNode.gain.value = spatial.volume;
+        }
+
+        // Reconnect: gain -> panner -> spatialGain -> destination
+        try {
+          dictaphoneState.microphoneGainNode.disconnect(dictaphoneState.destinationNode);
+        } catch (e) {
+          // May fail if not connected, ignore
+        }
+        dictaphoneState.microphoneGainNode.connect(dictaphoneState.microphonePannerNode);
+        dictaphoneState.microphonePannerNode.connect(dictaphoneState.microphoneSpatialGainNode);
+        dictaphoneState.microphoneSpatialGainNode.connect(dictaphoneState.destinationNode);
+
+        console.log('Enabled microphone panorama with pan (inverted):', dictaphoneState.microphonePannerNode.pan.value, 'volume:', dictaphoneState.microphoneSpatialGainNode.gain.value);
+      }
+    } else {
+      // Remove panning and spatial gain: disconnect panner/spatialGain, connect gain directly to destination
+      if (dictaphoneState.microphoneGainNode && dictaphoneState.destinationNode) {
+        try {
+          if (dictaphoneState.microphonePannerNode) {
+            dictaphoneState.microphoneGainNode.disconnect(dictaphoneState.microphonePannerNode);
+          }
+          if (dictaphoneState.microphoneSpatialGainNode) {
+            dictaphoneState.microphonePannerNode.disconnect(dictaphoneState.microphoneSpatialGainNode);
+            dictaphoneState.microphoneSpatialGainNode.disconnect(dictaphoneState.destinationNode);
+          } else if (dictaphoneState.microphonePannerNode) {
+            dictaphoneState.microphonePannerNode.disconnect(dictaphoneState.destinationNode);
+          }
+        } catch (e) {
+          // May fail if not connected, ignore
+        }
+        dictaphoneState.microphoneGainNode.connect(dictaphoneState.destinationNode);
+
+        console.log('Disabled microphone panorama');
+      }
+    }
+
+    dictaphoneState.useMicrophonePanorama = usePanoramic;
+  } catch (e) {
+    console.error('Error switching microphone panorama:', e);
+  }
+}
+
+// Stop recording
+async function stopDictaphoneRecording(object) {
+  console.log('=== stopDictaphoneRecording START ===');
+  console.log('  object?.userData?.id:', object?.userData?.id);
+  console.log('  object?.userData?.isRecording:', object?.userData?.isRecording);
+  console.log('  object?.userData?.recordingsFolderPath:', object?.userData?.recordingsFolderPath);
+  console.log('  dictaphoneState.isRecording:', dictaphoneState.isRecording);
+  console.log('  dictaphoneState.currentRecorderId:', dictaphoneState.currentRecorderId);
+  console.log('  dictaphoneState.recordedChunks.length:', dictaphoneState.recordedChunks?.length);
+
+  // Check both local and global state to be robust
+  const isRecordingLocal = object?.userData?.isRecording;
+  const isRecordingGlobal = dictaphoneState.isRecording;
+
+  if (!object || (!isRecordingLocal && !isRecordingGlobal)) {
+    console.log('stopDictaphoneRecording: early return - object invalid or not recording');
+    console.log('  object is null:', !object);
+    console.log('  isRecordingLocal:', isRecordingLocal);
+    console.log('  isRecordingGlobal:', isRecordingGlobal);
+    return;
+  }
+
+  try {
+    // Stop MediaRecorder
+    if (dictaphoneState.mediaRecorder && dictaphoneState.mediaRecorder.state !== 'inactive') {
+      console.log('Stopping MediaRecorder...');
+
+      // Create a promise that resolves when onstop fires
+      const stopPromise = new Promise((resolve) => {
+        dictaphoneState.mediaRecorder.onstop = () => {
+          console.log('MediaRecorder stopped, chunks collected:', dictaphoneState.recordedChunks?.length || 0);
+          resolve();
+        };
+      });
+
+      dictaphoneState.mediaRecorder.stop();
+      await stopPromise;
+    }
+
+    // Stop microphone stream
+    if (dictaphoneState.microphoneStream) {
+      dictaphoneState.microphoneStream.getTracks().forEach(track => track.stop());
+      dictaphoneState.microphoneStream = null;
+    }
+
+    // Disconnect analyser node
+    if (dictaphoneState.analyserNode) {
+      try {
+        dictaphoneState.analyserNode.disconnect();
+      } catch (e) {}
+      dictaphoneState.analyserNode = null;
+    }
+
+    // Disconnect microphone source
+    if (dictaphoneState.microphoneSource) {
+      try {
+        dictaphoneState.microphoneSource.disconnect();
+      } catch (e) {}
+      dictaphoneState.microphoneSource = null;
+    }
+
+    // Disconnect microphone panner (for panoramic recording)
+    if (dictaphoneState.microphonePannerNode) {
+      try {
+        dictaphoneState.microphonePannerNode.disconnect();
+      } catch (e) {}
+      dictaphoneState.microphonePannerNode = null;
+    }
+
+    // Disconnect microphone spatial gain (for distance-based volume)
+    if (dictaphoneState.microphoneSpatialGainNode) {
+      try {
+        dictaphoneState.microphoneSpatialGainNode.disconnect();
+      } catch (e) {}
+      dictaphoneState.microphoneSpatialGainNode = null;
+    }
+
+    // Disconnect virtual audio
+    if (dictaphoneState.virtualAudioGainNode) {
+      try {
+        dictaphoneState.virtualAudioGainNode.disconnect();
+      } catch (e) {}
+      dictaphoneState.virtualAudioGainNode = null;
+    }
+
+    // Update state
+    object.userData.isRecording = false;
+    dictaphoneState.isRecording = false;
+    dictaphoneState.currentRecorderId = null;
+    dictaphoneState.currentRecordingObject = null;
+    dictaphoneState.usePanoramicEnvironment = false;
+    dictaphoneState.useMicrophonePanorama = false;
+
+    // Update LED visual
+    updateDictaphoneLed(object, false);
+
+    console.log('Dictaphone recording stopped');
+    saveState();
+
+    // Save the recording
+    console.log('Calling saveDictaphoneRecording...');
+    await saveDictaphoneRecording(object);
+    console.log('=== stopDictaphoneRecording END ===');
+
+  } catch (error) {
+    console.error('Error stopping dictaphone recording:', error);
+    console.error('Error stack:', error.stack);
+  }
+}
+
+// Save recording to file
+async function saveDictaphoneRecording(object) {
+  console.log('=== saveDictaphoneRecording START ===');
+  console.log('  recordedChunks:', dictaphoneState.recordedChunks?.length || 0);
+  console.log('  folderPath:', object?.userData?.recordingsFolderPath);
+  console.log('  recordingNumber:', object?.userData?.recordingNumber);
+  console.log('  recordingFormat:', object?.userData?.recordingFormat);
+
+  if (!dictaphoneState.recordedChunks || dictaphoneState.recordedChunks.length === 0) {
+    console.log('No recording data to save - recordedChunks is empty');
+    return;
+  }
+
+  // Check if folder path is set
+  if (!object || !object.userData || !object.userData.recordingsFolderPath) {
+    console.error('Cannot save recording: folder path is not set');
+    console.error('  object:', !!object);
+    console.error('  userData:', !!object?.userData);
+    console.error('  recordingsFolderPath:', object?.userData?.recordingsFolderPath);
+    alert('Cannot save recording: please select a folder first');
+    dictaphoneState.recordedChunks = [];
+    return;
+  }
+
+  try {
+    // Combine all recorded chunks into a single blob
+    const webmBlob = new Blob(dictaphoneState.recordedChunks, { type: 'audio/webm' });
+    console.log('WebM blob created, size:', webmBlob.size, 'bytes');
+
+    const format = object.userData.recordingFormat || 'wav';
+    const folderPath = object.userData.recordingsFolderPath;
+    const recordingNumber = object.userData.recordingNumber || 1;
+
+    // Always send WebM data to main process
+    // Browser-based WebM to WAV conversion is unreliable (decodeAudioData doesn't support WebM/Opus in Chromium)
+    // FFmpeg handles all conversions (WAV, MP3) reliably
+    // WebM format saves directly without conversion
+    console.log('Converting WebM blob to base64...');
+    const arrayBuffer = await webmBlob.arrayBuffer();
+    const uint8Array = new Uint8Array(arrayBuffer);
+    let binary = '';
+    for (let i = 0; i < uint8Array.byteLength; i++) {
+      binary += String.fromCharCode(uint8Array[i]);
+    }
+    const audioDataBase64 = btoa(binary);
+    const dataFormat = 'webm';
+    console.log('WebM base64 encoded, length:', audioDataBase64.length, 'characters');
+
+    console.log('Calling saveRecording IPC:');
+    console.log('  folderPath:', folderPath);
+    console.log('  recordingNumber:', recordingNumber);
+    console.log('  format:', format);
+    console.log('  dataFormat:', dataFormat);
+
+    const result = await window.electronAPI.saveRecording(
+      folderPath,
+      recordingNumber,
+      audioDataBase64,
+      format,
+      dataFormat  // Tell main process what format the data is in
+    );
+
+    console.log('saveRecording IPC result:', JSON.stringify(result));
+
+    if (result.success) {
+      console.log('✓ Recording saved successfully:', result.fileName);
+      console.log('  File path:', result.filePath);
+      console.log('  Actual format:', result.actualFormat);
+
+      // Show message if format was different from requested
+      if (result.message) {
+        console.log('  Note:', result.message);
+        // Only show alert for unexpected format changes
+        if (result.actualFormat !== format) {
+          alert(`Note: ${result.message}`);
+        }
+      }
+
+      // Increment recording number for next recording
+      object.userData.recordingNumber = recordingNumber + 1;
+      saveState();
+    } else {
+      console.error('✗ Failed to save recording:', result.error);
+      alert('Failed to save recording: ' + result.error);
+    }
+
+    // Clear recorded chunks
+    dictaphoneState.recordedChunks = [];
+    console.log('=== saveDictaphoneRecording END ===');
+
+  } catch (error) {
+    console.error('Error saving recording:', error);
+    console.error('Error stack:', error.stack);
+    alert('Error saving recording: ' + error.message);
+    dictaphoneState.recordedChunks = [];
+  }
+}
+
+// Update LED visual state
+function updateDictaphoneLed(object, isRecording) {
+  try {
+    const led = object.getObjectByName('recordingLed');
+    const ledLight = object.getObjectByName('ledLight');
+
+    if (led) {
+      // Dispose old material to prevent WebGL resource leaks
+      if (led.material) {
+        led.material.dispose();
+      }
+
+      if (isRecording) {
+        // Bright red LED
+        led.material = new THREE.MeshStandardMaterial({
+          color: 0xff0000,
+          roughness: 0.3,
+          metalness: 0.2,
+          emissive: new THREE.Color(0xff0000),
+          emissiveIntensity: 0.8
+        });
+      } else {
+        // Dim/off LED
+        led.material = new THREE.MeshStandardMaterial({
+          color: 0x330000,
+          roughness: 0.3,
+          metalness: 0.5,
+          transparent: true,
+          opacity: 0.3
+        });
+      }
+    }
+
+    if (ledLight) {
+      // Set light intensity
+      ledLight.intensity = isRecording ? 0.3 : 0;
+    }
+  } catch (error) {
+    console.error('Error updating dictaphone LED:', error);
+  }
+}
+
+// Get current audio level from dictaphone analyser (returns 0-100)
+// This is used for the volume level indicator in the UI
+function getDictaphoneAudioLevel() {
+  if (!dictaphoneState.isRecording || !dictaphoneState.analyserNode) {
+    return 0;
+  }
+
+  try {
+    const analyser = dictaphoneState.analyserNode;
+    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+    analyser.getByteTimeDomainData(dataArray);
+
+    // Calculate RMS (Root Mean Square) for accurate volume level
+    let sum = 0;
+    for (let i = 0; i < dataArray.length; i++) {
+      const sample = (dataArray[i] - 128) / 128; // Normalize to -1 to 1
+      sum += sample * sample;
+    }
+    const rms = Math.sqrt(sum / dataArray.length);
+
+    // Convert RMS to percentage (0-100) with some amplification for visibility
+    // RMS typically ranges from 0 to ~0.5 for typical audio
+    const level = Math.min(100, rms * 200);
+
+    return level;
+  } catch (error) {
+    console.warn('Error getting audio level:', error);
+    return 0;
+  }
+}
+
+// Handle dictaphone button click
+function handleDictaphoneButtonClick(object, buttonType) {
+  switch (buttonType) {
+    case 'power':
+      toggleDictaphoneRecording(object);
+      break;
+  }
+}
+
+// ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
 function getDeskSurfaceY() {
@@ -5218,6 +6578,12 @@ function addObjectToDesk(type, options = {}) {
     object.scale.set(defaultMagazineScale, defaultMagazineScale, defaultMagazineScale);
     object.userData.scale = defaultMagazineScale;
     adjustObjectYForScale(object, 1.0, defaultMagazineScale);
+  } else if (type === 'dictaphone' && options.scale === undefined) {
+    // Dictaphone defaults to 3.0x scale for better visibility
+    const defaultDictaphoneScale = 3.0;
+    object.scale.set(defaultDictaphoneScale, defaultDictaphoneScale, defaultDictaphoneScale);
+    object.userData.scale = defaultDictaphoneScale;
+    adjustObjectYForScale(object, 1.0, defaultDictaphoneScale);
   }
 
   deskObjects.push(object);
@@ -9401,12 +10767,14 @@ function onMouseWheel(event) {
       // Scale object (preserving proportions) with Shift+scroll
       const scaleDelta = event.deltaY > 0 ? 0.95 : 1.05;
       const minScale = 0.3;
-      // Books, magazines and cassette player can be scaled larger for reading/interaction
+      // Books, magazines, cassette player, and dictaphone can be scaled larger for reading/interaction
       let maxScale = 3.0;
       if (object.userData.type === 'magazine' || object.userData.type === 'cassette-player' || object.userData.type === 'big-cassette-player') {
         maxScale = 10.0;
       } else if (object.userData.type === 'books') {
         maxScale = 5.0;
+      } else if (object.userData.type === 'dictaphone') {
+        maxScale = 6.0; // 2x of the default 3.0 scale
       }
 
       const oldScale = object.scale.x;
@@ -9488,12 +10856,14 @@ function onMouseWheel(event) {
         // Scale object (preserving proportions)
         const scaleDelta = event.deltaY > 0 ? 0.95 : 1.05;
         const minScale = 0.3;
-        // Books, magazines and cassette player can be scaled larger for reading/interaction
+        // Books, magazines, cassette player, and dictaphone can be scaled larger for reading/interaction
         let maxScale = 3.0;
-        if (object.userData.type === 'magazine' || object.userData.type === 'cassette-player') {
+        if (object.userData.type === 'magazine' || object.userData.type === 'cassette-player' || object.userData.type === 'big-cassette-player') {
           maxScale = 10.0;
         } else if (object.userData.type === 'books') {
           maxScale = 5.0;
+        } else if (object.userData.type === 'dictaphone') {
+          maxScale = 6.0; // 2x of the default 3.0 scale
         }
 
         const oldScale = object.scale.x;
@@ -10225,6 +11595,127 @@ function updateCustomizationPanel(object) {
       `;
       setupCassetteCustomizationHandlers(object);
       break;
+
+    case 'dictaphone':
+      const recordingsFolderDisplay = object.userData.recordingsFolderPath
+        ? object.userData.recordingsFolderPath.split('/').pop() || object.userData.recordingsFolderPath.split('\\').pop()
+        : 'No folder selected';
+      const nextRecording = object.userData.recordingNumber || 1;
+      // If FFmpeg is not available, force format to webm
+      let recordingFormat = object.userData.recordingFormat || 'wav';
+      if (!ffmpegAvailable && (recordingFormat === 'wav' || recordingFormat === 'mp3')) {
+        recordingFormat = 'webm';
+        object.userData.recordingFormat = 'webm';
+      }
+      // Determine if WAV/MP3 buttons should be disabled
+      const wavMp3Disabled = !ffmpegAvailable;
+      const disabledStyle = 'opacity: 0.4; cursor: not-allowed;';
+      // Get recording volume (default 100%)
+      const recordingVolume = object.userData.recordingVolume !== undefined ? object.userData.recordingVolume : 100;
+      // Get panoramic recording settings
+      const recordMicPanorama = object.userData.recordMicrophonePanorama === true;
+      const recordEnvPanorama = object.userData.recordEnvironmentPanorama !== false; // Default true
+      dynamicOptions.innerHTML = `
+        <div class="customization-group" style="margin-top: 20px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.1);">
+          <label>Recording Volume: <span id="dictaphone-volume-display">${recordingVolume}%</span></label>
+          <input type="range" id="dictaphone-volume-slider" min="0" max="200" value="${recordingVolume}" step="5"
+            style="width: 100%; height: 6px; margin-top: 8px;">
+          <div style="display: flex; justify-content: space-between; color: rgba(255,255,255,0.4); font-size: 10px; margin-top: 4px;">
+            <span>0%</span>
+            <span>100%</span>
+            <span>200%</span>
+          </div>
+        </div>
+
+        <div class="customization-group" style="margin-top: 15px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.1);">
+          <label>Panoramic Recording (Stereo Panning)</label>
+          <div style="margin-top: 10px; display: flex; flex-direction: column; gap: 10px;">
+            <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; color: rgba(255,255,255,0.8); font-size: 12px;">
+              <input type="checkbox" id="dictaphone-mic-panorama" ${recordMicPanorama ? 'checked' : ''}
+                style="width: 18px; height: 18px; cursor: pointer; accent-color: #4f46e5;">
+              <span>Microphone panorama</span>
+              <span style="color: rgba(255,255,255,0.4); font-size: 10px;">(position mic based on dictaphone location)</span>
+            </label>
+            <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; color: rgba(255,255,255,0.8); font-size: 12px;">
+              <input type="checkbox" id="dictaphone-env-panorama" ${recordEnvPanorama ? 'checked' : ''}
+                style="width: 18px; height: 18px; cursor: pointer; accent-color: #4f46e5;">
+              <span>Environment panorama</span>
+              <span style="color: rgba(255,255,255,0.4); font-size: 10px;">(record objects with stereo panning)</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="customization-group" style="margin-top: 15px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.1);">
+          <label>Audio Level</label>
+          <div style="margin-top: 8px;">
+            <div style="background: rgba(0,0,0,0.3); border-radius: 4px; height: 24px; overflow: hidden; position: relative;">
+              <div id="dictaphone-level-bar" style="height: 100%; width: 0%; background: linear-gradient(90deg, #22c55e 0%, #22c55e 60%, #eab308 80%, #ef4444 100%); transition: width 0.05s ease-out;"></div>
+              <div style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: center;">
+                <span id="dictaphone-level-text" style="color: rgba(255,255,255,0.7); font-size: 11px; text-shadow: 0 1px 2px rgba(0,0,0,0.5);">
+                  ${object.userData.isRecording ? 'Recording...' : 'Not recording'}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="customization-group" style="margin-top: 15px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.1);">
+          <label>Recording Format</label>
+          <div id="dictaphone-format-buttons" style="display: flex; gap: 8px; margin-top: 8px;">
+            <button data-format="wav" ${wavMp3Disabled ? 'disabled' : ''} style="flex: 1; padding: 10px; background: ${recordingFormat === 'wav' ? 'rgba(79, 70, 229, 0.3)' : 'rgba(255,255,255,0.1)'}; border: 1px solid ${recordingFormat === 'wav' ? 'rgba(79, 70, 229, 0.6)' : 'rgba(255,255,255,0.2)'}; border-radius: 8px; color: #fff; cursor: pointer; font-size: 12px; ${wavMp3Disabled ? disabledStyle : ''}">
+              WAV
+            </button>
+            <button data-format="mp3" ${wavMp3Disabled ? 'disabled' : ''} style="flex: 1; padding: 10px; background: ${recordingFormat === 'mp3' ? 'rgba(79, 70, 229, 0.3)' : 'rgba(255,255,255,0.1)'}; border: 1px solid ${recordingFormat === 'mp3' ? 'rgba(79, 70, 229, 0.6)' : 'rgba(255,255,255,0.2)'}; border-radius: 8px; color: #fff; cursor: pointer; font-size: 12px; ${wavMp3Disabled ? disabledStyle : ''}">
+              MP3
+            </button>
+            <button data-format="webm" style="flex: 1; padding: 10px; background: ${recordingFormat === 'webm' ? 'rgba(79, 70, 229, 0.3)' : 'rgba(255,255,255,0.1)'}; border: 1px solid ${recordingFormat === 'webm' ? 'rgba(79, 70, 229, 0.6)' : 'rgba(255,255,255,0.2)'}; border-radius: 8px; color: #fff; cursor: pointer; font-size: 12px;">
+              WebM
+            </button>
+          </div>
+          <div id="dictaphone-ffmpeg-status" style="color: ${ffmpegAvailable ? 'rgba(34, 197, 94, 0.7)' : 'rgba(239, 68, 68, 0.7)'}; font-size: 10px; margin-top: 6px;">
+            ${ffmpegAvailable
+              ? '✓ FFmpeg installed. All formats available.'
+              : '⚠ FFmpeg not installed. Only WebM format available.'}
+          </div>
+        </div>
+
+        <div class="customization-group" style="margin-top: 15px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.1);">
+          <label>Recordings Folder</label>
+          <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 8px;">
+            <div style="color: rgba(255,255,255,0.5); font-size: 12px; word-break: break-all;">
+              ${recordingsFolderDisplay}
+            </div>
+            <div style="color: rgba(255,255,255,0.4); font-size: 11px;">
+              Next recording: Запись ${nextRecording}.${recordingFormat}
+            </div>
+            <button id="dictaphone-select-folder" style="padding: 10px 15px; background: rgba(79, 70, 229, 0.3); border: 1px solid rgba(79, 70, 229, 0.5); border-radius: 8px; color: #fff; cursor: pointer;">
+              ${object.userData.recordingsFolderPath ? 'Change Folder' : 'Select Recordings Folder'}
+            </button>
+            ${object.userData.recordingsFolderPath ? `
+              <button id="dictaphone-clear-folder" style="padding: 10px 15px; background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 8px; color: #ef4444; cursor: pointer;">
+                Clear Folder
+              </button>
+            ` : ''}
+          </div>
+        </div>
+
+        <div style="margin-top: 15px; padding: 12px; background: rgba(255,255,255,0.05); border-radius: 8px;">
+          <div style="color: rgba(255,255,255,0.7); font-size: 12px; margin-bottom: 8px;">Recording Status</div>
+          <div id="dictaphone-status" style="color: ${object.userData.isRecording ? '#ef4444' : 'rgba(255,255,255,0.4)'}; font-size: 11px;">
+            ${object.userData.isRecording ? '🔴 Recording in progress...' : '⚫ Not recording'}
+          </div>
+        </div>
+
+        <div style="margin-top: 15px; color: rgba(255,255,255,0.4); font-size: 11px;">
+          Click the power button to start/stop recording.<br>
+          Records both microphone input and virtual room sounds.<br>
+          ${!ffmpegAvailable ? `
+          <strong style="color: rgba(239, 68, 68, 0.7);">Install <a href="https://ffmpeg.org/download.html" target="_blank" style="color: rgba(79, 70, 229, 0.8);">FFmpeg</a> for WAV/MP3 format support.</strong>
+          ` : ''}
+        </div>
+      `;
+      setupDictaphoneCustomizationHandlers(object);
+      break;
   }
 }
 
@@ -10862,6 +12353,9 @@ function setupCassetteCustomizationHandlers(object) {
         // Update live playback volume for this player (per-player audio state)
         if (object.userData.effectNodes) {
           object.userData.effectNodes.mainGain.gain.value = object.userData.volume;
+          // Also update white noise volume proportionally
+          const hissLevel = object.userData.tapeHissLevel || 0.3;
+          object.userData.effectNodes.noiseGain.gain.value = 0.015 * hissLevel * object.userData.volume;
         }
         saveState();
       });
@@ -10889,9 +12383,10 @@ function setupCassetteCustomizationHandlers(object) {
         object.userData.tapeHissLevel = parseInt(e.target.value) / 100;
         hissDisplay.textContent = e.target.value + '%';
 
-        // Update live playback for this player (per-player audio state)
+        // Update live playback for this player (per-player audio state, scaled by volume)
         if (object.userData.effectNodes) {
-          object.userData.effectNodes.noiseGain.gain.value = 0.015 * object.userData.tapeHissLevel;
+          const volume = object.userData.volume || 0.7;
+          object.userData.effectNodes.noiseGain.gain.value = 0.015 * object.userData.tapeHissLevel * volume;
         }
         saveState();
       });
@@ -10991,6 +12486,132 @@ function setupCassetteCustomizationHandlers(object) {
         saveState();
       });
     });
+  }, 0);
+}
+
+function setupDictaphoneCustomizationHandlers(object) {
+  setTimeout(() => {
+    // Volume slider
+    const volumeSlider = document.getElementById('dictaphone-volume-slider');
+    const volumeDisplay = document.getElementById('dictaphone-volume-display');
+
+    if (volumeSlider) {
+      volumeSlider.addEventListener('input', (e) => {
+        const volume = parseInt(e.target.value);
+        object.userData.recordingVolume = volume;
+        if (volumeDisplay) {
+          volumeDisplay.textContent = `${volume}%`;
+        }
+
+        // Update gain node in real-time if recording
+        if (dictaphoneState.isRecording && dictaphoneState.microphoneGainNode) {
+          dictaphoneState.microphoneGainNode.gain.value = volume / 100;
+        }
+
+        saveState();
+      });
+
+      // Add scroll wheel support for volume slider
+      addScrollToSlider(volumeSlider, (value) => {
+        object.userData.recordingVolume = value;
+        if (volumeDisplay) {
+          volumeDisplay.textContent = `${value}%`;
+        }
+        if (dictaphoneState.isRecording && dictaphoneState.microphoneGainNode) {
+          dictaphoneState.microphoneGainNode.gain.value = value / 100;
+        }
+        saveState();
+      });
+    }
+
+    // Panoramic recording checkboxes
+    const micPanoramaCheckbox = document.getElementById('dictaphone-mic-panorama');
+    const envPanoramaCheckbox = document.getElementById('dictaphone-env-panorama');
+
+    if (micPanoramaCheckbox) {
+      micPanoramaCheckbox.addEventListener('change', (e) => {
+        object.userData.recordMicrophonePanorama = e.target.checked;
+        console.log('Microphone panorama:', e.target.checked);
+        // If currently recording, switch the panorama dynamically
+        if (dictaphoneState.isRecording && dictaphoneState.currentRecorderId === object.userData.id) {
+          switchDictaphoneMicrophonePanorama(e.target.checked);
+        }
+        saveState();
+      });
+    }
+
+    if (envPanoramaCheckbox) {
+      envPanoramaCheckbox.addEventListener('change', (e) => {
+        object.userData.recordEnvironmentPanorama = e.target.checked;
+        console.log('Environment panorama:', e.target.checked);
+        // If currently recording, switch the panorama dynamically
+        if (dictaphoneState.isRecording && dictaphoneState.currentRecorderId === object.userData.id) {
+          switchDictaphoneEnvironmentPanorama(e.target.checked);
+        }
+        saveState();
+      });
+    }
+
+    // Format selection buttons
+    const formatButtons = document.querySelectorAll('#dictaphone-format-buttons button');
+    formatButtons.forEach(btn => {
+      btn.addEventListener('click', () => {
+        // Skip disabled buttons (WAV/MP3 when FFmpeg is not available)
+        if (btn.disabled) {
+          return;
+        }
+
+        const format = btn.dataset.format;
+        object.userData.recordingFormat = format;
+
+        // Update button styles (only for enabled buttons)
+        formatButtons.forEach(b => {
+          if (!b.disabled) {
+            const isSelected = b.dataset.format === format;
+            b.style.background = isSelected ? 'rgba(79, 70, 229, 0.3)' : 'rgba(255,255,255,0.1)';
+            b.style.borderColor = isSelected ? 'rgba(79, 70, 229, 0.6)' : 'rgba(255,255,255,0.2)';
+          }
+        });
+
+        saveState();
+        updateCustomizationPanel(object);
+      });
+    });
+
+    // Recordings folder selection
+    const selectFolderBtn = document.getElementById('dictaphone-select-folder');
+    const clearFolderBtn = document.getElementById('dictaphone-clear-folder');
+
+    if (selectFolderBtn) {
+      selectFolderBtn.addEventListener('click', async () => {
+        try {
+          const format = object.userData.recordingFormat || 'wav';
+          const result = await window.electronAPI.selectRecordingsFolder(format);
+          if (result.success && !result.canceled) {
+            object.userData.recordingsFolderPath = result.folderPath;
+            object.userData.recordingNumber = result.nextRecordingNumber;
+            saveState();
+            updateCustomizationPanel(object);
+          }
+        } catch (error) {
+          console.error('Error selecting recordings folder:', error);
+        }
+      });
+    }
+
+    if (clearFolderBtn) {
+      clearFolderBtn.addEventListener('click', () => {
+        // Stop recording first if active
+        if (dictaphoneState.currentRecorderId === object.userData.id && object.userData.isRecording) {
+          stopDictaphoneRecording(object);
+        }
+
+        object.userData.recordingsFolderPath = null;
+        object.userData.recordingNumber = 1;
+        saveState();
+        updateCustomizationPanel(object);
+      });
+    }
   }, 0);
 }
 
@@ -12533,17 +14154,69 @@ function playTimerAlert() {
   const volume = timerState.alertVolume || 0.5;
   const pitch = timerState.alertPitch || 800;
 
+  // Find a clock object for spatial audio positioning
+  // Use the first clock in the scene (alarm is global but we position sound at a clock)
+  const clockObject = deskObjects.find(obj => obj.userData.type === 'clock');
+  const spatial = clockObject ? calculateSpatialAudio(clockObject) : { pan: 0, volume: 1 };
+  const spatialVolume = volume * spatial.volume;
+
   // Check if custom sound is available and should be used
   // Use HTML5 Audio element for playback (doesn't hang like Web Audio API decodeAudioData)
   if (timerState.useCustomSound && timerState.customSoundDataUrl) {
     try {
       timerState.isAlerting = true;
 
-      // Create and store the audio element for the custom sound
+      // Use Web Audio API for spatial audio processing
+      const audioCtx = getSharedAudioContext();
       const audio = new Audio(timerState.customSoundDataUrl);
       timerState.customAudioElement = audio;
-      audio.volume = volume;
       audio.playbackRate = pitch / 800; // Pitch adjustment via playback rate
+
+      // Create media element source for spatial audio
+      const source = audioCtx.createMediaElementSource(audio);
+      const panner = audioCtx.createStereoPanner();
+      const gain = audioCtx.createGain();
+
+      // Playback chain: source -> panner (camera-relative) -> gain -> master
+      source.connect(panner);
+      panner.connect(gain);
+      gain.connect(sharedAudioSystem.masterGain);
+
+      // Connect source to mono recording (no spatial processing)
+      source.connect(sharedAudioSystem.recordingGain);
+
+      // Create recording spatial nodes (dictaphone-relative) for panoramic recording
+      const recordingPanner = audioCtx.createStereoPanner();
+      const recordingGain = audioCtx.createGain();
+      source.connect(recordingPanner);
+      recordingPanner.connect(recordingGain);
+      recordingGain.connect(sharedAudioSystem.recordingGainPanorama);
+      recordingPanner.pan.value = 0; // Will be updated in real-time
+      recordingGain.gain.value = 1;
+
+      panner.pan.value = spatial.pan;
+      gain.gain.value = spatialVolume;
+
+      // Store for cleanup
+      timerState.alertSpatialNodes = { source, panner, gain, recordingPanner, recordingGain };
+      timerState.alertClockObject = clockObject;
+
+      // Register with spatial audio system for real-time position updates (playback)
+      if (clockObject && clockObject.userData && clockObject.userData.id) {
+        sharedAudioSystem.spatialNodes.set('clock-alarm-' + clockObject.userData.id, {
+          pannerNode: panner,
+          gainNode: gain,
+          object: clockObject,
+          baseVolume: volume  // Store base volume for recalculation
+        });
+        // Register recording spatial nodes for dictaphone-relative updates
+        sharedAudioSystem.recordingSpatialNodes.set('clock-alarm-' + clockObject.userData.id, {
+          pannerNode: recordingPanner,
+          gainNode: recordingGain,
+          object: clockObject,
+          baseVolume: volume
+        });
+      }
 
       // Play custom sound in a loop
       const playCustomLoop = () => {
@@ -12554,12 +14227,12 @@ function playTimerAlert() {
           audio.play().catch(err => {
             console.error('Error playing custom sound:', err);
             stopTimerAlert();
-            playDefaultTimerAlert(volume, pitch);
+            playDefaultTimerAlert(volume, pitch, spatial);
           });
         } catch (playErr) {
           console.error('Error playing custom sound:', playErr);
           stopTimerAlert();
-          playDefaultTimerAlert(volume, pitch);
+          playDefaultTimerAlert(volume, pitch, spatial);
         }
       };
 
@@ -12578,37 +14251,90 @@ function playTimerAlert() {
       }, 30000);
     } catch (e) {
       console.log('Custom audio not available, falling back to default:', e.message);
-      playDefaultTimerAlert(volume, pitch);
+      playDefaultTimerAlert(volume, pitch, spatial);
     }
   } else {
-    playDefaultTimerAlert(volume, pitch);
+    playDefaultTimerAlert(volume, pitch, spatial);
   }
 }
 
-function playDefaultTimerAlert(volume, pitch) {
-  // Play a continuous beeping sound using Web Audio API
+function playDefaultTimerAlert(volume, pitch, spatial = { pan: 0, volume: 1 }) {
+  // Play a continuous beeping sound using Web Audio API with spatial audio
   // The sound will continue until stopped by middle-click on clock
   try {
-    timerState.alertAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    timerState.alertOscillator = timerState.alertAudioCtx.createOscillator();
-    const gainNode = timerState.alertAudioCtx.createGain();
+    // Use shared audio context for proper spatial audio and recording support
+    const audioCtx = getSharedAudioContext();
+    timerState.alertAudioCtx = audioCtx;
+    timerState.alertOscillator = audioCtx.createOscillator();
+    const pulseGainNode = audioCtx.createGain();  // For on/off pulsing
+    const spatialGainNode = audioCtx.createGain();  // For spatial volume (can be updated)
+    const pannerNode = audioCtx.createStereoPanner();
 
-    timerState.alertOscillator.connect(gainNode);
-    gainNode.connect(timerState.alertAudioCtx.destination);
+    // Playback chain: oscillator -> pulseGain -> spatialGain -> panner (camera-relative) -> master
+    timerState.alertOscillator.connect(pulseGainNode);
+    pulseGainNode.connect(spatialGainNode);
+    spatialGainNode.connect(pannerNode);
+    pannerNode.connect(sharedAudioSystem.masterGain);
+
+    // Connect pulseGain to mono recording (no spatial processing)
+    pulseGainNode.connect(sharedAudioSystem.recordingGain);
+
+    // Create recording spatial nodes (dictaphone-relative) for panoramic recording
+    const recordingPanner = audioCtx.createStereoPanner();
+    const recordingGainNode = audioCtx.createGain();
+    pulseGainNode.connect(recordingPanner);
+    recordingPanner.connect(recordingGainNode);
+    recordingGainNode.connect(sharedAudioSystem.recordingGainPanorama);
+    recordingPanner.pan.value = 0; // Will be updated in real-time
+    recordingGainNode.gain.value = 1;
+
+    // Apply spatial audio panning and initial volume
+    pannerNode.pan.value = spatial.pan;
+    spatialGainNode.gain.value = spatial.volume;
 
     timerState.alertOscillator.frequency.value = pitch;
     timerState.alertOscillator.type = 'sine';
 
-    // Create a pulsing effect by modulating the gain
-    const now = timerState.alertAudioCtx.currentTime;
-    const peakGain = 0.6 * volume;
+    // Create a pulsing effect by modulating the pulse gain (on/off)
+    const now = audioCtx.currentTime;
+    const peakGain = 0.6 * volume;  // Base volume without spatial (spatial handled separately)
 
     // Pulse the sound on/off
     let time = now;
     for (let i = 0; i < 60; i++) { // Up to 30 seconds of pulsing (60 * 0.5s)
-      gainNode.gain.setValueAtTime(peakGain, time);
-      gainNode.gain.setValueAtTime(0, time + 0.3);
+      pulseGainNode.gain.setValueAtTime(peakGain, time);
+      pulseGainNode.gain.setValueAtTime(0, time + 0.3);
       time += 0.5;
+    }
+
+    // Store spatial nodes for cleanup
+    timerState.alertSpatialNodes = {
+      panner: pannerNode,
+      gain: spatialGainNode,
+      pulseGain: pulseGainNode,
+      recordingPanner: recordingPanner,
+      recordingGain: recordingGainNode
+    };
+
+    // Find clock object for spatial audio updates
+    const clockObject = deskObjects.find(obj => obj.userData.type === 'clock');
+    timerState.alertClockObject = clockObject;
+
+    // Register with spatial audio system for real-time position updates (playback)
+    if (clockObject && clockObject.userData && clockObject.userData.id) {
+      sharedAudioSystem.spatialNodes.set('clock-alarm-' + clockObject.userData.id, {
+        pannerNode: pannerNode,
+        gainNode: spatialGainNode,
+        object: clockObject,
+        baseVolume: 1  // Volume already applied via pulse gain
+      });
+      // Register recording spatial nodes for dictaphone-relative updates
+      sharedAudioSystem.recordingSpatialNodes.set('clock-alarm-' + clockObject.userData.id, {
+        pannerNode: recordingPanner,
+        gainNode: recordingGainNode,
+        object: clockObject,
+        baseVolume: 1
+      });
     }
 
     timerState.alertOscillator.start();
@@ -12619,12 +14345,20 @@ function playDefaultTimerAlert(volume, pitch) {
       stopTimerAlert();
     }, 30000);
   } catch (e) {
-    console.log('Audio not available');
+    console.log('Audio not available:', e);
   }
 }
 
 function stopTimerAlert() {
   timerState.isAlerting = false; // Stop any custom sound loops first
+
+  // Remove from spatial audio systems before disconnecting
+  if (timerState.alertClockObject && timerState.alertClockObject.userData && timerState.alertClockObject.userData.id) {
+    const clockAlarmId = 'clock-alarm-' + timerState.alertClockObject.userData.id;
+    sharedAudioSystem.spatialNodes.delete(clockAlarmId);
+    sharedAudioSystem.recordingSpatialNodes.delete(clockAlarmId);
+  }
+  timerState.alertClockObject = null;
 
   // Stop HTML5 Audio element if playing (custom sound)
   if (timerState.customAudioElement) {
@@ -12637,14 +14371,26 @@ function stopTimerAlert() {
     timerState.customAudioElement = null;
   }
 
+  // Disconnect spatial audio nodes (both playback and recording)
+  if (timerState.alertSpatialNodes) {
+    try {
+      if (timerState.alertSpatialNodes.source) timerState.alertSpatialNodes.source.disconnect();
+      if (timerState.alertSpatialNodes.panner) timerState.alertSpatialNodes.panner.disconnect();
+      if (timerState.alertSpatialNodes.gain) timerState.alertSpatialNodes.gain.disconnect();
+      if (timerState.alertSpatialNodes.pulseGain) timerState.alertSpatialNodes.pulseGain.disconnect();
+      if (timerState.alertSpatialNodes.recordingPanner) timerState.alertSpatialNodes.recordingPanner.disconnect();
+      if (timerState.alertSpatialNodes.recordingGain) timerState.alertSpatialNodes.recordingGain.disconnect();
+    } catch (e) {
+      // Ignore if already disconnected
+    }
+    timerState.alertSpatialNodes = null;
+  }
+
   // Stop Web Audio API oscillator if playing (default alert)
   if (timerState.alertOscillator) {
     try {
       timerState.alertOscillator.stop();
-      // Only close the context if it's NOT the shared one (default alert uses its own)
-      if (timerState.alertAudioCtx && timerState.alertAudioCtx !== sharedAudioCtx) {
-        timerState.alertAudioCtx.close();
-      }
+      // We now use the shared audio context, so don't close it
     } catch (e) {
       // Ignore if already stopped
     }
@@ -14374,6 +16120,36 @@ function performQuickInteraction(object, clickedMesh = null) {
         } else {
           // No button clicked - toggle play/pause as default action
           toggleCassettePlayback(object);
+        }
+      }
+      break;
+
+    case 'dictaphone':
+      console.log('Dictaphone quick interaction, object.userData.isRecording:', object.userData.isRecording, 'id:', object.userData.id);
+      // Handle button clicks on the dictaphone
+      if (clickedMesh && clickedMesh.userData && clickedMesh.userData.buttonType) {
+        handleDictaphoneButtonClick(object, clickedMesh.userData.buttonType);
+      } else {
+        // Check if clicking near the power button
+        let buttonType = null;
+        if (clickedMesh && clickedMesh.parent) {
+          // Walk up to find if we're inside a button
+          let parent = clickedMesh;
+          while (parent && parent !== object) {
+            if (parent.userData && parent.userData.buttonType) {
+              buttonType = parent.userData.buttonType;
+              break;
+            }
+            if (parent.name === 'powerButton') buttonType = 'power';
+            if (buttonType) break;
+            parent = parent.parent;
+          }
+        }
+        if (buttonType) {
+          handleDictaphoneButtonClick(object, buttonType);
+        } else {
+          // No button clicked - toggle recording as default action
+          toggleDictaphoneRecording(object);
         }
       }
       break;
@@ -17483,6 +19259,24 @@ async function saveStateImmediate() {
             data.drawingFileName = obj.userData.drawingFileName;
           }
           break;
+        case 'dictaphone':
+          // Save recordings folder path and next recording number
+          if (obj.userData.recordingsFolderPath) {
+            data.recordingsFolderPath = obj.userData.recordingsFolderPath;
+            data.recordingNumber = obj.userData.recordingNumber || 1;
+          }
+          // Save recording format (wav/mp3)
+          if (obj.userData.recordingFormat) {
+            data.recordingFormat = obj.userData.recordingFormat;
+          }
+          // Save recording volume (0-200%)
+          if (obj.userData.recordingVolume !== undefined) {
+            data.recordingVolume = obj.userData.recordingVolume;
+          }
+          // Save panoramic recording settings
+          data.recordMicrophonePanorama = obj.userData.recordMicrophonePanorama === true;
+          data.recordEnvironmentPanorama = obj.userData.recordEnvironmentPanorama !== false;
+          break;
       }
 
       return data;
@@ -17971,6 +19765,28 @@ async function loadState() {
                   loadDrawingFromFile(obj);
                 }
                 break;
+              case 'dictaphone':
+                // Restore recordings folder path and next recording number
+                if (objData.recordingsFolderPath) {
+                  obj.userData.recordingsFolderPath = objData.recordingsFolderPath;
+                  obj.userData.recordingNumber = objData.recordingNumber || 1;
+                }
+                // Restore recording format (wav/mp3)
+                if (objData.recordingFormat) {
+                  obj.userData.recordingFormat = objData.recordingFormat;
+                }
+                // Restore recording volume (0-200%)
+                if (objData.recordingVolume !== undefined) {
+                  obj.userData.recordingVolume = objData.recordingVolume;
+                }
+                // Restore panoramic recording settings
+                if (objData.recordMicrophonePanorama !== undefined) {
+                  obj.userData.recordMicrophonePanorama = objData.recordMicrophonePanorama;
+                }
+                if (objData.recordEnvironmentPanorama !== undefined) {
+                  obj.userData.recordEnvironmentPanorama = objData.recordEnvironmentPanorama;
+                }
+                break;
             }
 
             // Restore per-object collision settings (applies to all object types)
@@ -18024,14 +19840,23 @@ async function loadState() {
 function animate() {
   requestAnimationFrame(animate);
 
-  // Update physics
-  updatePhysics();
+  try {
+    // Update physics
+    updatePhysics();
 
-  // Update debug collision visualization positions
-  updateCollisionDebugPositions();
+    // Update debug collision visualization positions
+    updateCollisionDebugPositions();
+
+    // Update spatial audio for all active sound sources
+    // This ensures sounds update in real-time as objects move
+    updateAllSpatialAudio();
+  } catch (error) {
+    console.warn('Animation loop physics error:', error);
+  }
 
   // Update object positions (lift/drop animation)
   deskObjects.forEach(obj => {
+    try {
     // Handle examine mode animation
     if (obj.userData.examineTarget) {
       const targetPos = obj.userData.examineTarget;
@@ -18158,13 +19983,51 @@ function animate() {
                 pitchMultiplier = getCurveValueAtProgress(obj, 'pitch', progress) / 100;
               }
 
+              // Calculate spatial audio parameters for playback (camera-relative)
+              const spatial = calculateSpatialAudio(obj);
+              const spatialVolume = volume * spatial.volume;
+
+              // Calculate spatial audio for recording (dictaphone-relative) if recording
+              let recordingSpatial = { pan: 0, volume: 1 };
+              if (dictaphoneState.isRecording &&
+                  dictaphoneState.usePanoramicEnvironment &&
+                  dictaphoneState.currentRecordingObject) {
+                recordingSpatial = calculateSpatialAudio(obj, dictaphoneState.currentRecordingObject);
+              }
+              const recordingVolume = volume * recordingSpatial.volume;
+
               if (obj.userData.tickSoundType === 'custom' && obj.userData.customSoundDataUrl) {
-                // Play custom sound using HTML5 Audio element
-                // This avoids Web Audio API's decodeAudioData which can hang
+                // Play custom sound using HTML5 Audio element with spatial audio
+                // We use Web Audio API for spatial panning
                 try {
                   const audio = new Audio(obj.userData.customSoundDataUrl);
-                  audio.volume = volume;
                   audio.playbackRate = pitchMultiplier; // Pitch adjustment via playback rate
+
+                  // Create media element source for spatial audio processing
+                  const source = audioCtx.createMediaElementSource(audio);
+                  const panner = audioCtx.createStereoPanner();
+                  const gain = audioCtx.createGain();
+
+                  // Playback chain: source -> panner -> gain -> master
+                  source.connect(panner);
+                  panner.connect(gain);
+                  gain.connect(sharedAudioSystem.masterGain);
+
+                  // Connect source to mono recording (no spatial processing)
+                  source.connect(sharedAudioSystem.recordingGain);
+
+                  // Recording chain: source -> recordingPanner -> recordingGain -> recordingGainPanorama
+                  const recordingPanner = audioCtx.createStereoPanner();
+                  const recordingGain = audioCtx.createGain();
+                  source.connect(recordingPanner);
+                  recordingPanner.connect(recordingGain);
+                  recordingGain.connect(sharedAudioSystem.recordingGainPanorama);
+                  recordingPanner.pan.value = recordingSpatial.pan;
+                  recordingGain.gain.value = recordingVolume;
+
+                  panner.pan.value = spatial.pan;
+                  gain.gain.value = spatialVolume;
+
                   audio.play().catch(err => {
                     console.warn('Failed to play custom metronome sound:', err);
                   });
@@ -18172,29 +20035,63 @@ function animate() {
                   console.warn('Error creating audio element:', e);
                 }
               } else if (obj.userData.tickSoundType === 'beep') {
-                // Simple beep sound with pitch adjustment
+                // Simple beep sound with pitch adjustment and spatial audio
                 const osc = audioCtx.createOscillator();
                 const gain = audioCtx.createGain();
+                const panner = audioCtx.createStereoPanner();
+
+                // Playback chain: osc -> gain -> panner -> master
                 osc.connect(gain);
-                gain.connect(audioCtx.destination);
+                gain.connect(panner);
+                panner.connect(sharedAudioSystem.masterGain);
+
+                // Connect gain to mono recording (no spatial processing)
+                gain.connect(sharedAudioSystem.recordingGain);
+
+                // Recording chain: gain -> recordingPanner -> recordingGain -> recordingGainPanorama
+                const recordingPanner = audioCtx.createStereoPanner();
+                const recordingGain = audioCtx.createGain();
+                gain.connect(recordingPanner);
+                recordingPanner.connect(recordingGain);
+                recordingGain.connect(sharedAudioSystem.recordingGainPanorama);
+                recordingPanner.pan.value = recordingSpatial.pan;
+                recordingGain.gain.value = recordingSpatial.volume;
+
+                panner.pan.value = spatial.pan;
                 osc.frequency.value = 880 * pitchMultiplier; // A5 note with pitch adjustment
                 osc.type = 'sine';
-                gain.gain.setValueAtTime(0.2 * volume, currentTime);
+                gain.gain.setValueAtTime(0.2 * spatialVolume, currentTime);
                 gain.gain.exponentialRampToValueAtTime(0.01, currentTime + 0.08);
                 osc.start(currentTime);
                 osc.stop(currentTime + 0.1);
               } else {
-                // Default: Strike/click sound (more percussive/mechanical) with pitch adjustment
+                // Default: Strike/click sound (more percussive/mechanical) with pitch adjustment and spatial audio
                 const osc = audioCtx.createOscillator();
                 const osc2 = audioCtx.createOscillator();
                 const gain = audioCtx.createGain();
                 const filter = audioCtx.createBiquadFilter();
+                const panner = audioCtx.createStereoPanner();
 
-                // Connect oscillators through filter
+                // Playback chain: filter -> gain -> panner -> master
                 osc.connect(filter);
                 osc2.connect(filter);
                 filter.connect(gain);
-                gain.connect(audioCtx.destination);
+                gain.connect(panner);
+                panner.connect(sharedAudioSystem.masterGain);
+
+                // Connect gain to mono recording (no spatial processing)
+                gain.connect(sharedAudioSystem.recordingGain);
+
+                // Recording chain: gain -> recordingPanner -> recordingGain -> recordingGainPanorama
+                const recordingPanner = audioCtx.createStereoPanner();
+                const recordingGain = audioCtx.createGain();
+                gain.connect(recordingPanner);
+                recordingPanner.connect(recordingGain);
+                recordingGain.connect(sharedAudioSystem.recordingGainPanorama);
+                recordingPanner.pan.value = recordingSpatial.pan;
+                recordingGain.gain.value = recordingSpatial.volume;
+
+                panner.pan.value = spatial.pan;
 
                 // Mechanical metronome click sound with pitch adjustment
                 // Use lower frequencies for a wooden "click" sound
@@ -18209,9 +20106,9 @@ function animate() {
                 filter.Q.value = 2;
 
                 // Very sharp attack, quick exponential decay for percussive "tick"
-                // Volume affects the peak gain
-                gain.gain.setValueAtTime(0.5 * volume, currentTime);
-                gain.gain.exponentialRampToValueAtTime(0.16 * volume, currentTime + 0.015);
+                // Volume affects the peak gain (with spatial audio attenuation)
+                gain.gain.setValueAtTime(0.5 * spatialVolume, currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.16 * spatialVolume, currentTime + 0.015);
                 gain.gain.exponentialRampToValueAtTime(0.01, currentTime + 0.04);
 
                 osc.start(currentTime);
@@ -18254,6 +20151,61 @@ function animate() {
             }
           }
         }
+      }
+    }
+
+    // Animate dictaphone LED when recording (subtle pulsing glow)
+    // Also update volume level indicator in the UI
+    if (obj.userData.type === 'dictaphone') {
+      try {
+        if (dictaphoneState.isRecording && dictaphoneState.currentRecorderId === obj.userData.id) {
+          const led = obj.getObjectByName('recordingLed');
+          const ledLight = obj.getObjectByName('ledLight');
+
+          if (led && ledLight) {
+            // Pulsing effect - varies between 0.5 and 1.0
+            const pulse = 0.75 + Math.sin(Date.now() * 0.005) * 0.25;
+
+            // Update LED emissive intensity (safely check material properties)
+            if (led.material && typeof led.material.emissiveIntensity === 'number') {
+              led.material.emissiveIntensity = 0.8 * pulse;
+            }
+
+            // Update point light intensity
+            if (typeof ledLight.intensity === 'number') {
+              ledLight.intensity = 0.3 * pulse;
+            }
+          }
+
+          // Update volume level indicator in the UI (with volume adjustment)
+          const levelBar = document.getElementById('dictaphone-level-bar');
+          const levelText = document.getElementById('dictaphone-level-text');
+          if (levelBar) {
+            // Get the raw audio level (0-100) from the analyser
+            const rawLevel = getDictaphoneAudioLevel();
+            // Apply volume adjustment to the displayed level
+            const volumeMultiplier = (obj.userData.recordingVolume || 100) / 100;
+            const adjustedLevel = Math.min(100, rawLevel * volumeMultiplier);
+            levelBar.style.width = `${adjustedLevel}%`;
+
+            if (levelText) {
+              levelText.textContent = `Recording... ${Math.round(adjustedLevel)}%`;
+            }
+          }
+        } else {
+          // Reset level bar when not recording
+          const levelBar = document.getElementById('dictaphone-level-bar');
+          const levelText = document.getElementById('dictaphone-level-text');
+          if (levelBar && levelBar.style.width !== '0%') {
+            levelBar.style.width = '0%';
+          }
+          if (levelText && levelText.textContent !== 'Not recording') {
+            levelText.textContent = 'Not recording';
+          }
+        }
+      } catch (error) {
+        // Silently ignore animation errors to prevent render loop crash
+        console.warn('Dictaphone LED animation error:', error);
       }
     }
 
@@ -18377,13 +20329,21 @@ function animate() {
         updateMagazinePages(obj);
       }
     }
+    } catch (objError) {
+      // Log error but continue animating other objects
+      console.warn('Animation error for object:', obj.userData?.type, objError);
+    }
   });
 
   // Render with pixel art post-processing if enabled
-  if (CONFIG.pixelation.enabled) {
-    renderPixelArt();
-  } else {
-    renderer.render(scene, camera);
+  try {
+    if (CONFIG.pixelation.enabled) {
+      renderPixelArt();
+    } else {
+      renderer.render(scene, camera);
+    }
+  } catch (renderError) {
+    console.error('Render error:', renderError);
   }
 }
 
@@ -18391,29 +20351,48 @@ function animate() {
 // PIXEL ART RENDER PASS
 // ============================================================================
 function renderPixelArt() {
-  const uniforms = pixelatedMaterial.uniforms;
+  try {
+    // Validate required objects exist before rendering
+    if (!pixelatedMaterial || !pixelatedMaterial.uniforms || !pixelRenderTarget || !normalRenderTarget) {
+      // Fall back to regular rendering if pixelation setup is incomplete
+      renderer.render(scene, camera);
+      return;
+    }
 
-  // Pass 1: Render scene to low-resolution texture
-  renderer.setRenderTarget(pixelRenderTarget);
-  renderer.clear();
-  renderer.render(scene, camera);
+    const uniforms = pixelatedMaterial.uniforms;
 
-  // Pass 2: Render normals for edge detection
-  const overrideMaterial = scene.overrideMaterial;
-  renderer.setRenderTarget(normalRenderTarget);
-  scene.overrideMaterial = normalMaterial;
-  renderer.clear();
-  renderer.render(scene, camera);
-  scene.overrideMaterial = overrideMaterial;
+    // Pass 1: Render scene to low-resolution texture
+    renderer.setRenderTarget(pixelRenderTarget);
+    renderer.clear();
+    renderer.render(scene, camera);
 
-  // Pass 3: Apply pixelated shader to screen
-  uniforms.tDiffuse.value = pixelRenderTarget.texture;
-  uniforms.tDepth.value = pixelRenderTarget.depthTexture;
-  uniforms.tNormal.value = normalRenderTarget.texture;
+    // Pass 2: Render normals for edge detection
+    const overrideMaterial = scene.overrideMaterial;
+    renderer.setRenderTarget(normalRenderTarget);
+    scene.overrideMaterial = normalMaterial;
+    renderer.clear();
+    renderer.render(scene, camera);
+    scene.overrideMaterial = overrideMaterial;
 
-  renderer.setRenderTarget(null);
-  renderer.clear();
-  renderer.render(fsQuad, fsCamera);
+    // Pass 3: Apply pixelated shader to screen
+    uniforms.tDiffuse.value = pixelRenderTarget.texture;
+    uniforms.tDepth.value = pixelRenderTarget.depthTexture;
+    uniforms.tNormal.value = normalRenderTarget.texture;
+
+    renderer.setRenderTarget(null);
+    renderer.clear();
+    renderer.render(fsQuad, fsCamera);
+  } catch (error) {
+    console.warn('renderPixelArt error, falling back to standard render:', error);
+    // Reset render target to default and do a simple render to avoid gray screen
+    try {
+      renderer.setRenderTarget(null);
+      renderer.clear();
+      renderer.render(scene, camera);
+    } catch (fallbackError) {
+      console.error('Fallback render also failed:', fallbackError);
+    }
+  }
 }
 
 // ============================================================================
