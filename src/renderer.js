@@ -6805,6 +6805,12 @@ function enterPenDrawingModeWithPen(pen) {
     selectedObject = null;
   }
 
+  // Lift pen to drawing height immediately (don't wait for mouse move)
+  // This prevents the pen from "disappearing" by being too low
+  const penTipHeight = getDeskSurfaceY() + 0.03;
+  pen.position.y = penTipHeight;
+  pen.userData.isLifted = true;
+
   // Show drawing mode indicator
   showDrawingModeIndicator(true);
 
@@ -10099,7 +10105,7 @@ function onMouseMove(event) {
       penDrawingMode.heldPen.position.z = targetZ;
 
       // Keep pen at a fixed height above the desk (pen tip close to surface)
-      const penTipHeight = CONFIG.desk.surfaceY + 0.03; // Slightly above desk surface
+      const penTipHeight = getDeskSurfaceY() + 0.03; // Slightly above desk surface
       penDrawingMode.heldPen.position.y = penTipHeight;
 
       // If stroke is active, add drawing point
@@ -13694,6 +13700,36 @@ function getInteractionContent(object) {
         </div>
       `;
 
+    case 'notebook':
+    case 'paper':
+      // Notebook and paper are drawing surfaces
+      const hasDrawings = object.userData.drawingLines && object.userData.drawingLines.length > 0;
+      return `
+        <div class="timer-controls">
+          <div class="timer-display">
+            <div class="time" style="font-size: 24px;">${object.userData.type === 'notebook' ? '📓 Notebook' : '📄 Paper'}</div>
+            <div style="color: rgba(255,255,255,0.7); margin-top: 15px; font-size: 14px;">
+              This is a drawing surface.
+            </div>
+          </div>
+          <div style="margin-top: 15px; padding: 15px; background: rgba(79, 70, 229, 0.1); border: 1px solid rgba(79, 70, 229, 0.3); border-radius: 8px;">
+            <div style="color: rgba(255,255,255,0.8); font-size: 13px; margin-bottom: 10px;">How to draw:</div>
+            <ol style="color: rgba(255,255,255,0.7); font-size: 12px; margin: 0; padding-left: 20px; line-height: 1.8;">
+              <li>Add a pen to the desk</li>
+              <li>Hover over the pen and press <strong>MMB</strong> to enter drawing mode</li>
+              <li>Move the pen over this surface</li>
+              <li>Hold <strong>LMB</strong> to draw</li>
+              <li>Press <strong>MMB</strong> again to exit drawing mode</li>
+            </ol>
+          </div>
+          ${hasDrawings ? `
+            <div style="margin-top: 15px; color: rgba(255,255,255,0.5); font-size: 12px;">
+              ✏️ This surface has drawings
+            </div>
+          ` : ''}
+        </div>
+      `;
+
     default:
       return `<p style="color: rgba(255,255,255,0.7);">No interactions available for this object.</p>`;
   }
@@ -16156,6 +16192,13 @@ function performQuickInteraction(object, clickedMesh = null) {
 
     case 'pen-holder':
       // Pen holder is now just a container, no interaction
+      break;
+
+    case 'notebook':
+    case 'paper':
+      // Drawing surfaces - open interaction modal to show instructions
+      enterExamineMode(object);
+      openInteractionModal(object);
       break;
 
     default:
