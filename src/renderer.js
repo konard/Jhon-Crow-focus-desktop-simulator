@@ -4155,6 +4155,7 @@ function updateAllSpatialAudio() {
   // The pan is INVERTED because from the camera's perspective, if the dictaphone
   // is on the right, the recorded voice should appear on the LEFT in the recording
   // (as if the sound source is at the camera's position looking toward the dictaphone)
+  // The volume is based on distance from camera - farther = quieter
   if (dictaphoneState.isRecording &&
       dictaphoneState.useMicrophonePanorama &&
       dictaphoneState.microphonePannerNode &&
@@ -4162,6 +4163,10 @@ function updateAllSpatialAudio() {
     const spatial = calculateSpatialAudio(dictaphoneState.currentRecordingObject);
     // Invert the pan: if dictaphone is on the right (+pan), voice should be on the left (-pan)
     dictaphoneState.microphonePannerNode.pan.value = -spatial.pan;
+    // Apply distance-based volume attenuation
+    if (dictaphoneState.microphoneSpatialGainNode) {
+      dictaphoneState.microphoneSpatialGainNode.gain.value = spatial.volume;
+    }
   }
 }
 
@@ -5570,7 +5575,8 @@ let dictaphoneState = {
   // For mixing virtual room sounds with microphone
   destinationNode: null,
   microphoneGainNode: null,
-  microphonePannerNode: null, // For panoramic microphone recording
+  microphonePannerNode: null, // For panoramic microphone recording (left/right panning)
+  microphoneSpatialGainNode: null, // For panoramic microphone recording (distance-based volume)
   virtualAudioGainNode: null,
   sampleRate: 48000,
   // For volume level visualization
@@ -5989,20 +5995,26 @@ async function startDictaphoneRecording(object) {
       const useMicPanorama = object.userData.recordMicrophonePanorama === true;
 
       if (useMicPanorama) {
-        // Create panner node for microphone spatial positioning
+        // Create panner node for microphone spatial positioning (left/right)
         dictaphoneState.microphonePannerNode = audioCtx.createStereoPanner();
+        // Create gain node for distance-based volume attenuation
+        dictaphoneState.microphoneSpatialGainNode = audioCtx.createGain();
+
         const spatial = calculateSpatialAudio(object);
         // Invert pan: if dictaphone is on the right (+pan), voice should be on the left (-pan)
         // This simulates recording from the camera's perspective
         dictaphoneState.microphonePannerNode.pan.value = -spatial.pan;
+        // Apply distance-based volume attenuation
+        dictaphoneState.microphoneSpatialGainNode.gain.value = spatial.volume;
 
-        // Chain: micSource -> analyserNode -> microphoneGainNode -> pannerNode -> destinationNode
+        // Chain: micSource -> analyserNode -> microphoneGainNode -> pannerNode -> spatialGain -> destinationNode
         micSource.connect(dictaphoneState.analyserNode);
         dictaphoneState.analyserNode.connect(dictaphoneState.microphoneGainNode);
         dictaphoneState.microphoneGainNode.connect(dictaphoneState.microphonePannerNode);
-        dictaphoneState.microphonePannerNode.connect(dictaphoneState.destinationNode);
+        dictaphoneState.microphonePannerNode.connect(dictaphoneState.microphoneSpatialGainNode);
+        dictaphoneState.microphoneSpatialGainNode.connect(dictaphoneState.destinationNode);
 
-        console.log('Microphone connected with panoramic panning (inverted):', -spatial.pan);
+        console.log('Microphone connected with panoramic panning (inverted):', -spatial.pan, 'volume:', spatial.volume);
       } else {
         // Chain: micSource -> analyserNode -> microphoneGainNode -> destinationNode (no panning)
         micSource.connect(dictaphoneState.analyserNode);
@@ -6156,38 +6168,52 @@ function switchDictaphoneMicrophonePanorama(usePanoramic) {
 
   try {
     if (usePanoramic) {
-      // Add panning: disconnect microphoneGainNode from destinationNode, add panner between them
+      // Add panning and spatial gain: disconnect microphoneGainNode from destinationNode, add panner and spatial gain between them
       if (dictaphoneState.microphoneGainNode && dictaphoneState.destinationNode) {
         // Create panner node if it doesn't exist
         if (!dictaphoneState.microphonePannerNode) {
           dictaphoneState.microphonePannerNode = audioCtx.createStereoPanner();
         }
+        // Create spatial gain node if it doesn't exist
+        if (!dictaphoneState.microphoneSpatialGainNode) {
+          dictaphoneState.microphoneSpatialGainNode = audioCtx.createGain();
+        }
 
         // Calculate current spatial position based on dictaphone object
         // Invert pan: if dictaphone is on the right (+pan), voice should be on the left (-pan)
+        // Volume is based on distance from camera
         const object = dictaphoneState.currentRecordingObject;
         if (object) {
           const spatial = calculateSpatialAudio(object);
           dictaphoneState.microphonePannerNode.pan.value = -spatial.pan;
+          dictaphoneState.microphoneSpatialGainNode.gain.value = spatial.volume;
         }
 
-        // Reconnect: gain -> panner -> destination
+        // Reconnect: gain -> panner -> spatialGain -> destination
         try {
           dictaphoneState.microphoneGainNode.disconnect(dictaphoneState.destinationNode);
         } catch (e) {
           // May fail if not connected, ignore
         }
         dictaphoneState.microphoneGainNode.connect(dictaphoneState.microphonePannerNode);
-        dictaphoneState.microphonePannerNode.connect(dictaphoneState.destinationNode);
+        dictaphoneState.microphonePannerNode.connect(dictaphoneState.microphoneSpatialGainNode);
+        dictaphoneState.microphoneSpatialGainNode.connect(dictaphoneState.destinationNode);
 
-        console.log('Enabled microphone panorama with pan (inverted):', dictaphoneState.microphonePannerNode.pan.value);
+        console.log('Enabled microphone panorama with pan (inverted):', dictaphoneState.microphonePannerNode.pan.value, 'volume:', dictaphoneState.microphoneSpatialGainNode.gain.value);
       }
     } else {
-      // Remove panning: disconnect panner, connect gain directly to destination
-      if (dictaphoneState.microphoneGainNode && dictaphoneState.destinationNode && dictaphoneState.microphonePannerNode) {
+      // Remove panning and spatial gain: disconnect panner/spatialGain, connect gain directly to destination
+      if (dictaphoneState.microphoneGainNode && dictaphoneState.destinationNode) {
         try {
-          dictaphoneState.microphoneGainNode.disconnect(dictaphoneState.microphonePannerNode);
-          dictaphoneState.microphonePannerNode.disconnect(dictaphoneState.destinationNode);
+          if (dictaphoneState.microphonePannerNode) {
+            dictaphoneState.microphoneGainNode.disconnect(dictaphoneState.microphonePannerNode);
+          }
+          if (dictaphoneState.microphoneSpatialGainNode) {
+            dictaphoneState.microphonePannerNode.disconnect(dictaphoneState.microphoneSpatialGainNode);
+            dictaphoneState.microphoneSpatialGainNode.disconnect(dictaphoneState.destinationNode);
+          } else if (dictaphoneState.microphonePannerNode) {
+            dictaphoneState.microphonePannerNode.disconnect(dictaphoneState.destinationNode);
+          }
         } catch (e) {
           // May fail if not connected, ignore
         }
@@ -6270,6 +6296,14 @@ async function stopDictaphoneRecording(object) {
         dictaphoneState.microphonePannerNode.disconnect();
       } catch (e) {}
       dictaphoneState.microphonePannerNode = null;
+    }
+
+    // Disconnect microphone spatial gain (for distance-based volume)
+    if (dictaphoneState.microphoneSpatialGainNode) {
+      try {
+        dictaphoneState.microphoneSpatialGainNode.disconnect();
+      } catch (e) {}
+      dictaphoneState.microphoneSpatialGainNode = null;
     }
 
     // Disconnect virtual audio
