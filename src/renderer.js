@@ -5389,15 +5389,34 @@ function encodePcmToWav(pcmChunks, sampleRate, numChannels = 1) {
   return buffer;
 }
 
-// Convert webm blob to WAV using AudioContext (fallback, may hang on some audio)
+// Convert webm blob to WAV using AudioContext
+// Note: decodeAudioData may not support WebM/Opus in all browsers/versions
+// Adding timeout to prevent hanging
 async function convertWebmToWav(webmBlob, audioContext) {
+  const DECODE_TIMEOUT = 10000; // 10 second timeout
+
   try {
+    console.log('convertWebmToWav: Starting conversion, blob size:', webmBlob.size);
     const arrayBuffer = await webmBlob.arrayBuffer();
-    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+    console.log('convertWebmToWav: ArrayBuffer created, size:', arrayBuffer.byteLength);
+
+    // Wrap decodeAudioData with timeout to prevent hanging
+    const audioBuffer = await Promise.race([
+      audioContext.decodeAudioData(arrayBuffer.slice(0)), // Use slice to create a copy (decodeAudioData detaches the buffer)
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('decodeAudioData timeout - WebM format may not be supported')), DECODE_TIMEOUT)
+      )
+    ]);
+
+    console.log('convertWebmToWav: Audio decoded, duration:', audioBuffer.duration, 'seconds, channels:', audioBuffer.numberOfChannels);
+
     const wavBuffer = encodeWav(audioBuffer);
+    console.log('convertWebmToWav: WAV encoded, size:', wavBuffer.byteLength);
+
     return new Blob([wavBuffer], { type: 'audio/wav' });
   } catch (error) {
-    console.error('Error converting webm to WAV:', error);
+    console.error('convertWebmToWav: Error converting WebM to WAV:', error.message);
+    console.error('convertWebmToWav: This may be because decodeAudioData does not support WebM/Opus format');
     throw error;
   }
 }
