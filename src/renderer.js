@@ -650,13 +650,17 @@ let drawingState = {
 
 // Pen drawing mode state (new feature - drawing directly with pen object)
 let penDrawingMode = {
-  active: false,          // Whether drawing mode is active
-  heldPen: null,          // The pen object currently being held/dragged
-  targetObject: null,     // The notebook/paper being drawn on
-  drawingPath: [],        // Current stroke path [{x, y}, ...]
-  isStrokeActive: false,  // Whether user is currently drawing a stroke (LMB down)
-  saveFolder: null,       // Custom folder for saving drawings
-  lineWidth: 2            // Width of the drawing line
+  active: false,              // Whether drawing mode is active
+  heldPen: null,              // The pen object currently being held/dragged
+  targetObject: null,         // The notebook/paper being drawn on
+  drawingPath: [],            // Current stroke path [{x, y}, ...]
+  isStrokeActive: false,      // Whether user is currently drawing a stroke (LMB down)
+  saveFolder: null,           // Custom folder for saving drawings
+  lineWidth: 2,               // Width of the drawing line
+  lastIntersectionPoint: null, // Last raycaster intersection point with drawable surface
+  middleMouseDownTime: null,  // Timestamp when MMB was pressed (for hold detection)
+  pendingPen: null,           // Pen object waiting for hold timeout
+  holdTimeout: null           // Timeout ID for hold detection
 };
 
 // Laptop control state
@@ -6880,32 +6884,51 @@ function showDrawingModeIndicator(show) {
   }
 }
 
-// Find notebook or paper under the pen position
+// Find notebook or paper under the pen position using ray from pen base through tip
 function findDrawableObjectUnderPen() {
   if (!penDrawingMode.heldPen) return null;
 
-  // Get pen tip position in world coordinates
-  const penPos = new THREE.Vector3();
-  penDrawingMode.heldPen.getWorldPosition(penPos);
+  // Get pen base (holder end) and tip positions in world coordinates
+  const pen = penDrawingMode.heldPen;
 
-  // Check all drawable objects (notebooks and papers)
-  for (const obj of deskObjects) {
-    if (obj.userData.type !== 'notebook' && obj.userData.type !== 'paper') continue;
+  // Pen base is at the pen's world position (the holder end)
+  const penBase = new THREE.Vector3();
+  pen.getWorldPosition(penBase);
 
-    // Get object bounds
-    const objPos = new THREE.Vector3();
-    obj.getWorldPosition(objPos);
+  // Calculate pen tip position based on pen orientation
+  // The pen model has its tip pointing down along local -Y axis
+  // In drawing mode, pen is tilted at about 60 degrees
+  const tipOffset = new THREE.Vector3(0, -0.15, 0); // Pen length ~0.15 units
+  tipOffset.applyQuaternion(pen.quaternion);
+  const penTip = penBase.clone().add(tipOffset);
 
-    // Get object dimensions (approximate based on type)
-    const width = obj.userData.type === 'notebook' ? 0.4 : 0.28;
-    const depth = obj.userData.type === 'notebook' ? 0.55 : 0.4;
+  // Create a ray from base through tip
+  const rayOrigin = penBase.clone();
+  const rayDirection = new THREE.Vector3().subVectors(penTip, penBase).normalize();
 
-    // Check if pen is over this object (with some tolerance)
-    const dx = Math.abs(penPos.x - objPos.x);
-    const dz = Math.abs(penPos.z - objPos.z);
+  // Use a Raycaster to find intersections with drawable objects
+  const tempRaycaster = new THREE.Raycaster(rayOrigin, rayDirection);
 
-    if (dx < width / 2 + 0.05 && dz < depth / 2 + 0.05) {
-      return obj;
+  // Filter drawable objects (exclude the pen itself to avoid self-collision)
+  const drawableObjects = deskObjects.filter(obj =>
+    (obj.userData.type === 'notebook' || obj.userData.type === 'paper') &&
+    obj !== pen
+  );
+
+  // Find intersections
+  const intersects = tempRaycaster.intersectObjects(drawableObjects, true);
+
+  if (intersects.length > 0) {
+    // Find the parent object that is in deskObjects
+    let object = intersects[0].object;
+    while (object.parent && !deskObjects.includes(object)) {
+      object = object.parent;
+    }
+
+    if (deskObjects.includes(object)) {
+      // Store the intersection point for drawing coordinate calculation
+      penDrawingMode.lastIntersectionPoint = intersects[0].point.clone();
+      return object;
     }
   }
 
@@ -6963,8 +6986,16 @@ function getDrawingCanvas(drawableObject) {
   canvas.height = 512;
 
   const ctx = canvas.getContext('2d');
-  // Fill with transparent background
-  ctx.clearRect(0, 0, 512, 512);
+
+  // Fill with white or transparent background based on object settings
+  const hasTransparentBg = drawableObject.userData.transparentBackground === true;
+  if (hasTransparentBg) {
+    ctx.clearRect(0, 0, 512, 512);
+  } else {
+    // Default: white background
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, 512, 512);
+  }
 
   // Store in userData
   drawableObject.userData.drawingCanvas = canvas;
@@ -7038,9 +7069,13 @@ function applyDrawingTextureToObject(drawableObject) {
 function addDrawingPoint(worldPos) {
   if (!penDrawingMode.active || !penDrawingMode.heldPen) return;
 
-  // Find drawable object under pen
+  // Find drawable object under pen using raycasting
   const target = findDrawableObjectUnderPen();
   if (!target) return;
+
+  // Use the intersection point from raycasting (stored by findDrawableObjectUnderPen)
+  const intersectionPoint = penDrawingMode.lastIntersectionPoint;
+  if (!intersectionPoint) return;
 
   // Set as current target if not set
   if (penDrawingMode.targetObject !== target) {
@@ -7057,8 +7092,8 @@ function addDrawingPoint(worldPos) {
 
   const ctx = target.userData.drawingCtx;
 
-  // Convert world position to canvas coordinates
-  const coords = worldToDrawingCoords(worldPos, target);
+  // Convert intersection point to canvas coordinates
+  const coords = worldToDrawingCoords(intersectionPoint, target);
   if (!coords || coords.x < 0 || coords.x > 512 || coords.y < 0 || coords.y > 512) return;
 
   // Get pen ink color
@@ -9612,9 +9647,14 @@ function onMouseDown(event) {
   if (event.button === 1) {
     event.preventDefault();
 
-    // If drawing mode is active, MMB exits it under any conditions
+    // If drawing mode is active, MMB hold exits it
     if (penDrawingMode.active) {
-      exitPenDrawingMode();
+      penDrawingMode.middleMouseDownTime = Date.now();
+      penDrawingMode.holdTimeout = setTimeout(() => {
+        // Hold for 300ms - exit drawing mode
+        exitPenDrawingMode();
+        penDrawingMode.holdTimeout = null; // Mark as already handled
+      }, 300);
       return;
     }
 
@@ -9647,9 +9687,15 @@ function onMouseDown(event) {
       }
 
       if (deskObjects.includes(object)) {
-        // If hovering over a pen, enter drawing mode
+        // If hovering over a pen, set up hold timeout to enter drawing mode
         if (object.userData.type === 'pen') {
-          enterPenDrawingModeWithPen(object);
+          penDrawingMode.middleMouseDownTime = Date.now();
+          penDrawingMode.pendingPen = object;
+          penDrawingMode.holdTimeout = setTimeout(() => {
+            // Hold for 300ms - enter drawing mode
+            enterPenDrawingModeWithPen(object);
+            penDrawingMode.holdTimeout = null; // Mark as already handled
+          }, 300);
           return;
         }
 
@@ -10277,6 +10323,30 @@ function onMouseUp(event) {
 
   // Middle mouse button - handle book quick click or cancel hold timeout
   if (event.button === 1) {
+    // If in drawing mode, MMB hold exits drawing mode
+    if (penDrawingMode.active) {
+      // Check if this is a hold (released after timeout fired)
+      // If timeout is null, it means the hold already fired and entered drawing mode
+      // So this release should be treated as exit request
+      const holdDuration = Date.now() - (penDrawingMode.middleMouseDownTime || 0);
+      if (holdDuration >= 300 || !penDrawingMode.holdTimeout) {
+        // This was a hold - exit drawing mode
+        exitPenDrawingMode();
+        penDrawingMode.middleMouseDownTime = null;
+        return;
+      }
+    }
+
+    // If user releases before pen hold timeout fired, cancel it (quick click does nothing for pens)
+    if (penDrawingMode.holdTimeout) {
+      clearTimeout(penDrawingMode.holdTimeout);
+      penDrawingMode.holdTimeout = null;
+      penDrawingMode.pendingPen = null;
+      penDrawingMode.middleMouseDownTime = null;
+      // Quick click on pen does nothing - only hold activates drawing mode
+      return;
+    }
+
     // If in reading mode, don't exit on release - stay in mode until user clicks elsewhere
     if (bookReadingState.active) {
       return;
@@ -11425,6 +11495,23 @@ function updateCustomizationPanel(object) {
         </div>
       `;
       setupPenCustomizationHandlers(object);
+      break;
+
+    case 'notebook':
+    case 'paper':
+      const hasTransparentBg = object.userData.transparentBackground === true;
+      dynamicOptions.innerHTML = `
+        <div class="customization-group" style="margin-top: 20px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.1);">
+          <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+            <input type="checkbox" id="transparent-background" ${hasTransparentBg ? 'checked' : ''} style="width: 18px; height: 18px; accent-color: #4f46e5;">
+            Transparent Background
+          </label>
+          <div style="font-size: 11px; color: rgba(255,255,255,0.5); margin-top: 8px; line-height: 1.5;">
+            When unchecked, drawings will have a white background. When checked, drawings will have a transparent background.
+          </div>
+        </div>
+      `;
+      setupNotebookPaperCustomizationHandlers(object);
       break;
 
     case 'laptop':
@@ -12725,6 +12812,56 @@ function setupPenCustomizationHandlers(object) {
         saveState();
         // Refresh the customization panel to hide the clear button
         updateCustomizationPanel(object);
+      });
+    }
+  }, 0);
+}
+
+function setupNotebookPaperCustomizationHandlers(object) {
+  setTimeout(() => {
+    const transparentBgCheckbox = document.getElementById('transparent-background');
+
+    if (transparentBgCheckbox) {
+      transparentBgCheckbox.addEventListener('change', (e) => {
+        object.userData.transparentBackground = e.target.checked;
+
+        // If there's an existing canvas, recreate it with the new background
+        if (object.userData.drawingCanvas) {
+          const ctx = object.userData.drawingCtx;
+          const canvas = object.userData.drawingCanvas;
+
+          // Clear canvas and redraw with new background
+          if (e.target.checked) {
+            ctx.clearRect(0, 0, 512, 512);
+          } else {
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, 512, 512);
+          }
+
+          // Redraw all existing strokes
+          if (object.userData.drawingLines && object.userData.drawingLines.length > 0) {
+            object.userData.drawingLines.forEach(stroke => {
+              if (stroke.points && stroke.points.length >= 2) {
+                ctx.beginPath();
+                ctx.strokeStyle = stroke.color || '#000000';
+                ctx.lineWidth = stroke.width || 2;
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+
+                ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
+                for (let i = 1; i < stroke.points.length; i++) {
+                  ctx.lineTo(stroke.points[i].x, stroke.points[i].y);
+                }
+                ctx.stroke();
+              }
+            });
+          }
+
+          // Update the 3D texture
+          updateDrawingTexture(object);
+        }
+
+        saveState();
       });
     }
   }, 0);
