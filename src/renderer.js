@@ -10552,47 +10552,32 @@ function onMouseMove(event) {
       }
     }
 
-    // Position pen so that the pen TIP aims at the crosshair point
-    // The pen should be angled as if held in the right hand (slightly to the right and above)
+    // Position pen so that the pen TIP is at the crosshair point
+    // The pen tip (apex of the cone at Y~=-0.02 in local space) should be at the ray-surface intersection
     if (crosshairPoint) {
-      // The pen tip should aim at the crosshair point
-      // Calculate pen base position by offsetting from the crosshair point
-      // Pen is tilted at ~60° and held to the right
+      // The pen tip apex is at approximately Y=-0.02 in local penBody space
+      // We need to offset the pen group position so the tip ends up at crosshairPoint
+      // A small height correction prevents the tip from clipping into the surface
+      const tipHeightCorrection = 0.02; // Offset to lift tip slightly above surface
 
-      // Offset to the right (positive X) to simulate right-hand hold
-      const rightHandOffsetX = 0.08; // Pen base is to the right of the tip
-
-      // Pen length is ~0.15 units
-      // At 60° tilt, the base is higher by: 0.15 * cos(60°) ≈ 0.075
-      // And offset horizontally by: 0.15 * sin(60°) ≈ 0.13
-      const penLength = 0.15;
-      const tiltAngle = Math.PI / 3; // 60 degrees
-      const verticalOffset = penLength * Math.cos(tiltAngle); // ~0.075
-      const horizontalOffset = penLength * Math.sin(tiltAngle); // ~0.13
-
-      // In read & write mode (inspection + drawing), add more vertical clearance to prevent collision
-      const extraClearance = inspectionDrawingState.active ? 0.08 : 0.03;
-
-      // Position pen base to the right and above the crosshair point
-      targetX = crosshairPoint.x + rightHandOffsetX + horizontalOffset;
+      // Position pen group so tip is at crosshair point with height correction
+      targetX = crosshairPoint.x;
       targetZ = crosshairPoint.z;
-      targetY = crosshairPoint.y + verticalOffset + extraClearance;
+      targetY = crosshairPoint.y + tipHeightCorrection;
 
       // Clamp to desk boundaries
       targetX = Math.max(-halfWidth, Math.min(halfWidth, targetX));
       targetZ = Math.max(-halfDepth, Math.min(halfDepth, targetZ));
 
-      // Apply position to pen
+      // Apply position to pen - tip will be at crosshair point
       penDrawingMode.heldPen.position.x = targetX;
       penDrawingMode.heldPen.position.z = targetZ;
       penDrawingMode.heldPen.position.y = targetY;
 
       // Update ray visualization (for visual realism/debugging only)
-      // The ray logic is now only used for visual pen positioning
       const drawableTarget = findDrawableObjectUnderPen();
 
       // If stroke is active, add drawing point at the crosshair intersection
-      // Drawing now uses crosshair directly, not pen ray
       if (penDrawingMode.isStrokeActive) {
         addDrawingPoint(crosshairPoint);
       }
