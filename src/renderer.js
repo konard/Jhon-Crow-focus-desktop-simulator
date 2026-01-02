@@ -662,7 +662,8 @@ let penDrawingMode = {
   pendingPen: null,           // Pen object waiting for hold timeout
   pendingDrawableObject: null, // Notebook/paper object waiting for hold timeout
   holdTimeout: null,          // Timeout ID for hold detection
-  showRay: false              // Whether to show the drawing ray for debugging
+  showRay: false,             // Whether to show the drawing ray for debugging
+  mmbHoldCompleted: false     // Flag to track if hold-to-enter completed (prevent exit on release)
 };
 
 // Ray visualization helper for debugging
@@ -6942,18 +6943,79 @@ function findDrawableObjectUnderPen() {
 
   // Update or create ray visualization if debug mode is enabled
   if (penDrawingMode.showRay) {
-    const rayLength = 2.0; // Length of the visualization ray
-    const rayEnd = rayOrigin.clone().add(rayDirection.clone().multiplyScalar(rayLength));
+    // Create a thick ray that extends in both directions from pen base
+    const rayLengthDown = 3.0; // Length extending down through tip
+    const rayLengthUp = 1.5;   // Length extending up from base (visible from above)
+
+    // Calculate endpoints
+    const rayEndDown = penBase.clone().add(rayDirection.clone().multiplyScalar(rayLengthDown));
+    const rayEndUp = penBase.clone().add(rayDirection.clone().multiplyScalar(-rayLengthUp));
 
     if (!drawingRayHelper) {
-      // Create an ArrowHelper to visualize the ray
-      drawingRayHelper = new THREE.ArrowHelper(rayDirection, rayOrigin, rayLength, 0xff00ff, 0.05, 0.03);
+      // Create a thick cylinder to visualize the ray (more visible than ArrowHelper)
+      const rayGroup = new THREE.Group();
+      rayGroup.name = 'drawingRayHelper';
+
+      // Use a cylinder geometry for thickness
+      const totalLength = rayLengthDown + rayLengthUp;
+      const rayGeometry = new THREE.CylinderGeometry(0.008, 0.008, totalLength, 8);
+      const rayMaterial = new THREE.MeshBasicMaterial({
+        color: 0xff00ff,
+        transparent: true,
+        opacity: 0.9,
+        depthTest: false,
+        depthWrite: false
+      });
+      const rayCylinder = new THREE.Mesh(rayGeometry, rayMaterial);
+      rayCylinder.renderOrder = 999; // Render on top
+      rayGroup.add(rayCylinder);
+
+      // Add small spheres at both ends for visibility
+      const sphereGeometry = new THREE.SphereGeometry(0.015, 8, 8);
+      const sphereMaterial = new THREE.MeshBasicMaterial({
+        color: 0xff0000,
+        depthTest: false,
+        depthWrite: false
+      });
+      const endSphereDown = new THREE.Mesh(sphereGeometry, sphereMaterial);
+      endSphereDown.name = 'endDown';
+      endSphereDown.renderOrder = 1000;
+      rayGroup.add(endSphereDown);
+
+      const endSphereUp = new THREE.Mesh(sphereGeometry.clone(), sphereMaterial.clone());
+      endSphereUp.material.color.setHex(0x00ff00); // Green for top
+      endSphereUp.name = 'endUp';
+      endSphereUp.renderOrder = 1000;
+      rayGroup.add(endSphereUp);
+
+      drawingRayHelper = rayGroup;
       scene.add(drawingRayHelper);
-    } else {
-      // Update existing helper
-      drawingRayHelper.position.copy(rayOrigin);
-      drawingRayHelper.setDirection(rayDirection);
-      drawingRayHelper.setLength(rayLength, 0.05, 0.03);
+    }
+
+    // Update ray position and orientation
+    if (drawingRayHelper) {
+      const totalLength = rayLengthDown + rayLengthUp;
+      const midPoint = penBase.clone().add(rayDirection.clone().multiplyScalar((rayLengthDown - rayLengthUp) / 2));
+
+      // Position at midpoint of the ray
+      drawingRayHelper.position.copy(midPoint);
+
+      // Orient to point along ray direction
+      // Cylinders are vertical by default, so we need to rotate to align with direction
+      const upVector = new THREE.Vector3(0, 1, 0);
+      const quaternion = new THREE.Quaternion();
+      quaternion.setFromUnitVectors(upVector, rayDirection);
+      drawingRayHelper.quaternion.copy(quaternion);
+
+      // Update end sphere positions (in local space)
+      const endDown = drawingRayHelper.getObjectByName('endDown');
+      const endUp = drawingRayHelper.getObjectByName('endUp');
+      if (endDown) {
+        endDown.position.set(0, -totalLength/2, 0);
+      }
+      if (endUp) {
+        endUp.position.set(0, totalLength/2, 0);
+      }
     }
   } else {
     // Remove ray helper if debug mode is disabled
@@ -6963,17 +7025,35 @@ function findDrawableObjectUnderPen() {
     }
   }
 
-  // Use a Raycaster to find intersections with drawable objects
-  const tempRaycaster = new THREE.Raycaster(rayOrigin, rayDirection);
-
+  // Use multiple raycasting approaches for reliability
   // Filter drawable objects (exclude the pen itself to avoid self-collision)
   const drawableObjects = deskObjects.filter(obj =>
     (obj.userData.type === 'notebook' || obj.userData.type === 'paper') &&
     obj !== pen
   );
 
-  // Find intersections
-  const intersects = tempRaycaster.intersectObjects(drawableObjects, true);
+  // Approach 1: Ray from pen base through tip (original)
+  const rayStartOffset = penBase.clone().add(rayDirection.clone().multiplyScalar(-0.5));
+  const tempRaycaster = new THREE.Raycaster(rayStartOffset, rayDirection, 0, 5.0);
+  let intersects = tempRaycaster.intersectObjects(drawableObjects, true);
+
+  // Approach 2: If first approach fails, try a straight downward ray from pen tip
+  if (intersects.length === 0) {
+    const downRay = new THREE.Vector3(0, -1, 0); // Straight down
+    const tipAbove = penTip.clone();
+    tipAbove.y += 0.5; // Start from above the tip
+    const downRaycaster = new THREE.Raycaster(tipAbove, downRay, 0, 2.0);
+    intersects = downRaycaster.intersectObjects(drawableObjects, true);
+  }
+
+  // Approach 3: If still fails, try from pen base straight down
+  if (intersects.length === 0) {
+    const downRay = new THREE.Vector3(0, -1, 0);
+    const baseAbove = penBase.clone();
+    baseAbove.y += 0.5;
+    const baseDownRaycaster = new THREE.Raycaster(baseAbove, downRay, 0, 2.0);
+    intersects = baseDownRaycaster.intersectObjects(drawableObjects, true);
+  }
 
   if (intersects.length > 0) {
     // Find the parent object that is in deskObjects
@@ -9752,12 +9832,19 @@ function onMouseDown(event) {
   if (event.button === 1) {
     event.preventDefault();
 
-    // If drawing mode is active, MMB hold toggles it off
-    if (penDrawingMode.active) {
+    // If drawing mode or inspection mode is active, MMB hold toggles them off
+    if (penDrawingMode.active || inspectionDrawingState.active) {
       penDrawingMode.middleMouseDownTime = Date.now();
+      penDrawingMode.mmbHoldCompleted = false; // Reset the flag for new hold attempt
       penDrawingMode.holdTimeout = setTimeout(() => {
-        // Hold for 300ms - exit drawing mode
-        exitPenDrawingMode();
+        // Hold for 300ms - exit all drawing-related modes
+        if (penDrawingMode.active) {
+          exitPenDrawingMode();
+        }
+        if (inspectionDrawingState.active) {
+          exitInspectionDrawingMode();
+        }
+        penDrawingMode.mmbHoldCompleted = true; // Mark hold as completed
         penDrawingMode.holdTimeout = null; // Mark as already handled
       }, 300);
       return;
@@ -9796,9 +9883,11 @@ function onMouseDown(event) {
         if (object.userData.type === 'pen') {
           penDrawingMode.middleMouseDownTime = Date.now();
           penDrawingMode.pendingPen = object;
+          penDrawingMode.mmbHoldCompleted = false; // Reset flag
           penDrawingMode.holdTimeout = setTimeout(() => {
             // Hold for 300ms - enter drawing mode
             enterPenDrawingModeWithPen(object);
+            penDrawingMode.mmbHoldCompleted = true; // Mark hold as completed
             penDrawingMode.holdTimeout = null; // Mark as already handled
           }, 300);
           return;
@@ -9808,9 +9897,11 @@ function onMouseDown(event) {
         if (object.userData.type === 'notebook' || object.userData.type === 'paper') {
           penDrawingMode.middleMouseDownTime = Date.now();
           penDrawingMode.pendingDrawableObject = object;
+          penDrawingMode.mmbHoldCompleted = false; // Reset flag
           penDrawingMode.holdTimeout = setTimeout(() => {
             // Hold for 300ms - enter inspection+drawing mode
             enterInspectionDrawingMode(object);
+            penDrawingMode.mmbHoldCompleted = true; // Mark hold as completed
             penDrawingMode.holdTimeout = null; // Mark as already handled
           }, 300);
           return;
@@ -10259,28 +10350,55 @@ function onMouseMove(event) {
     const halfWidth = CONFIG.desk.width / 2 - 0.2;
     const halfDepth = CONFIG.desk.depth / 2 - 0.2;
 
-    let targetX, targetZ;
+    let targetX, targetZ, targetY;
 
-    if (pointerLockState.isLocked) {
-      // When pointer is locked, use crosshair (screen center)
-      const centerMouse = new THREE.Vector2(0, 0);
-      raycaster.setFromCamera(centerMouse, camera);
-      const intersects = raycaster.intersectObject(dragPlane);
+    // In inspection+drawing mode, use different raycasting approach
+    if (inspectionDrawingState.active && inspectionDrawingState.drawableObject) {
+      // In inspection mode, raycast to the drawable object's surface directly
+      const mousePos = pointerLockState.isLocked ? new THREE.Vector2(0, 0) : mouse;
+      raycaster.setFromCamera(mousePos, camera);
 
+      // Raycast to the inspected drawable object
+      const intersects = raycaster.intersectObjects([inspectionDrawingState.drawableObject], true);
       if (intersects.length > 0) {
         const point = intersects[0].point;
-        targetX = Math.max(-halfWidth, Math.min(halfWidth, point.x));
-        targetZ = Math.max(-halfDepth, Math.min(halfDepth, point.z));
+        targetX = point.x;
+        targetZ = point.z;
+        // In inspection mode, pen should be positioned based on intersection
+        targetY = point.y + 0.08; // Pen base above surface
+      } else {
+        // If not intersecting the drawable, use desk plane
+        const intersectsPlane = raycaster.intersectObject(dragPlane);
+        if (intersectsPlane.length > 0) {
+          const point = intersectsPlane[0].point;
+          targetX = Math.max(-halfWidth, Math.min(halfWidth, point.x));
+          targetZ = Math.max(-halfDepth, Math.min(halfDepth, point.z));
+          targetY = getDeskSurfaceY() + 0.05;
+        }
       }
     } else {
-      // When pointer is not locked, use mouse position
-      raycaster.setFromCamera(mouse, camera);
-      const intersects = raycaster.intersectObject(dragPlane);
+      // Normal drawing mode (not in inspection)
+      if (pointerLockState.isLocked) {
+        // When pointer is locked, use crosshair (screen center)
+        const centerMouse = new THREE.Vector2(0, 0);
+        raycaster.setFromCamera(centerMouse, camera);
+        const intersects = raycaster.intersectObject(dragPlane);
 
-      if (intersects.length > 0) {
-        const point = intersects[0].point;
-        targetX = Math.max(-halfWidth, Math.min(halfWidth, point.x));
-        targetZ = Math.max(-halfDepth, Math.min(halfDepth, point.z));
+        if (intersects.length > 0) {
+          const point = intersects[0].point;
+          targetX = Math.max(-halfWidth, Math.min(halfWidth, point.x));
+          targetZ = Math.max(-halfDepth, Math.min(halfDepth, point.z));
+        }
+      } else {
+        // When pointer is not locked, use mouse position
+        raycaster.setFromCamera(mouse, camera);
+        const intersects = raycaster.intersectObject(dragPlane);
+
+        if (intersects.length > 0) {
+          const point = intersects[0].point;
+          targetX = Math.max(-halfWidth, Math.min(halfWidth, point.x));
+          targetZ = Math.max(-halfDepth, Math.min(halfDepth, point.z));
+        }
       }
     }
 
@@ -10289,9 +10407,26 @@ function onMouseMove(event) {
       penDrawingMode.heldPen.position.x = targetX;
       penDrawingMode.heldPen.position.z = targetZ;
 
-      // Keep pen at a fixed height above the desk (pen tip close to surface)
-      const penTipHeight = getDeskSurfaceY() + 0.03; // Slightly above desk surface
-      penDrawingMode.heldPen.position.y = penTipHeight;
+      // Update ray visualization and find drawable surface under pen
+      const drawableTarget = findDrawableObjectUnderPen();
+
+      // Determine pen height based on drawing state
+      if (targetY !== undefined) {
+        // Use pre-calculated Y (for inspection mode)
+        penDrawingMode.heldPen.position.y = targetY;
+      } else if (penDrawingMode.isStrokeActive && drawableTarget && penDrawingMode.lastIntersectionPoint) {
+        // When actively drawing (LMB held), press pen tip to the drawable surface
+        // Use the intersection point Y coordinate plus a small offset for pen base height
+        const surfaceY = penDrawingMode.lastIntersectionPoint.y;
+        // The pen tip should touch the surface, so pen base (position) should be above
+        // Based on pen tilt angle (~60°) and pen length (~0.15), calculate offset
+        const penTipHeight = surfaceY + 0.08; // Pen base higher than surface to account for tilt
+        penDrawingMode.heldPen.position.y = penTipHeight;
+      } else {
+        // When not drawing, keep pen at a fixed height above the desk
+        const penTipHeight = getDeskSurfaceY() + 0.05; // Slightly above desk surface
+        penDrawingMode.heldPen.position.y = penTipHeight;
+      }
 
       // If stroke is active, add drawing point
       if (penDrawingMode.isStrokeActive) {
@@ -10462,18 +10597,13 @@ function onMouseUp(event) {
 
   // Middle mouse button - handle book quick click or cancel hold timeout
   if (event.button === 1) {
-    // If in drawing mode, MMB hold exits drawing mode
-    if (penDrawingMode.active) {
-      // Check if this is a hold (released after timeout fired)
-      // If timeout is null, it means the hold already fired and entered drawing mode
-      // So this release should be treated as exit request
-      const holdDuration = Date.now() - (penDrawingMode.middleMouseDownTime || 0);
-      if (holdDuration >= 300 || !penDrawingMode.holdTimeout) {
-        // This was a hold - exit drawing mode
-        exitPenDrawingMode();
-        penDrawingMode.middleMouseDownTime = null;
-        return;
-      }
+    // If MMB hold just completed (entered or exited a mode), ignore this release
+    if (penDrawingMode.mmbHoldCompleted) {
+      penDrawingMode.mmbHoldCompleted = false; // Reset flag
+      penDrawingMode.middleMouseDownTime = null;
+      penDrawingMode.pendingPen = null;
+      penDrawingMode.pendingDrawableObject = null;
+      return;
     }
 
     // If user releases before pen hold timeout fired, cancel it (quick click does nothing for pens)
@@ -10481,6 +10611,7 @@ function onMouseUp(event) {
       clearTimeout(penDrawingMode.holdTimeout);
       penDrawingMode.holdTimeout = null;
       penDrawingMode.pendingPen = null;
+      penDrawingMode.pendingDrawableObject = null;
       penDrawingMode.middleMouseDownTime = null;
       // Quick click on pen does nothing - only hold activates drawing mode
       return;
