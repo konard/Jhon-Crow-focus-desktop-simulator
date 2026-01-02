@@ -6937,7 +6937,10 @@ function findDrawableObjectUnderPen() {
   // Calculate pen tip position based on pen orientation
   // The pen model has its tip pointing down along local -Y axis
   // In drawing mode, pen is tilted at about 60 degrees
-  const tipOffset = new THREE.Vector3(0, -0.15, 0); // Pen length ~0.15 units
+  // Account for pen scale to prevent large pens from getting stuck
+  const penScale = pen.userData.scale || pen.scale.x || 1.0;
+  const baseTipLength = 0.15; // Base pen length ~0.15 units
+  const tipOffset = new THREE.Vector3(0, -baseTipLength * penScale, 0);
   tipOffset.applyQuaternion(pen.quaternion);
   const penTip = penBase.clone().add(tipOffset);
 
@@ -7088,9 +7091,12 @@ function worldToDrawingCoords(worldPos, drawableObject) {
   const localX = worldPos.x - objPos.x;
   const localZ = worldPos.z - objPos.z;
 
-  // Get object dimensions
-  const width = drawableObject.userData.type === 'notebook' ? 0.4 : 0.28;
-  const depth = drawableObject.userData.type === 'notebook' ? 0.55 : 0.4;
+  // Get object dimensions with scale applied
+  const baseWidth = drawableObject.userData.type === 'notebook' ? 0.4 : 0.28;
+  const baseDepth = drawableObject.userData.type === 'notebook' ? 0.55 : 0.4;
+  const scale = drawableObject.userData.scale || drawableObject.scale.x || 1.0;
+  const width = baseWidth * scale;
+  const depth = baseDepth * scale;
 
   // Convert to normalized coordinates (0-1)
   const normalizedX = (localX / width) + 0.5;
@@ -10563,7 +10569,10 @@ function onMouseMove(event) {
       // The pen tip apex is at approximately Y=-0.02 in local penBody space
       // We need to offset the pen group position so the tip ends up at crosshairPoint
       // A small height correction prevents the tip from clipping into the surface
-      const tipHeightCorrection = 0.02; // Offset to lift tip slightly above surface
+      // Scale the correction with pen size to prevent large pens from getting stuck
+      const penScale = penDrawingMode.heldPen.userData.scale || penDrawingMode.heldPen.scale.x || 1.0;
+      const baseTipHeightCorrection = 0.02; // Base offset to lift tip slightly above surface
+      const tipHeightCorrection = baseTipHeightCorrection * penScale;
 
       // Position pen group so tip is at crosshair point with height correction
       targetX = crosshairPoint.x;
