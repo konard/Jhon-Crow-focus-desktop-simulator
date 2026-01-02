@@ -7210,13 +7210,29 @@ function applyDrawingTextureToObject(drawableObject) {
 function addDrawingPoint(worldPos) {
   if (!penDrawingMode.active || !penDrawingMode.heldPen) return;
 
-  // Find drawable object under pen using raycasting
-  const target = findDrawableObjectUnderPen();
-  if (!target) return;
+  // Use crosshair raycast to find drawable object and intersection point
+  // This is simpler and more direct than using pen ray
+  const mousePos = pointerLockState.isLocked ? new THREE.Vector2(0, 0) : mouse;
+  raycaster.setFromCamera(mousePos, camera);
 
-  // Use the intersection point from raycasting (stored by findDrawableObjectUnderPen)
-  const intersectionPoint = penDrawingMode.lastIntersectionPoint;
-  if (!intersectionPoint) return;
+  // Raycast to drawable objects
+  const drawableObjects = deskObjects.filter(obj =>
+    obj.userData.type === 'notebook' || obj.userData.type === 'paper'
+  );
+  const intersects = raycaster.intersectObjects(drawableObjects, true);
+
+  if (intersects.length === 0) return;
+
+  // Find the parent object that is in deskObjects
+  let target = intersects[0].object;
+  while (target.parent && !deskObjects.includes(target)) {
+    target = target.parent;
+  }
+
+  if (!deskObjects.includes(target)) return;
+
+  // Get intersection point on the drawable surface
+  const intersectionPoint = intersects[0].point.clone();
 
   // Set as current target if not set
   if (penDrawingMode.targetObject !== target) {
@@ -10554,10 +10570,13 @@ function onMouseMove(event) {
       const verticalOffset = penLength * Math.cos(tiltAngle); // ~0.075
       const horizontalOffset = penLength * Math.sin(tiltAngle); // ~0.13
 
+      // In read & write mode (inspection + drawing), add more vertical clearance to prevent collision
+      const extraClearance = inspectionDrawingState.active ? 0.08 : 0.03;
+
       // Position pen base to the right and above the crosshair point
       targetX = crosshairPoint.x + rightHandOffsetX + horizontalOffset;
       targetZ = crosshairPoint.z;
-      targetY = crosshairPoint.y + verticalOffset + 0.03; // Small extra offset for clearance
+      targetY = crosshairPoint.y + verticalOffset + extraClearance;
 
       // Clamp to desk boundaries
       targetX = Math.max(-halfWidth, Math.min(halfWidth, targetX));
@@ -10568,14 +10587,14 @@ function onMouseMove(event) {
       penDrawingMode.heldPen.position.z = targetZ;
       penDrawingMode.heldPen.position.y = targetY;
 
-      // Update ray visualization and find drawable surface under pen
-      // The ray should originate from pen base and go through pen tip towards crosshair point
+      // Update ray visualization (for visual realism/debugging only)
+      // The ray logic is now only used for visual pen positioning
       const drawableTarget = findDrawableObjectUnderPen();
 
       // If stroke is active, add drawing point at the crosshair intersection
-      if (penDrawingMode.isStrokeActive && penDrawingMode.lastIntersectionPoint) {
-        const penWorldPos = penDrawingMode.lastIntersectionPoint.clone();
-        addDrawingPoint(penWorldPos);
+      // Drawing now uses crosshair directly, not pen ray
+      if (penDrawingMode.isStrokeActive) {
+        addDrawingPoint(crosshairPoint);
       }
     }
   }
