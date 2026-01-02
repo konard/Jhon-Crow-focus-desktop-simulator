@@ -941,6 +941,38 @@ ipcMain.handle('save-markdown-file', async (event, folderPath, fileName, content
 });
 
 // ============================================================================
+// ACTIVITY LOG - Export Full Log
+// ============================================================================
+
+// Save activity log to a file selected by user
+ipcMain.handle('save-activity-log', async (event, logContent) => {
+  try {
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: 'Save Activity Log',
+      defaultPath: `activity-log-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`,
+      filters: [
+        { name: 'Text Files', extensions: ['txt'] },
+        { name: 'All Files', extensions: ['*'] }
+      ]
+    });
+
+    if (result.canceled || !result.filePath) {
+      return { success: true, canceled: true };
+    }
+
+    fs.writeFileSync(result.filePath, logContent, 'utf8');
+
+    return {
+      success: true,
+      filePath: result.filePath
+    };
+  } catch (error) {
+    console.error('Error saving activity log:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// ============================================================================
 // PEN DRAWING - Drawings Folder Selection and Saving
 // ============================================================================
 

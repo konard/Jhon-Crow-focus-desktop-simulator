@@ -127,6 +127,79 @@ function getSharedAudioContext() {
 }
 
 // ============================================================================
+// ACTIVITY LOGGING SYSTEM
+// ============================================================================
+// Comprehensive logging system to track all user actions and application events
+// for debugging and analysis purposes. Logs include timestamps and detailed context.
+
+const activityLog = {
+  entries: [],
+  maxEntries: 10000, // Limit to prevent memory issues
+  startTime: Date.now(),
+
+  // Add a log entry with timestamp and context
+  add(category, action, details = {}) {
+    const timestamp = new Date().toISOString();
+    const elapsed = ((Date.now() - this.startTime) / 1000).toFixed(2);
+
+    const entry = {
+      timestamp,
+      elapsed: `${elapsed}s`,
+      category,
+      action,
+      details
+    };
+
+    this.entries.push(entry);
+
+    // Trim old entries if we exceed the limit
+    if (this.entries.length > this.maxEntries) {
+      this.entries.shift();
+    }
+
+    // Also log to console for real-time debugging (can be disabled in production)
+    if (window.location.search.includes('verbose-log')) {
+      console.log(`[${category}] ${action}`, details);
+    }
+  },
+
+  // Get formatted log content for export
+  getFormattedLog() {
+    const header = `Focus Desktop Simulator - Activity Log
+Generated: ${new Date().toISOString()}
+Session Duration: ${((Date.now() - this.startTime) / 1000).toFixed(2)}s
+Total Entries: ${this.entries.length}
+
+${'='.repeat(80)}
+
+`;
+
+    const entries = this.entries.map(entry => {
+      const detailsStr = Object.keys(entry.details).length > 0
+        ? `\n  Details: ${JSON.stringify(entry.details, null, 2).split('\n').join('\n  ')}`
+        : '';
+
+      return `[${entry.timestamp}] [+${entry.elapsed}] [${entry.category}] ${entry.action}${detailsStr}`;
+    }).join('\n\n');
+
+    return header + entries;
+  },
+
+  // Clear all log entries
+  clear() {
+    this.entries = [];
+    this.startTime = Date.now();
+  }
+};
+
+// Initialize logging system
+activityLog.add('SYSTEM', 'Application started', {
+  userAgent: navigator.userAgent,
+  screenResolution: `${window.screen.width}x${window.screen.height}`,
+  windowSize: `${window.innerWidth}x${window.innerHeight}`
+});
+
+// ============================================================================
 // AUDIO LOADING OVERLAY
 // ============================================================================
 // State for cancellable audio loading
@@ -1964,6 +2037,7 @@ function init() {
   // Hide loading screen
   setTimeout(() => {
     document.getElementById('loading').classList.add('hidden');
+    activityLog.add('SYSTEM', 'Application initialized and ready');
   }, 500);
 }
 
@@ -6630,12 +6704,28 @@ function addObjectToDesk(type, options = {}) {
     saveState();
   }
 
+  // Log object creation
+  activityLog.add('OBJECT', 'Object added to desk', {
+    type: object.userData.type,
+    id: object.userData.id,
+    position: { x: object.position.x.toFixed(2), z: object.position.z.toFixed(2) },
+    rotation: object.rotation.y.toFixed(2),
+    scale: (options.scale || 1.0).toFixed(2)
+  });
+
   return object;
 }
 
 function removeObject(object) {
   const index = deskObjects.indexOf(object);
   if (index > -1) {
+    // Log object removal
+    activityLog.add('OBJECT', 'Object removed from desk', {
+      type: object.userData.type,
+      id: object.userData.id,
+      position: { x: object.position.x.toFixed(2), z: object.position.z.toFixed(2) }
+    });
+
     deskObjects.splice(index, 1);
     scene.remove(object);
     // Clean up physics data
@@ -6661,6 +6751,11 @@ function removeObject(object) {
 
 // Clear all objects from the desk
 function clearAllObjects() {
+  const objectCount = deskObjects.length;
+
+  // Log clearing all objects
+  activityLog.add('OBJECT', 'Clearing all objects from desk', { count: objectCount });
+
   // Remove all objects from scene and physics
   while (deskObjects.length > 0) {
     const obj = deskObjects.pop();
@@ -9611,7 +9706,11 @@ function setupEventListeners() {
 
   // Menu toggle
   document.getElementById('menu-toggle').addEventListener('click', () => {
-    document.getElementById('menu').classList.toggle('open');
+    const menu = document.getElementById('menu');
+    const isOpening = !menu.classList.contains('open');
+    menu.classList.toggle('open');
+
+    activityLog.add('UI', isOpening ? 'Menu opened' : 'Menu closed');
   });
 
   // Initialize palette system (Photoshop-style with categories and variants)
@@ -9671,17 +9770,53 @@ function setupEventListeners() {
   // Delete button
   document.getElementById('delete-object').addEventListener('click', () => {
     if (selectedObject) {
+      activityLog.add('USER_ACTION', 'Delete object button clicked', {
+        type: selectedObject.userData.type,
+        id: selectedObject.userData.id
+      });
+
       removeObject(selectedObject);
       selectedObject = null;
       document.getElementById('customization-panel').classList.remove('open');
     }
   });
 
+  // Export activity log button - saves comprehensive log to file
+  document.getElementById('export-log-btn').addEventListener('click', async () => {
+    activityLog.add('USER_ACTION', 'Export log button clicked');
+
+    try {
+      const logContent = activityLog.getFormattedLog();
+      const result = await window.electronAPI.saveActivityLog(logContent);
+
+      if (result.success && !result.canceled) {
+        activityLog.add('SYSTEM', 'Log exported successfully', { filePath: result.filePath });
+        // Show success message (optional - could add a toast notification)
+        console.log('Activity log saved to:', result.filePath);
+      } else if (result.canceled) {
+        activityLog.add('USER_ACTION', 'Log export canceled');
+      } else {
+        activityLog.add('ERROR', 'Log export failed', { error: result.error });
+        console.error('Failed to export log:', result.error);
+        alert('Failed to export log: ' + result.error);
+      }
+    } catch (error) {
+      activityLog.add('ERROR', 'Log export error', { error: error.message });
+      console.error('Error exporting log:', error);
+      alert('Error exporting log: ' + error.message);
+    }
+
+    document.getElementById('menu').classList.remove('open');
+  });
+
   // Clear desk button - removes all objects from desk
   document.getElementById('clear-desk-btn').addEventListener('click', () => {
     if (confirm('Are you sure you want to remove all objects from the desk?')) {
+      activityLog.add('USER_ACTION', 'Clear all objects confirmed');
       clearAllObjects();
       document.getElementById('menu').classList.remove('open');
+    } else {
+      activityLog.add('USER_ACTION', 'Clear all objects canceled');
     }
   });
 
@@ -19813,6 +19948,11 @@ function updateCameraLook() {
 }
 
 function onWindowResize() {
+  activityLog.add('WINDOW', 'Window resized', {
+    width: window.innerWidth,
+    height: window.innerHeight
+  });
+
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);

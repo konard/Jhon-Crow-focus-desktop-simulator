@@ -29,5 +29,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Pen drawing - drawings folder selection and saving
   getDefaultDrawingsFolder: () => ipcRenderer.invoke('get-default-drawings-folder'),
   selectDrawingsFolder: () => ipcRenderer.invoke('select-drawings-folder'),
-  saveDrawingFile: (folderPath, fileName, dataUrl) => ipcRenderer.invoke('save-drawing-file', folderPath, fileName, dataUrl)
+  saveDrawingFile: (folderPath, fileName, dataUrl) => ipcRenderer.invoke('save-drawing-file', folderPath, fileName, dataUrl),
+  // Activity log - export full log to file
+  saveActivityLog: (logContent) => ipcRenderer.invoke('save-activity-log', logContent)
 });
