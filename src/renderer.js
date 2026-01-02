@@ -79,8 +79,12 @@ let ffmpegAvailable = false; // FFmpeg availability status from main process
 // Debug visualization state
 let debugState = {
   showCollisionRadii: false,
-  collisionHelpers: []  // Array of THREE.Mesh objects for visualizing collisions
+  collisionHelpers: [],  // Array of THREE.Mesh objects for visualizing collisions
+  showCameraRay: false   // Show camera crosshair ray for debugging
 };
+
+// Camera ray visualization helper
+let cameraRayHelper = null;
 
 // Pixel art post-processing state
 let pixelRenderTarget, normalRenderTarget;
@@ -8149,6 +8153,98 @@ function toggleCollisionDebug() {
   updateCollisionDebugHelpers();
 }
 
+// Toggle camera ray debug visualization
+function toggleCameraRayDebug() {
+  debugState.showCameraRay = !debugState.showCameraRay;
+
+  // Update button text
+  const btn = document.getElementById('toggle-camera-ray-btn');
+  if (btn) {
+    btn.textContent = debugState.showCameraRay ? '🔳 Hide Camera Ray' : '🔲 Show Camera Ray';
+    btn.style.background = debugState.showCameraRay ? 'rgba(34, 197, 94, 0.2)' : 'rgba(79, 70, 229, 0.2)';
+    btn.style.borderColor = debugState.showCameraRay ? 'rgba(34, 197, 94, 0.4)' : 'rgba(79, 70, 229, 0.4)';
+    btn.style.color = debugState.showCameraRay ? '#4ade80' : '#818cf8';
+  }
+
+  updateCameraRayHelper();
+}
+
+// Update camera ray visualization
+function updateCameraRayHelper() {
+  if (!debugState.showCameraRay) {
+    // Remove ray helper if debug mode is disabled
+    if (cameraRayHelper) {
+      scene.remove(cameraRayHelper);
+      cameraRayHelper = null;
+    }
+    return;
+  }
+
+  // Create or update camera ray visualization
+  // Ray goes from camera through crosshair/center of screen
+  const mousePos = pointerLockState.isLocked ? new THREE.Vector2(0, 0) : mouse;
+  raycaster.setFromCamera(mousePos, camera);
+
+  // Create ray helper if it doesn't exist
+  if (!cameraRayHelper) {
+    // Create a thick cylinder to visualize the camera ray
+    const rayGroup = new THREE.Group();
+    rayGroup.name = 'cameraRayHelper';
+
+    // Ray length extending from camera
+    const rayLength = 20.0;
+    const rayGeometry = new THREE.CylinderGeometry(0.01, 0.01, rayLength, 8);
+    const rayMaterial = new THREE.MeshBasicMaterial({
+      color: 0x00ffff, // Cyan color for camera ray
+      transparent: true,
+      opacity: 0.8,
+      depthTest: false,
+      depthWrite: false
+    });
+    const rayCylinder = new THREE.Mesh(rayGeometry, rayMaterial);
+    rayCylinder.renderOrder = 999;
+    rayGroup.add(rayCylinder);
+
+    // Add a small sphere at the end for visibility
+    const sphereGeometry = new THREE.SphereGeometry(0.02, 8, 8);
+    const sphereMaterial = new THREE.MeshBasicMaterial({
+      color: 0x00ff00, // Green for endpoint
+      depthTest: false,
+      depthWrite: false
+    });
+    const endSphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
+    endSphere.name = 'endSphere';
+    endSphere.renderOrder = 1000;
+    rayGroup.add(endSphere);
+
+    cameraRayHelper = rayGroup;
+    scene.add(cameraRayHelper);
+  }
+
+  // Update ray position and orientation
+  if (cameraRayHelper) {
+    const rayLength = 20.0;
+    const rayOrigin = raycaster.ray.origin.clone();
+    const rayDirection = raycaster.ray.direction.clone();
+
+    // Position at midpoint of the ray
+    const midPoint = rayOrigin.clone().add(rayDirection.clone().multiplyScalar(rayLength / 2));
+    cameraRayHelper.position.copy(midPoint);
+
+    // Orient to point along ray direction
+    const upVector = new THREE.Vector3(0, 1, 0);
+    const quaternion = new THREE.Quaternion();
+    quaternion.setFromUnitVectors(upVector, rayDirection);
+    cameraRayHelper.quaternion.copy(quaternion);
+
+    // Update end sphere position
+    const endSphere = cameraRayHelper.getObjectByName('endSphere');
+    if (endSphere) {
+      endSphere.position.set(0, rayLength / 2, 0);
+    }
+  }
+}
+
 // ============================================================================
 // STACKING PHYSICS - Objects on top of each other with friction-based pulling
 // ============================================================================
@@ -9571,6 +9667,14 @@ function setupEventListeners() {
     });
   }
 
+  // Debug camera ray visualization toggle
+  const toggleCameraRayBtn = document.getElementById('toggle-camera-ray-btn');
+  if (toggleCameraRayBtn) {
+    toggleCameraRayBtn.addEventListener('click', () => {
+      toggleCameraRayDebug();
+    });
+  }
+
   // Collision radius slider
   const collisionRadiusSlider = document.getElementById('collision-radius-slider');
   const collisionRadiusValue = document.getElementById('collision-radius-value');
@@ -9832,10 +9936,50 @@ function onMouseDown(event) {
   if (event.button === 1) {
     event.preventDefault();
 
-    // If drawing mode or inspection mode is active, MMB hold toggles them off
-    if (penDrawingMode.active || inspectionDrawingState.active) {
+    // If drawing mode is active, check if clicking on a drawable surface to enter inspection mode
+    if (penDrawingMode.active && !inspectionDrawingState.active) {
+      // Check if hovering over notebook/paper to enter inspection+drawing mode
+      updateMousePosition(event);
+      raycaster.setFromCamera(mouse, camera);
+      const intersects = raycaster.intersectObjects(deskObjects, true);
+
+      if (intersects.length > 0) {
+        const clickedMesh = intersects[0].object;
+        let object = clickedMesh;
+        while (object.parent && !deskObjects.includes(object)) {
+          object = object.parent;
+        }
+
+        if (deskObjects.includes(object) && (object.userData.type === 'notebook' || object.userData.type === 'paper')) {
+          // Enter inspection mode while keeping drawing mode active
+          penDrawingMode.middleMouseDownTime = Date.now();
+          penDrawingMode.pendingDrawableObject = object;
+          penDrawingMode.mmbHoldCompleted = false;
+          penDrawingMode.holdTimeout = setTimeout(() => {
+            // Hold for 300ms - enter inspection+drawing mode
+            enterInspectionDrawingMode(object);
+            penDrawingMode.mmbHoldCompleted = true;
+            penDrawingMode.holdTimeout = null;
+          }, 300);
+          return;
+        }
+      }
+
+      // If not clicking on drawable, exit drawing mode
       penDrawingMode.middleMouseDownTime = Date.now();
-      penDrawingMode.mmbHoldCompleted = false; // Reset the flag for new hold attempt
+      penDrawingMode.mmbHoldCompleted = false;
+      penDrawingMode.holdTimeout = setTimeout(() => {
+        exitPenDrawingMode();
+        penDrawingMode.mmbHoldCompleted = true;
+        penDrawingMode.holdTimeout = null;
+      }, 300);
+      return;
+    }
+
+    // If inspection mode is active (with or without drawing), MMB hold exits all modes
+    if (inspectionDrawingState.active) {
+      penDrawingMode.middleMouseDownTime = Date.now();
+      penDrawingMode.mmbHoldCompleted = false;
       penDrawingMode.holdTimeout = setTimeout(() => {
         // Hold for 300ms - exit all drawing-related modes
         if (penDrawingMode.active) {
@@ -9844,8 +9988,8 @@ function onMouseDown(event) {
         if (inspectionDrawingState.active) {
           exitInspectionDrawingMode();
         }
-        penDrawingMode.mmbHoldCompleted = true; // Mark hold as completed
-        penDrawingMode.holdTimeout = null; // Mark as already handled
+        penDrawingMode.mmbHoldCompleted = true;
+        penDrawingMode.holdTimeout = null;
       }, 300);
       return;
     }
@@ -10350,6 +10494,7 @@ function onMouseMove(event) {
     const halfWidth = CONFIG.desk.width / 2 - 0.2;
     const halfDepth = CONFIG.desk.depth / 2 - 0.2;
 
+    let crosshairPoint = null; // The point where the crosshair/cursor aims
     let targetX, targetZ, targetY;
 
     // In inspection+drawing mode, use different raycasting approach
@@ -10361,77 +10506,75 @@ function onMouseMove(event) {
       // Raycast to the inspected drawable object
       const intersects = raycaster.intersectObjects([inspectionDrawingState.drawableObject], true);
       if (intersects.length > 0) {
-        const point = intersects[0].point;
-        targetX = point.x;
-        targetZ = point.z;
-        // In inspection mode, pen should be positioned based on intersection
-        targetY = point.y + 0.08; // Pen base above surface
+        crosshairPoint = intersects[0].point.clone();
       } else {
         // If not intersecting the drawable, use desk plane
         const intersectsPlane = raycaster.intersectObject(dragPlane);
         if (intersectsPlane.length > 0) {
-          const point = intersectsPlane[0].point;
-          targetX = Math.max(-halfWidth, Math.min(halfWidth, point.x));
-          targetZ = Math.max(-halfDepth, Math.min(halfDepth, point.z));
-          targetY = getDeskSurfaceY() + 0.05;
+          crosshairPoint = intersectsPlane[0].point.clone();
         }
       }
     } else {
       // Normal drawing mode (not in inspection)
-      if (pointerLockState.isLocked) {
-        // When pointer is locked, use crosshair (screen center)
-        const centerMouse = new THREE.Vector2(0, 0);
-        raycaster.setFromCamera(centerMouse, camera);
-        const intersects = raycaster.intersectObject(dragPlane);
+      const mousePos = pointerLockState.isLocked ? new THREE.Vector2(0, 0) : mouse;
+      raycaster.setFromCamera(mousePos, camera);
 
-        if (intersects.length > 0) {
-          const point = intersects[0].point;
-          targetX = Math.max(-halfWidth, Math.min(halfWidth, point.x));
-          targetZ = Math.max(-halfDepth, Math.min(halfDepth, point.z));
-        }
+      // First try to raycast to drawable surfaces for more accurate positioning
+      const drawableObjects = deskObjects.filter(obj =>
+        obj.userData.type === 'notebook' || obj.userData.type === 'paper'
+      );
+      const drawableIntersects = raycaster.intersectObjects(drawableObjects, true);
+
+      if (drawableIntersects.length > 0) {
+        crosshairPoint = drawableIntersects[0].point.clone();
       } else {
-        // When pointer is not locked, use mouse position
-        raycaster.setFromCamera(mouse, camera);
+        // Fall back to desk plane
         const intersects = raycaster.intersectObject(dragPlane);
-
         if (intersects.length > 0) {
-          const point = intersects[0].point;
-          targetX = Math.max(-halfWidth, Math.min(halfWidth, point.x));
-          targetZ = Math.max(-halfDepth, Math.min(halfDepth, point.z));
+          crosshairPoint = intersects[0].point.clone();
         }
       }
     }
 
-    // Move pen to follow cursor
-    if (targetX !== undefined && targetZ !== undefined) {
+    // Position pen so that the pen TIP aims at the crosshair point
+    // The pen should be angled as if held in the right hand (slightly to the right and above)
+    if (crosshairPoint) {
+      // The pen tip should aim at the crosshair point
+      // Calculate pen base position by offsetting from the crosshair point
+      // Pen is tilted at ~60° and held to the right
+
+      // Offset to the right (positive X) to simulate right-hand hold
+      const rightHandOffsetX = 0.08; // Pen base is to the right of the tip
+
+      // Pen length is ~0.15 units
+      // At 60° tilt, the base is higher by: 0.15 * cos(60°) ≈ 0.075
+      // And offset horizontally by: 0.15 * sin(60°) ≈ 0.13
+      const penLength = 0.15;
+      const tiltAngle = Math.PI / 3; // 60 degrees
+      const verticalOffset = penLength * Math.cos(tiltAngle); // ~0.075
+      const horizontalOffset = penLength * Math.sin(tiltAngle); // ~0.13
+
+      // Position pen base to the right and above the crosshair point
+      targetX = crosshairPoint.x + rightHandOffsetX + horizontalOffset;
+      targetZ = crosshairPoint.z;
+      targetY = crosshairPoint.y + verticalOffset + 0.03; // Small extra offset for clearance
+
+      // Clamp to desk boundaries
+      targetX = Math.max(-halfWidth, Math.min(halfWidth, targetX));
+      targetZ = Math.max(-halfDepth, Math.min(halfDepth, targetZ));
+
+      // Apply position to pen
       penDrawingMode.heldPen.position.x = targetX;
       penDrawingMode.heldPen.position.z = targetZ;
+      penDrawingMode.heldPen.position.y = targetY;
 
       // Update ray visualization and find drawable surface under pen
+      // The ray should originate from pen base and go through pen tip towards crosshair point
       const drawableTarget = findDrawableObjectUnderPen();
 
-      // Determine pen height based on drawing state
-      if (targetY !== undefined) {
-        // Use pre-calculated Y (for inspection mode)
-        penDrawingMode.heldPen.position.y = targetY;
-      } else if (penDrawingMode.isStrokeActive && drawableTarget && penDrawingMode.lastIntersectionPoint) {
-        // When actively drawing (LMB held), press pen tip to the drawable surface
-        // Use the intersection point Y coordinate plus a small offset for pen base height
-        const surfaceY = penDrawingMode.lastIntersectionPoint.y;
-        // The pen tip should touch the surface, so pen base (position) should be above
-        // Based on pen tilt angle (~60°) and pen length (~0.15), calculate offset
-        const penTipHeight = surfaceY + 0.08; // Pen base higher than surface to account for tilt
-        penDrawingMode.heldPen.position.y = penTipHeight;
-      } else {
-        // When not drawing, keep pen at a fixed height above the desk
-        const penTipHeight = getDeskSurfaceY() + 0.05; // Slightly above desk surface
-        penDrawingMode.heldPen.position.y = penTipHeight;
-      }
-
-      // If stroke is active, add drawing point
-      if (penDrawingMode.isStrokeActive) {
-        const penWorldPos = new THREE.Vector3();
-        penDrawingMode.heldPen.getWorldPosition(penWorldPos);
+      // If stroke is active, add drawing point at the crosshair intersection
+      if (penDrawingMode.isStrokeActive && penDrawingMode.lastIntersectionPoint) {
+        const penWorldPos = penDrawingMode.lastIntersectionPoint.clone();
         addDrawingPoint(penWorldPos);
       }
     }
@@ -20436,6 +20579,11 @@ function animate() {
 
     // Update debug collision visualization positions
     updateCollisionDebugPositions();
+
+    // Update camera ray visualization if enabled
+    if (debugState.showCameraRay) {
+      updateCameraRayHelper();
+    }
 
     // Update spatial audio for all active sound sources
     // This ensures sounds update in real-time as objects move
