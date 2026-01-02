@@ -939,3 +939,75 @@ ipcMain.handle('save-markdown-file', async (event, folderPath, fileName, content
     return { success: false, error: error.message };
   }
 });
+
+// ============================================================================
+// PEN DRAWING - Drawings Folder Selection and Saving
+// ============================================================================
+
+// Get default drawings folder path (app working directory)
+ipcMain.handle('get-default-drawings-folder', async () => {
+  const userDataPath = app.getPath('userData');
+  const drawingsDir = path.join(userDataPath, 'drawings');
+
+  // Ensure default drawings directory exists
+  if (!fs.existsSync(drawingsDir)) {
+    fs.mkdirSync(drawingsDir, { recursive: true });
+  }
+
+  return { success: true, folderPath: drawingsDir };
+});
+
+// Open folder selection dialog for drawings
+ipcMain.handle('select-drawings-folder', async () => {
+  try {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openDirectory'],
+      title: 'Select Drawings Folder'
+    });
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return { success: true, canceled: true };
+    }
+
+    const folderPath = result.filePaths[0];
+
+    return {
+      success: true,
+      folderPath: folderPath
+    };
+  } catch (error) {
+    console.error('Error selecting drawings folder:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Save drawing file (PNG) to the drawings folder
+ipcMain.handle('save-drawing-file', async (event, folderPath, fileName, dataUrl) => {
+  try {
+    // Ensure folder exists
+    if (!fs.existsSync(folderPath)) {
+      fs.mkdirSync(folderPath, { recursive: true });
+    }
+
+    // Ensure filename has .png extension
+    if (!fileName.endsWith('.png')) {
+      fileName = fileName + '.png';
+    }
+
+    const filePath = path.join(folderPath, fileName);
+
+    // Extract base64 data from data URL
+    const base64Data = dataUrl.replace(/^data:image\/png;base64,/, '');
+    const buffer = Buffer.from(base64Data, 'base64');
+
+    fs.writeFileSync(filePath, buffer);
+
+    return {
+      success: true,
+      filePath: filePath
+    };
+  } catch (error) {
+    console.error('Error saving drawing file:', error);
+    return { success: false, error: error.message };
+  }
+});

@@ -25,5 +25,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Markdown editor - notes folder selection and saving
   getDefaultNotesFolder: () => ipcRenderer.invoke('get-default-notes-folder'),
   selectNotesFolder: () => ipcRenderer.invoke('select-notes-folder'),
-  saveMarkdownFile: (folderPath, fileName, content) => ipcRenderer.invoke('save-markdown-file', folderPath, fileName, content)
+  saveMarkdownFile: (folderPath, fileName, content) => ipcRenderer.invoke('save-markdown-file', folderPath, fileName, content),
+  // Pen drawing - drawings folder selection and saving
+  getDefaultDrawingsFolder: () => ipcRenderer.invoke('get-default-drawings-folder'),
+  selectDrawingsFolder: () => ipcRenderer.invoke('select-drawings-folder'),
+  saveDrawingFile: (folderPath, fileName, dataUrl) => ipcRenderer.invoke('save-drawing-file', folderPath, fileName, dataUrl)
 });

@@ -79,8 +79,12 @@ let ffmpegAvailable = false; // FFmpeg availability status from main process
 // Debug visualization state
 let debugState = {
   showCollisionRadii: false,
-  collisionHelpers: []  // Array of THREE.Mesh objects for visualizing collisions
+  collisionHelpers: [],  // Array of THREE.Mesh objects for visualizing collisions
+  showCameraRay: false   // Show camera crosshair ray for debugging
 };
+
+// Camera ray visualization helper
+let cameraRayHelper = null;
 
 // Pixel art post-processing state
 let pixelRenderTarget, normalRenderTarget;
@@ -648,6 +652,27 @@ let drawingState = {
   points: [] // Points in current line
 };
 
+// Pen drawing mode state (new feature - drawing directly with pen object)
+let penDrawingMode = {
+  active: false,              // Whether drawing mode is active
+  heldPen: null,              // The pen object currently being held/dragged
+  targetObject: null,         // The notebook/paper being drawn on
+  drawingPath: [],            // Current stroke path [{x, y}, ...]
+  isStrokeActive: false,      // Whether user is currently drawing a stroke (LMB down)
+  saveFolder: null,           // Custom folder for saving drawings
+  lineWidth: 2,               // Width of the drawing line
+  lastIntersectionPoint: null, // Last raycaster intersection point with drawable surface
+  middleMouseDownTime: null,  // Timestamp when MMB was pressed (for hold detection)
+  pendingPen: null,           // Pen object waiting for hold timeout
+  pendingDrawableObject: null, // Notebook/paper object waiting for hold timeout
+  holdTimeout: null,          // Timeout ID for hold detection
+  showRay: false,             // Whether to show the drawing ray for debugging
+  mmbHoldCompleted: false     // Flag to track if hold-to-enter completed (prevent exit on release)
+};
+
+// Ray visualization helper for debugging
+let drawingRayHelper = null;
+
 // Laptop control state
 let laptopControlState = {
   active: false,
@@ -671,6 +696,21 @@ let bookReadingState = {
   panOffsetZ: 0,      // Pan offset forward/backward
   // Cached book world position to avoid recalculating on every keypress
   bookWorldPos: null
+};
+
+// Inspection + drawing mode state (for notebooks/paper)
+let inspectionDrawingState = {
+  active: false,
+  drawableObject: null, // The notebook/paper being inspected and drawn on
+  originalCameraPos: null,
+  originalCameraYaw: null,
+  originalCameraPitch: null,
+  // Zoom and pan controls (same as reading mode)
+  zoomDistance: 0.85,
+  panOffsetX: 0,
+  panOffsetZ: 0,
+  // Cached object world position
+  objectWorldPos: null
 };
 
 // Cassette player mode state (similar to book reading mode)
@@ -3762,7 +3802,7 @@ function createPaper(options = {}) {
     interactive: true, // Interactive - can draw with pen
     drawingLines: [], // Array of drawing line data
     fileName: options.fileName || 'drawing.png',
-    mainColor: options.mainColor || '#fffff5',
+    mainColor: options.mainColor || '#ffffff', // Pure white for drawing
     accentColor: options.accentColor || '#cccccc'
   };
 
@@ -3778,7 +3818,7 @@ function createPaper(options = {}) {
   const paperHeight = 0.4;
   const paperThickness = 0.002;
 
-  // Main paper sheet
+  // Main paper sheet - blank white for drawing
   const paperGeometry = new THREE.BoxGeometry(paperWidth, paperThickness, paperHeight);
   const paper = new THREE.Mesh(paperGeometry, paperMaterial);
   paper.position.y = paperThickness / 2;
@@ -3786,23 +3826,7 @@ function createPaper(options = {}) {
   paper.receiveShadow = true;
   group.add(paper);
 
-  // Add some subtle lines to represent text/content
-  const lineMaterial = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(group.userData.accentColor),
-    roughness: 0.9
-  });
-
-  for (let i = 0; i < 15; i++) {
-    const lineWidth = 0.18 + Math.random() * 0.06;
-    const lineGeometry = new THREE.BoxGeometry(lineWidth, 0.001, 0.008);
-    const line = new THREE.Mesh(lineGeometry, lineMaterial);
-    line.position.set(
-      (Math.random() - 0.5) * 0.02, // Slight offset
-      paperThickness + 0.001,
-      -0.15 + i * 0.022
-    );
-    group.add(line);
-  }
+  // Note: No decorative lines - paper is blank for drawing with pen
 
   group.position.y = getDeskSurfaceY();
 
@@ -6620,6 +6644,12 @@ function removeObject(object) {
     physicsState.tiltState.delete(object.userData.id);
     physicsState.tiltVelocities.delete(object.userData.id);
 
+    // Delete drawing file if this is a notebook or paper with drawings
+    if ((object.userData.type === 'notebook' || object.userData.type === 'paper') &&
+        object.userData.drawingLines && object.userData.drawingLines.length > 0) {
+      deleteDrawingFile(object);
+    }
+
     // Update debug visualization if active
     if (debugState.showCollisionRadii) {
       updateCollisionDebugHelpers();
@@ -6640,6 +6670,12 @@ function clearAllObjects() {
     physicsState.angularVelocities.delete(obj.userData.id);
     physicsState.tiltState.delete(obj.userData.id);
     physicsState.tiltVelocities.delete(obj.userData.id);
+
+    // Delete drawing file if this is a notebook or paper with drawings
+    if ((obj.userData.type === 'notebook' || obj.userData.type === 'paper') &&
+        obj.userData.drawingLines && obj.userData.drawingLines.length > 0) {
+      deleteDrawingFile(obj);
+    }
   }
 
   // Clear debug visualization helpers
@@ -6686,6 +6722,728 @@ function resetFallenObject(object) {
   physicsState.tiltState.set(object.userData.id, { x: 0, z: 0 });
   physicsState.tiltVelocities.set(object.userData.id, { x: 0, z: 0 });
   object.userData.baseTiltX = undefined;
+}
+
+// ============================================================================
+// PEN ORIENTATION FUNCTIONS (for drawing mode)
+// ============================================================================
+
+// Make pen stand vertical when picked up by user (tip pointing down)
+function makePenVertical(pen) {
+  if (pen.userData.type !== 'pen') return;
+
+  // Reset the group rotation to stand upright
+  pen.rotation.x = 0;
+  pen.rotation.z = 0;
+  // Keep Y rotation (user's preferred facing direction)
+
+  // Reset penBody sub-group
+  const penBody = pen.getObjectByName('penBody');
+  if (penBody) {
+    penBody.rotation.x = 0;
+    penBody.rotation.z = 0;
+  }
+
+  pen.userData.isHeldByUser = true;
+}
+
+// Make pen lie flat on desk (default resting orientation)
+function makePenFlat(pen) {
+  if (pen.userData.type !== 'pen') return;
+
+  // Rotate pen to lie flat on the desk (along X axis)
+  pen.rotation.z = -Math.PI / 2;
+  pen.rotation.x = 0;
+
+  // Reset penBody sub-group
+  const penBody = pen.getObjectByName('penBody');
+  if (penBody) {
+    penBody.rotation.x = 0;
+    penBody.rotation.z = 0;
+  }
+
+  pen.userData.isHeldByUser = false;
+}
+
+// Tilt pen for drawing mode (angled as if writing)
+function makePenDrawingAngle(pen) {
+  if (pen.userData.type !== 'pen') return;
+
+  // Tilt pen at a comfortable writing angle (~60 degrees from vertical)
+  // The pen should lean toward where user would be writing
+  pen.rotation.x = Math.PI / 6;  // Tilt forward
+  pen.rotation.z = -Math.PI / 6; // Slight side angle for natural grip
+
+  const penBody = pen.getObjectByName('penBody');
+  if (penBody) {
+    penBody.rotation.x = 0;
+    penBody.rotation.z = 0;
+  }
+}
+
+// ============================================================================
+// PEN DRAWING MODE FUNCTIONS
+// ============================================================================
+
+// Toggle drawing mode on/off
+function togglePenDrawingMode() {
+  if (penDrawingMode.active) {
+    exitPenDrawingMode();
+  } else {
+    enterPenDrawingMode();
+  }
+}
+
+// Enter drawing mode with the held pen (for toggling when already holding)
+function enterPenDrawingMode() {
+  if (!penDrawingMode.heldPen) return;
+
+  penDrawingMode.active = true;
+  makePenDrawingAngle(penDrawingMode.heldPen);
+
+  // Use the pen's line width setting
+  penDrawingMode.lineWidth = penDrawingMode.heldPen.userData.lineWidth || 2;
+
+  // Stop normal dragging - pen is now attached to cursor in drawing mode
+  if (isDragging && selectedObject === penDrawingMode.heldPen) {
+    isDragging = false;
+    selectedObject = null;
+  }
+
+  // Show drawing mode indicator
+  showDrawingModeIndicator(true);
+
+  console.log('Drawing mode: ON - Use LMB on notebook/paper to draw');
+}
+
+// Enter drawing mode by hovering over a pen and pressing MMB (new method)
+function enterPenDrawingModeWithPen(pen) {
+  if (!pen || pen.userData.type !== 'pen') return;
+
+  // Set this pen as the held pen for drawing mode
+  penDrawingMode.heldPen = pen;
+  penDrawingMode.active = true;
+
+  // Tilt pen to drawing angle
+  makePenDrawingAngle(pen);
+
+  // Use the pen's line width and showRay settings
+  penDrawingMode.lineWidth = pen.userData.lineWidth || 2;
+  penDrawingMode.showRay = pen.userData.showDrawingRay || false;
+
+  // If user was dragging this pen, stop dragging
+  if (isDragging && selectedObject === pen) {
+    isDragging = false;
+    selectedObject = null;
+  }
+
+  // Lift pen to drawing height immediately (don't wait for mouse move)
+  // This prevents the pen from "disappearing" by being too low
+  const penTipHeight = getDeskSurfaceY() + 0.03;
+  pen.position.y = penTipHeight;
+  pen.userData.isLifted = true;
+
+  // Show drawing mode indicator
+  showDrawingModeIndicator(true);
+
+  console.log('Drawing mode: ON - Use LMB on notebook/paper to draw');
+}
+
+// Exit drawing mode and save any drawings
+function exitPenDrawingMode() {
+  penDrawingMode.active = false;
+
+  // Drop the pen (make it lie flat on the desk)
+  if (penDrawingMode.heldPen) {
+    makePenFlat(penDrawingMode.heldPen);
+    // Calculate proper drop height
+    const dropY = calculateStackingY(penDrawingMode.heldPen);
+    penDrawingMode.heldPen.userData.originalY = dropY;
+    penDrawingMode.heldPen.userData.targetY = dropY;
+    penDrawingMode.heldPen.userData.isLifted = false;
+    penDrawingMode.heldPen = null;
+  }
+
+  // Save any drawing on the current target object
+  if (penDrawingMode.targetObject) {
+    saveDrawingToFile(penDrawingMode.targetObject);
+    penDrawingMode.targetObject = null;
+  }
+
+  // Clear drawing path
+  penDrawingMode.drawingPath = [];
+  penDrawingMode.isStrokeActive = false;
+
+  // Remove ray visualization helper
+  if (drawingRayHelper) {
+    scene.remove(drawingRayHelper);
+    drawingRayHelper = null;
+  }
+
+  // Hide drawing mode indicator
+  showDrawingModeIndicator(false);
+
+  console.log('Drawing mode: OFF');
+}
+
+// Show/hide drawing mode indicator
+function showDrawingModeIndicator(show) {
+  let indicator = document.getElementById('drawing-mode-indicator');
+
+  if (show) {
+    if (!indicator) {
+      indicator = document.createElement('div');
+      indicator.id = 'drawing-mode-indicator';
+      indicator.style.cssText = `
+        position: fixed;
+        top: 70px;
+        right: 20px;
+        background: rgba(79, 70, 229, 0.9);
+        color: white;
+        padding: 10px 20px;
+        border-radius: 8px;
+        font-size: 14px;
+        z-index: 1000;
+        pointer-events: none;
+        box-shadow: 0 4px 15px rgba(79, 70, 229, 0.3);
+      `;
+      indicator.textContent = '🖊️ Drawing Mode - LMB to draw on paper/notebook';
+      document.body.appendChild(indicator);
+    }
+    indicator.style.display = 'block';
+  } else {
+    if (indicator) {
+      indicator.style.display = 'none';
+    }
+  }
+}
+
+// Find notebook or paper under the pen position using ray from pen base through tip
+function findDrawableObjectUnderPen() {
+  if (!penDrawingMode.heldPen) {
+    // Remove ray helper if pen is not held
+    if (drawingRayHelper) {
+      scene.remove(drawingRayHelper);
+      drawingRayHelper = null;
+    }
+    return null;
+  }
+
+  // Get pen base (holder end) and tip positions in world coordinates
+  const pen = penDrawingMode.heldPen;
+
+  // Pen base is at the pen's world position (the holder end)
+  const penBase = new THREE.Vector3();
+  pen.getWorldPosition(penBase);
+
+  // Calculate pen tip position based on pen orientation
+  // The pen model has its tip pointing down along local -Y axis
+  // In drawing mode, pen is tilted at about 60 degrees
+  // Account for pen scale to prevent large pens from getting stuck
+  const penScale = pen.userData.scale || pen.scale.x || 1.0;
+  const baseTipLength = 0.15; // Base pen length ~0.15 units
+  const tipOffset = new THREE.Vector3(0, -baseTipLength * penScale, 0);
+  tipOffset.applyQuaternion(pen.quaternion);
+  const penTip = penBase.clone().add(tipOffset);
+
+  // Create a ray from base through tip
+  const rayOrigin = penBase.clone();
+  const rayDirection = new THREE.Vector3().subVectors(penTip, penBase).normalize();
+
+  // Update or create ray visualization if debug mode is enabled
+  if (penDrawingMode.showRay) {
+    // Create a thick ray that extends in both directions from pen base
+    const rayLengthDown = 3.0; // Length extending down through tip
+    const rayLengthUp = 1.5;   // Length extending up from base (visible from above)
+
+    // Calculate endpoints
+    const rayEndDown = penBase.clone().add(rayDirection.clone().multiplyScalar(rayLengthDown));
+    const rayEndUp = penBase.clone().add(rayDirection.clone().multiplyScalar(-rayLengthUp));
+
+    if (!drawingRayHelper) {
+      // Create a thick cylinder to visualize the ray (more visible than ArrowHelper)
+      const rayGroup = new THREE.Group();
+      rayGroup.name = 'drawingRayHelper';
+
+      // Use a cylinder geometry for thickness
+      const totalLength = rayLengthDown + rayLengthUp;
+      const rayGeometry = new THREE.CylinderGeometry(0.008, 0.008, totalLength, 8);
+      const rayMaterial = new THREE.MeshBasicMaterial({
+        color: 0xff00ff,
+        transparent: true,
+        opacity: 0.9,
+        depthTest: false,
+        depthWrite: false
+      });
+      const rayCylinder = new THREE.Mesh(rayGeometry, rayMaterial);
+      rayCylinder.renderOrder = 999; // Render on top
+      rayGroup.add(rayCylinder);
+
+      // Add small spheres at both ends for visibility
+      const sphereGeometry = new THREE.SphereGeometry(0.015, 8, 8);
+      const sphereMaterial = new THREE.MeshBasicMaterial({
+        color: 0xff0000,
+        depthTest: false,
+        depthWrite: false
+      });
+      const endSphereDown = new THREE.Mesh(sphereGeometry, sphereMaterial);
+      endSphereDown.name = 'endDown';
+      endSphereDown.renderOrder = 1000;
+      rayGroup.add(endSphereDown);
+
+      const endSphereUp = new THREE.Mesh(sphereGeometry.clone(), sphereMaterial.clone());
+      endSphereUp.material.color.setHex(0x00ff00); // Green for top
+      endSphereUp.name = 'endUp';
+      endSphereUp.renderOrder = 1000;
+      rayGroup.add(endSphereUp);
+
+      drawingRayHelper = rayGroup;
+      scene.add(drawingRayHelper);
+    }
+
+    // Update ray position and orientation
+    if (drawingRayHelper) {
+      const totalLength = rayLengthDown + rayLengthUp;
+      const midPoint = penBase.clone().add(rayDirection.clone().multiplyScalar((rayLengthDown - rayLengthUp) / 2));
+
+      // Position at midpoint of the ray
+      drawingRayHelper.position.copy(midPoint);
+
+      // Orient to point along ray direction
+      // Cylinders are vertical by default, so we need to rotate to align with direction
+      const upVector = new THREE.Vector3(0, 1, 0);
+      const quaternion = new THREE.Quaternion();
+      quaternion.setFromUnitVectors(upVector, rayDirection);
+      drawingRayHelper.quaternion.copy(quaternion);
+
+      // Update end sphere positions (in local space)
+      const endDown = drawingRayHelper.getObjectByName('endDown');
+      const endUp = drawingRayHelper.getObjectByName('endUp');
+      if (endDown) {
+        endDown.position.set(0, -totalLength/2, 0);
+      }
+      if (endUp) {
+        endUp.position.set(0, totalLength/2, 0);
+      }
+    }
+  } else {
+    // Remove ray helper if debug mode is disabled
+    if (drawingRayHelper) {
+      scene.remove(drawingRayHelper);
+      drawingRayHelper = null;
+    }
+  }
+
+  // Use multiple raycasting approaches for reliability
+  // Filter drawable objects (exclude the pen itself to avoid self-collision)
+  const drawableObjects = deskObjects.filter(obj =>
+    (obj.userData.type === 'notebook' || obj.userData.type === 'paper') &&
+    obj !== pen
+  );
+
+  // Approach 1: Ray from pen base through tip (original)
+  const rayStartOffset = penBase.clone().add(rayDirection.clone().multiplyScalar(-0.5));
+  const tempRaycaster = new THREE.Raycaster(rayStartOffset, rayDirection, 0, 5.0);
+  let intersects = tempRaycaster.intersectObjects(drawableObjects, true);
+
+  // Approach 2: If first approach fails, try a straight downward ray from pen tip
+  if (intersects.length === 0) {
+    const downRay = new THREE.Vector3(0, -1, 0); // Straight down
+    const tipAbove = penTip.clone();
+    tipAbove.y += 0.5; // Start from above the tip
+    const downRaycaster = new THREE.Raycaster(tipAbove, downRay, 0, 2.0);
+    intersects = downRaycaster.intersectObjects(drawableObjects, true);
+  }
+
+  // Approach 3: If still fails, try from pen base straight down
+  if (intersects.length === 0) {
+    const downRay = new THREE.Vector3(0, -1, 0);
+    const baseAbove = penBase.clone();
+    baseAbove.y += 0.5;
+    const baseDownRaycaster = new THREE.Raycaster(baseAbove, downRay, 0, 2.0);
+    intersects = baseDownRaycaster.intersectObjects(drawableObjects, true);
+  }
+
+  if (intersects.length > 0) {
+    // Find the parent object that is in deskObjects
+    let object = intersects[0].object;
+    while (object.parent && !deskObjects.includes(object)) {
+      object = object.parent;
+    }
+
+    if (deskObjects.includes(object)) {
+      // Store the intersection point for drawing coordinate calculation
+      penDrawingMode.lastIntersectionPoint = intersects[0].point.clone();
+      return object;
+    }
+  }
+
+  return null;
+}
+
+// Convert world position to local drawing coordinates on a drawable object
+function worldToDrawingCoords(worldPos, drawableObject) {
+  if (!drawableObject) return null;
+
+  // Get object's world position and rotation
+  const objPos = new THREE.Vector3();
+  drawableObject.getWorldPosition(objPos);
+
+  // Calculate local offset
+  const localX = worldPos.x - objPos.x;
+  const localZ = worldPos.z - objPos.z;
+
+  // Get object dimensions with scale applied
+  const baseWidth = drawableObject.userData.type === 'notebook' ? 0.4 : 0.28;
+  const baseDepth = drawableObject.userData.type === 'notebook' ? 0.55 : 0.4;
+  const scale = drawableObject.userData.scale || drawableObject.scale.x || 1.0;
+  const width = baseWidth * scale;
+  const depth = baseDepth * scale;
+
+  // Convert to normalized coordinates (0-1)
+  const normalizedX = (localX / width) + 0.5;
+  const normalizedY = (localZ / depth) + 0.5;
+
+  // Apply object rotation (simplified - just Y rotation)
+  const cos = Math.cos(-drawableObject.rotation.y);
+  const sin = Math.sin(-drawableObject.rotation.y);
+  const centeredX = normalizedX - 0.5;
+  const centeredY = normalizedY - 0.5;
+  const rotatedX = centeredX * cos - centeredY * sin + 0.5;
+  const rotatedY = centeredX * sin + centeredY * cos + 0.5;
+
+  // Convert to canvas coordinates (512x512 for drawing)
+  const canvasSize = 512;
+  return {
+    x: Math.floor(rotatedX * canvasSize),
+    y: Math.floor(rotatedY * canvasSize)
+  };
+}
+
+// Create or get the drawing canvas for a drawable object
+function getDrawingCanvas(drawableObject) {
+  if (!drawableObject) return null;
+
+  // Check if canvas already exists
+  if (drawableObject.userData.drawingCanvas) {
+    return drawableObject.userData.drawingCanvas;
+  }
+
+  // Create new canvas
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 512;
+
+  const ctx = canvas.getContext('2d');
+
+  // Fill with white or transparent background based on object settings
+  const hasTransparentBg = drawableObject.userData.transparentBackground === true;
+  if (hasTransparentBg) {
+    ctx.clearRect(0, 0, 512, 512);
+  } else {
+    // Default: white background
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, 512, 512);
+  }
+
+  // Store in userData
+  drawableObject.userData.drawingCanvas = canvas;
+  drawableObject.userData.drawingCtx = ctx;
+
+  // Create texture for 3D rendering
+  updateDrawingTexture(drawableObject);
+
+  return canvas;
+}
+
+// Update the 3D texture from the drawing canvas
+function updateDrawingTexture(drawableObject) {
+  if (!drawableObject || !drawableObject.userData.drawingCanvas) return;
+
+  const canvas = drawableObject.userData.drawingCanvas;
+
+  // Create or update texture
+  if (!drawableObject.userData.drawingTexture) {
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.needsUpdate = true;
+    drawableObject.userData.drawingTexture = texture;
+
+    // Find the page surface and apply texture
+    applyDrawingTextureToObject(drawableObject);
+  } else {
+    drawableObject.userData.drawingTexture.needsUpdate = true;
+  }
+}
+
+// Apply the drawing texture to the object's surface
+function applyDrawingTextureToObject(drawableObject) {
+  if (!drawableObject || !drawableObject.userData.drawingTexture) return;
+
+  const texture = drawableObject.userData.drawingTexture;
+
+  // Find the appropriate mesh to apply the texture
+  drawableObject.traverse((child) => {
+    if (child.isMesh) {
+      // For notebook and paper, apply to top surface
+      if (child.material && child.material.color) {
+        // Create a new material with the drawing texture overlay
+        const originalColor = child.material.color.clone();
+
+        // Create custom material that blends drawing with base color
+        const drawingMaterial = new THREE.MeshStandardMaterial({
+          color: originalColor,
+          map: texture,
+          transparent: true,
+          roughness: child.material.roughness || 0.9,
+          metalness: child.material.metalness || 0
+        });
+
+        // Store original material for restoration
+        if (!child.userData.originalMaterial) {
+          child.userData.originalMaterial = child.material;
+        }
+
+        // Only apply to the "pages" part
+        if (child.material.color.getHexString() === 'ffffff' ||
+            child.material.color.getHexString() === 'fffff5' ||
+            child.material.color.getHexString() === 'f5f5f0') {
+          child.material = drawingMaterial;
+        }
+      }
+    }
+  });
+}
+
+// Add a point to the current stroke
+function addDrawingPoint(worldPos) {
+  if (!penDrawingMode.active || !penDrawingMode.heldPen) return;
+
+  // Use the worldPos parameter directly - it's the exact crosshair intersection point
+  // This ensures drawing happens exactly where the crosshair aims
+  const mousePos = pointerLockState.isLocked ? new THREE.Vector2(0, 0) : mouse;
+  raycaster.setFromCamera(mousePos, camera);
+
+  // Raycast to drawable objects, excluding the pen to prevent blocking
+  const drawableObjects = deskObjects.filter(obj =>
+    (obj.userData.type === 'notebook' || obj.userData.type === 'paper') &&
+    obj !== penDrawingMode.heldPen
+  );
+  const intersects = raycaster.intersectObjects(drawableObjects, true);
+
+  if (intersects.length === 0) return;
+
+  // Find the parent object that is in deskObjects
+  let target = intersects[0].object;
+  while (target.parent && !deskObjects.includes(target)) {
+    target = target.parent;
+  }
+
+  if (!deskObjects.includes(target)) return;
+
+  // Use the provided worldPos (crosshair intersection) for accurate drawing
+  const intersectionPoint = worldPos.clone();
+
+  // Set as current target if not set
+  if (penDrawingMode.targetObject !== target) {
+    // Save previous target's drawing if different
+    if (penDrawingMode.targetObject) {
+      saveDrawingToFile(penDrawingMode.targetObject);
+    }
+    penDrawingMode.targetObject = target;
+  }
+
+  // Get or create drawing canvas
+  const canvas = getDrawingCanvas(target);
+  if (!canvas) return;
+
+  const ctx = target.userData.drawingCtx;
+
+  // Convert intersection point to canvas coordinates
+  const coords = worldToDrawingCoords(intersectionPoint, target);
+  if (!coords || coords.x < 0 || coords.x > 512 || coords.y < 0 || coords.y > 512) return;
+
+  // Get pen ink color
+  const pen = penDrawingMode.heldPen;
+  const inkColor = pen.userData.inkColor || pen.userData.mainColor || '#000000';
+
+  // Add point to path
+  penDrawingMode.drawingPath.push(coords);
+
+  // Draw line from previous point if available
+  if (penDrawingMode.drawingPath.length >= 2) {
+    const prevPoint = penDrawingMode.drawingPath[penDrawingMode.drawingPath.length - 2];
+
+    ctx.beginPath();
+    ctx.strokeStyle = inkColor;
+    ctx.lineWidth = penDrawingMode.lineWidth;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.moveTo(prevPoint.x, prevPoint.y);
+    ctx.lineTo(coords.x, coords.y);
+    ctx.stroke();
+
+    // Update texture
+    updateDrawingTexture(target);
+  }
+
+  // Add to object's drawing lines for persistence
+  if (!target.userData.drawingLines) {
+    target.userData.drawingLines = [];
+  }
+}
+
+// End the current stroke
+function endDrawingStroke() {
+  if (penDrawingMode.drawingPath.length > 0 && penDrawingMode.targetObject) {
+    // Save the completed stroke to the object's data
+    const strokeData = {
+      points: [...penDrawingMode.drawingPath],
+      color: penDrawingMode.heldPen?.userData.inkColor || '#000000',
+      width: penDrawingMode.lineWidth,
+      timestamp: Date.now()
+    };
+
+    if (!penDrawingMode.targetObject.userData.drawingLines) {
+      penDrawingMode.targetObject.userData.drawingLines = [];
+    }
+    penDrawingMode.targetObject.userData.drawingLines.push(strokeData);
+  }
+
+  penDrawingMode.drawingPath = [];
+  penDrawingMode.isStrokeActive = false;
+}
+
+// Generate a filename for the drawing
+function generateDrawingFilename(drawableObject) {
+  const type = drawableObject.userData.type;
+  const id = drawableObject.userData.id;
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  return `${type}-${id}-${timestamp}.png`;
+}
+
+// Save drawing to file
+async function saveDrawingToFile(drawableObject) {
+  if (!drawableObject || !drawableObject.userData.drawingCanvas) return;
+
+  // Only save if there are actual drawings
+  if (!drawableObject.userData.drawingLines || drawableObject.userData.drawingLines.length === 0) return;
+
+  const canvas = drawableObject.userData.drawingCanvas;
+  const dataUrl = canvas.toDataURL('image/png');
+
+  // Generate filename if not set
+  if (!drawableObject.userData.drawingFileName) {
+    drawableObject.userData.drawingFileName = generateDrawingFilename(drawableObject);
+  }
+
+  // Save using the object data storage (like PDFs) for state persistence
+  const objectId = drawableObject.userData.id;
+  try {
+    if (window.electronAPI && window.electronAPI.saveObjectData) {
+      await window.electronAPI.saveObjectData(objectId, 'drawing', dataUrl);
+      console.log('Drawing saved to app data:', drawableObject.userData.drawingFileName);
+    }
+  } catch (err) {
+    console.error('Error saving drawing to app data:', err);
+  }
+
+  // Also save to custom folder if set in the pen's settings
+  const customFolder = penDrawingMode.saveFolder;
+  if (customFolder && window.electronAPI && window.electronAPI.saveDrawingFile) {
+    try {
+      const result = await window.electronAPI.saveDrawingFile(
+        customFolder,
+        drawableObject.userData.drawingFileName,
+        dataUrl
+      );
+      if (result.success) {
+        console.log('Drawing also saved to custom folder:', result.filePath);
+      } else {
+        console.error('Error saving to custom folder:', result.error);
+      }
+    } catch (err) {
+      console.error('Error saving drawing to custom folder:', err);
+    }
+  }
+
+  // Also update the state save
+  saveState();
+}
+
+// Load drawing from file
+async function loadDrawingFromFile(drawableObject) {
+  if (!drawableObject) return;
+
+  const objectId = drawableObject.userData.id;
+  try {
+    if (window.electronAPI && window.electronAPI.loadObjectData) {
+      const result = await window.electronAPI.loadObjectData(objectId, 'drawing');
+      if (result.success && result.data) {
+        // Create canvas and load image
+        const canvas = getDrawingCanvas(drawableObject);
+        const ctx = drawableObject.userData.drawingCtx;
+
+        const img = new Image();
+        img.onload = () => {
+          ctx.drawImage(img, 0, 0);
+          updateDrawingTexture(drawableObject);
+        };
+        img.src = result.data;
+
+        console.log('Drawing loaded for object:', objectId);
+      }
+    }
+  } catch (err) {
+    console.error('Error loading drawing:', err);
+  }
+}
+
+// Redraw all strokes from saved data (for restoring from state)
+function redrawAllStrokes(drawableObject) {
+  if (!drawableObject || !drawableObject.userData.drawingLines) return;
+
+  const canvas = getDrawingCanvas(drawableObject);
+  if (!canvas) return;
+
+  const ctx = drawableObject.userData.drawingCtx;
+
+  // Clear canvas first
+  ctx.clearRect(0, 0, 512, 512);
+
+  // Redraw all strokes
+  for (const stroke of drawableObject.userData.drawingLines) {
+    if (stroke.points.length < 2) continue;
+
+    ctx.beginPath();
+    ctx.strokeStyle = stroke.color || '#000000';
+    ctx.lineWidth = stroke.width || 2;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
+    for (let i = 1; i < stroke.points.length; i++) {
+      ctx.lineTo(stroke.points[i].x, stroke.points[i].y);
+    }
+    ctx.stroke();
+  }
+
+  updateDrawingTexture(drawableObject);
+}
+
+// Delete drawing file when object is deleted
+async function deleteDrawingFile(drawableObject) {
+  if (!drawableObject) return;
+
+  const objectId = drawableObject.userData.id;
+  try {
+    if (window.electronAPI && window.electronAPI.saveObjectData) {
+      // Pass null to delete the file
+      await window.electronAPI.saveObjectData(objectId, 'drawing', null);
+      console.log('Drawing deleted for object:', objectId);
+    }
+  } catch (err) {
+    console.error('Error deleting drawing:', err);
+  }
 }
 
 function updateObjectColor(object, colorType, colorValue) {
@@ -7418,6 +8176,98 @@ function toggleCollisionDebug() {
   }
 
   updateCollisionDebugHelpers();
+}
+
+// Toggle camera ray debug visualization
+function toggleCameraRayDebug() {
+  debugState.showCameraRay = !debugState.showCameraRay;
+
+  // Update button text
+  const btn = document.getElementById('toggle-camera-ray-btn');
+  if (btn) {
+    btn.textContent = debugState.showCameraRay ? '🔳 Hide Camera Ray' : '🔲 Show Camera Ray';
+    btn.style.background = debugState.showCameraRay ? 'rgba(34, 197, 94, 0.2)' : 'rgba(79, 70, 229, 0.2)';
+    btn.style.borderColor = debugState.showCameraRay ? 'rgba(34, 197, 94, 0.4)' : 'rgba(79, 70, 229, 0.4)';
+    btn.style.color = debugState.showCameraRay ? '#4ade80' : '#818cf8';
+  }
+
+  updateCameraRayHelper();
+}
+
+// Update camera ray visualization
+function updateCameraRayHelper() {
+  if (!debugState.showCameraRay) {
+    // Remove ray helper if debug mode is disabled
+    if (cameraRayHelper) {
+      scene.remove(cameraRayHelper);
+      cameraRayHelper = null;
+    }
+    return;
+  }
+
+  // Create or update camera ray visualization
+  // Ray goes from camera through crosshair/center of screen
+  const mousePos = pointerLockState.isLocked ? new THREE.Vector2(0, 0) : mouse;
+  raycaster.setFromCamera(mousePos, camera);
+
+  // Create ray helper if it doesn't exist
+  if (!cameraRayHelper) {
+    // Create a thick cylinder to visualize the camera ray
+    const rayGroup = new THREE.Group();
+    rayGroup.name = 'cameraRayHelper';
+
+    // Ray length extending from camera
+    const rayLength = 20.0;
+    const rayGeometry = new THREE.CylinderGeometry(0.01, 0.01, rayLength, 8);
+    const rayMaterial = new THREE.MeshBasicMaterial({
+      color: 0x00ffff, // Cyan color for camera ray
+      transparent: true,
+      opacity: 0.8,
+      depthTest: false,
+      depthWrite: false
+    });
+    const rayCylinder = new THREE.Mesh(rayGeometry, rayMaterial);
+    rayCylinder.renderOrder = 999;
+    rayGroup.add(rayCylinder);
+
+    // Add a small sphere at the end for visibility
+    const sphereGeometry = new THREE.SphereGeometry(0.02, 8, 8);
+    const sphereMaterial = new THREE.MeshBasicMaterial({
+      color: 0x00ff00, // Green for endpoint
+      depthTest: false,
+      depthWrite: false
+    });
+    const endSphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
+    endSphere.name = 'endSphere';
+    endSphere.renderOrder = 1000;
+    rayGroup.add(endSphere);
+
+    cameraRayHelper = rayGroup;
+    scene.add(cameraRayHelper);
+  }
+
+  // Update ray position and orientation
+  if (cameraRayHelper) {
+    const rayLength = 20.0;
+    const rayOrigin = raycaster.ray.origin.clone();
+    const rayDirection = raycaster.ray.direction.clone();
+
+    // Position at midpoint of the ray
+    const midPoint = rayOrigin.clone().add(rayDirection.clone().multiplyScalar(rayLength / 2));
+    cameraRayHelper.position.copy(midPoint);
+
+    // Orient to point along ray direction
+    const upVector = new THREE.Vector3(0, 1, 0);
+    const quaternion = new THREE.Quaternion();
+    quaternion.setFromUnitVectors(upVector, rayDirection);
+    cameraRayHelper.quaternion.copy(quaternion);
+
+    // Update end sphere position
+    const endSphere = cameraRayHelper.getObjectByName('endSphere');
+    if (endSphere) {
+      endSphere.position.set(0, rayLength / 2, 0);
+    }
+  }
 }
 
 // ============================================================================
@@ -8502,6 +9352,29 @@ function setupEventListeners() {
 
     // Arrow keys for book - page navigation in reading mode, or when aimed at book
     if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown') && !e.altKey && !e.ctrlKey) {
+      // In inspection+drawing mode, arrow keys pan the view
+      if (inspectionDrawingState.active && inspectionDrawingState.objectWorldPos) {
+        e.preventDefault();
+        const objectWorldPos = inspectionDrawingState.objectWorldPos;
+        const moveSpeed = 0.1;
+        if (e.key === 'ArrowLeft') inspectionDrawingState.panOffsetX -= moveSpeed;
+        if (e.key === 'ArrowRight') inspectionDrawingState.panOffsetX += moveSpeed;
+        if (e.key === 'ArrowUp') inspectionDrawingState.panOffsetZ -= moveSpeed;
+        if (e.key === 'ArrowDown') inspectionDrawingState.panOffsetZ += moveSpeed;
+
+        // Clamp pan offsets to reasonable limits
+        inspectionDrawingState.panOffsetX = Math.max(-1.5, Math.min(1.5, inspectionDrawingState.panOffsetX));
+        inspectionDrawingState.panOffsetZ = Math.max(-1.5, Math.min(1.5, inspectionDrawingState.panOffsetZ));
+
+        // Update camera position
+        camera.position.set(
+          objectWorldPos.x + inspectionDrawingState.panOffsetX,
+          objectWorldPos.y + inspectionDrawingState.zoomDistance,
+          objectWorldPos.z + 0.65 + inspectionDrawingState.panOffsetZ
+        );
+        return;
+      }
+
       // In reading mode, ArrowLeft/Right turn pages, ArrowUp/Down pan vertically
       if (bookReadingState.active && bookReadingState.book) {
         e.preventDefault();
@@ -8603,6 +9476,31 @@ function setupEventListeners() {
     if (wasdKey === 'KeyW' || wasdKey === 'KeyA' || wasdKey === 'KeyS' || wasdKey === 'KeyD') {
       // Don't process if typing in an input field
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+      // In inspection+drawing mode, WASD is used for panning the view
+      if (inspectionDrawingState.active && inspectionDrawingState.objectWorldPos) {
+        e.preventDefault();
+        const panSpeed = 0.1;
+        const objectWorldPos = inspectionDrawingState.objectWorldPos;
+
+        // W/S for forward/backward panning, A/D for left/right panning
+        if (wasdKey === 'KeyW') inspectionDrawingState.panOffsetZ -= panSpeed;
+        if (wasdKey === 'KeyS') inspectionDrawingState.panOffsetZ += panSpeed;
+        if (wasdKey === 'KeyA') inspectionDrawingState.panOffsetX -= panSpeed;
+        if (wasdKey === 'KeyD') inspectionDrawingState.panOffsetX += panSpeed;
+
+        // Clamp pan offsets to reasonable limits
+        inspectionDrawingState.panOffsetX = Math.max(-1.5, Math.min(1.5, inspectionDrawingState.panOffsetX));
+        inspectionDrawingState.panOffsetZ = Math.max(-1.5, Math.min(1.5, inspectionDrawingState.panOffsetZ));
+
+        // Update camera position
+        camera.position.set(
+          objectWorldPos.x + inspectionDrawingState.panOffsetX,
+          objectWorldPos.y + inspectionDrawingState.zoomDistance,
+          objectWorldPos.z + 0.65 + inspectionDrawingState.panOffsetZ
+        );
+        return;
+      }
 
       // In reading mode, WASD is used for panning the view
       if (bookReadingState.active && bookReadingState.book && bookReadingState.bookWorldPos) {
@@ -8791,6 +9689,14 @@ function setupEventListeners() {
   if (toggleCollisionBtn) {
     toggleCollisionBtn.addEventListener('click', () => {
       toggleCollisionDebug();
+    });
+  }
+
+  // Debug camera ray visualization toggle
+  const toggleCameraRayBtn = document.getElementById('toggle-camera-ray-btn');
+  if (toggleCameraRayBtn) {
+    toggleCameraRayBtn.addEventListener('click', () => {
+      toggleCameraRayDebug();
     });
   }
 
@@ -9055,6 +9961,66 @@ function onMouseDown(event) {
   if (event.button === 1) {
     event.preventDefault();
 
+    // If drawing mode is active, check if clicking on a drawable surface to enter inspection mode
+    if (penDrawingMode.active && !inspectionDrawingState.active) {
+      // Check if hovering over notebook/paper to enter inspection+drawing mode
+      updateMousePosition(event);
+      raycaster.setFromCamera(mouse, camera);
+      // Exclude the pen from raycasting to prevent it from blocking the drawable surface
+      const objectsToCheck = deskObjects.filter(obj => obj !== penDrawingMode.heldPen);
+      const intersects = raycaster.intersectObjects(objectsToCheck, true);
+
+      if (intersects.length > 0) {
+        const clickedMesh = intersects[0].object;
+        let object = clickedMesh;
+        while (object.parent && !deskObjects.includes(object)) {
+          object = object.parent;
+        }
+
+        if (deskObjects.includes(object) && (object.userData.type === 'notebook' || object.userData.type === 'paper')) {
+          // Enter inspection mode while keeping drawing mode active
+          penDrawingMode.middleMouseDownTime = Date.now();
+          penDrawingMode.pendingDrawableObject = object;
+          penDrawingMode.mmbHoldCompleted = false;
+          penDrawingMode.holdTimeout = setTimeout(() => {
+            // Hold for 300ms - enter inspection+drawing mode
+            enterInspectionDrawingMode(object);
+            penDrawingMode.mmbHoldCompleted = true;
+            penDrawingMode.holdTimeout = null;
+          }, 300);
+          return;
+        }
+      }
+
+      // If not clicking on drawable, exit drawing mode
+      penDrawingMode.middleMouseDownTime = Date.now();
+      penDrawingMode.mmbHoldCompleted = false;
+      penDrawingMode.holdTimeout = setTimeout(() => {
+        exitPenDrawingMode();
+        penDrawingMode.mmbHoldCompleted = true;
+        penDrawingMode.holdTimeout = null;
+      }, 300);
+      return;
+    }
+
+    // If inspection mode is active (with or without drawing), MMB hold exits all modes
+    if (inspectionDrawingState.active) {
+      penDrawingMode.middleMouseDownTime = Date.now();
+      penDrawingMode.mmbHoldCompleted = false;
+      penDrawingMode.holdTimeout = setTimeout(() => {
+        // Hold for 300ms - exit all drawing-related modes
+        if (penDrawingMode.active) {
+          exitPenDrawingMode();
+        }
+        if (inspectionDrawingState.active) {
+          exitInspectionDrawingMode();
+        }
+        penDrawingMode.mmbHoldCompleted = true;
+        penDrawingMode.holdTimeout = null;
+      }, 300);
+      return;
+    }
+
     // In reading mode, MMB does nothing (use LMB click to exit reading mode)
     if (bookReadingState.active) {
       return;
@@ -9084,6 +10050,34 @@ function onMouseDown(event) {
       }
 
       if (deskObjects.includes(object)) {
+        // If hovering over a pen, set up hold timeout to toggle drawing mode
+        if (object.userData.type === 'pen') {
+          penDrawingMode.middleMouseDownTime = Date.now();
+          penDrawingMode.pendingPen = object;
+          penDrawingMode.mmbHoldCompleted = false; // Reset flag
+          penDrawingMode.holdTimeout = setTimeout(() => {
+            // Hold for 300ms - enter drawing mode
+            enterPenDrawingModeWithPen(object);
+            penDrawingMode.mmbHoldCompleted = true; // Mark hold as completed
+            penDrawingMode.holdTimeout = null; // Mark as already handled
+          }, 300);
+          return;
+        }
+
+        // If hovering over notebook/paper, set up hold timeout to enter inspection+drawing mode
+        if (object.userData.type === 'notebook' || object.userData.type === 'paper') {
+          penDrawingMode.middleMouseDownTime = Date.now();
+          penDrawingMode.pendingDrawableObject = object;
+          penDrawingMode.mmbHoldCompleted = false; // Reset flag
+          penDrawingMode.holdTimeout = setTimeout(() => {
+            // Hold for 300ms - enter inspection+drawing mode
+            enterInspectionDrawingMode(object);
+            penDrawingMode.mmbHoldCompleted = true; // Mark hold as completed
+            penDrawingMode.holdTimeout = null; // Mark as already handled
+          }, 300);
+          return;
+        }
+
         // For books and magazines, check if user is holding for reading mode
         if (object.userData.type === 'books' || object.userData.type === 'magazine') {
           bookReadingState.middleMouseDownTime = Date.now();
@@ -9125,9 +10119,48 @@ function onMouseDown(event) {
 
   if (event.button !== 0) return; // Left click only
 
+  // If in drawing mode, LMB starts drawing instead of dragging objects
+  if (penDrawingMode.active && penDrawingMode.heldPen) {
+    // Check if there's a drawable surface under the pen
+    const target = findDrawableObjectUnderPen();
+    if (target) {
+      // Start a new stroke
+      penDrawingMode.isStrokeActive = true;
+      penDrawingMode.drawingPath = [];
+      // Add first point
+      const penWorldPos = new THREE.Vector3();
+      penDrawingMode.heldPen.getWorldPosition(penWorldPos);
+      addDrawingPoint(penWorldPos);
+    }
+    // In drawing mode, don't allow picking up/dragging other objects - return early
+    return;
+  }
+
   // If in book reading mode, LMB click exits reading mode
   if (bookReadingState.active) {
     exitBookReadingMode();
+    return;
+  }
+
+  // If in inspection+drawing mode, LMB exits the mode (unless actively drawing)
+  if (inspectionDrawingState.active) {
+    // If we have a pen in drawing mode, start drawing instead of exiting
+    if (penDrawingMode.active && penDrawingMode.heldPen) {
+      // Check if there's a drawable surface under the pen
+      const target = findDrawableObjectUnderPen();
+      if (target) {
+        // Start a new stroke
+        penDrawingMode.isStrokeActive = true;
+        penDrawingMode.drawingPath = [];
+        // Add first point
+        const penWorldPos = new THREE.Vector3();
+        penDrawingMode.heldPen.getWorldPosition(penWorldPos);
+        addDrawingPoint(penWorldPos);
+      }
+      return;
+    }
+    // Otherwise, exit inspection mode
+    exitInspectionDrawingMode();
     return;
   }
 
@@ -9345,6 +10378,12 @@ function onMouseDown(event) {
         resetFallenObject(object);
       }
 
+      // If picking up a pen, make it vertical and track as held pen
+      if (object.userData.type === 'pen') {
+        makePenVertical(object);
+        penDrawingMode.heldPen = object;
+      }
+
       // Check if there are objects stacked on top of this one
       const objectsOnTop = findObjectsOnTop(object);
       const hasObjectsOnTop = objectsOnTop.length > 0;
@@ -9476,6 +10515,91 @@ function onMouseMove(event) {
 
   updateMousePosition(event);
 
+  // In drawing mode, pen follows cursor (attached to cursor at pen tip)
+  if (penDrawingMode.active && penDrawingMode.heldPen) {
+    // Calculate pen position based on cursor/crosshair
+    const halfWidth = CONFIG.desk.width / 2 - 0.2;
+    const halfDepth = CONFIG.desk.depth / 2 - 0.2;
+
+    let crosshairPoint = null; // The point where the crosshair/cursor aims
+    let targetX, targetZ, targetY;
+
+    // In inspection+drawing mode, use different raycasting approach
+    if (inspectionDrawingState.active && inspectionDrawingState.drawableObject) {
+      // In inspection mode, raycast to the drawable object's surface directly
+      const mousePos = pointerLockState.isLocked ? new THREE.Vector2(0, 0) : mouse;
+      raycaster.setFromCamera(mousePos, camera);
+
+      // Raycast to the inspected drawable object
+      const intersects = raycaster.intersectObjects([inspectionDrawingState.drawableObject], true);
+      if (intersects.length > 0) {
+        crosshairPoint = intersects[0].point.clone();
+      } else {
+        // If not intersecting the drawable, use desk plane
+        const intersectsPlane = raycaster.intersectObject(dragPlane);
+        if (intersectsPlane.length > 0) {
+          crosshairPoint = intersectsPlane[0].point.clone();
+        }
+      }
+    } else {
+      // Normal drawing mode (not in inspection)
+      const mousePos = pointerLockState.isLocked ? new THREE.Vector2(0, 0) : mouse;
+      raycaster.setFromCamera(mousePos, camera);
+
+      // First try to raycast to drawable surfaces for more accurate positioning
+      // Exclude the pen itself to prevent self-blocking
+      const drawableObjects = deskObjects.filter(obj =>
+        (obj.userData.type === 'notebook' || obj.userData.type === 'paper') &&
+        obj !== penDrawingMode.heldPen
+      );
+      const drawableIntersects = raycaster.intersectObjects(drawableObjects, true);
+
+      if (drawableIntersects.length > 0) {
+        crosshairPoint = drawableIntersects[0].point.clone();
+      } else {
+        // Fall back to desk plane
+        const intersects = raycaster.intersectObject(dragPlane);
+        if (intersects.length > 0) {
+          crosshairPoint = intersects[0].point.clone();
+        }
+      }
+    }
+
+    // Position pen so that the pen TIP is at the crosshair point
+    // The pen tip (apex of the cone at Y~=-0.02 in local space) should be at the ray-surface intersection
+    if (crosshairPoint) {
+      // The pen tip apex is at approximately Y=-0.02 in local penBody space
+      // We need to offset the pen group position so the tip ends up at crosshairPoint
+      // A small height correction prevents the tip from clipping into the surface
+      // Scale the correction with pen size to prevent large pens from getting stuck
+      const penScale = penDrawingMode.heldPen.userData.scale || penDrawingMode.heldPen.scale.x || 1.0;
+      const baseTipHeightCorrection = 0.02; // Base offset to lift tip slightly above surface
+      const tipHeightCorrection = baseTipHeightCorrection * penScale;
+
+      // Position pen group so tip is at crosshair point with height correction
+      targetX = crosshairPoint.x;
+      targetZ = crosshairPoint.z;
+      targetY = crosshairPoint.y + tipHeightCorrection;
+
+      // Clamp to desk boundaries
+      targetX = Math.max(-halfWidth, Math.min(halfWidth, targetX));
+      targetZ = Math.max(-halfDepth, Math.min(halfDepth, targetZ));
+
+      // Apply position to pen - tip will be at crosshair point
+      penDrawingMode.heldPen.position.x = targetX;
+      penDrawingMode.heldPen.position.z = targetZ;
+      penDrawingMode.heldPen.position.y = targetY;
+
+      // Update ray visualization (for visual realism/debugging only)
+      const drawableTarget = findDrawableObjectUnderPen();
+
+      // If stroke is active, add drawing point at the crosshair intersection
+      if (penDrawingMode.isStrokeActive) {
+        addDrawingPoint(crosshairPoint);
+      }
+    }
+  }
+
   if (isDragging && selectedObject) {
     // Clamp to desk bounds
     const halfWidth = CONFIG.desk.width / 2 - 0.2;
@@ -9553,6 +10677,15 @@ function onMouseMove(event) {
     selectedObject.position.x = newX;
     selectedObject.position.z = newZ;
 
+    // Handle drawing in pen drawing mode
+    if (penDrawingMode.active && penDrawingMode.isStrokeActive &&
+        selectedObject.userData.type === 'pen') {
+      // Get the pen's world position for drawing
+      const penWorldPos = new THREE.Vector3();
+      selectedObject.getWorldPosition(penWorldPos);
+      addDrawingPoint(penWorldPos);
+    }
+
     // Move objects stacked on top using friction physics
     // They get pulled along due to friction, but may slip at high speeds
     // Only move stacked objects if we're lifting (not pulling out from under)
@@ -9627,6 +10760,26 @@ function onMouseUp(event) {
 
   // Middle mouse button - handle book quick click or cancel hold timeout
   if (event.button === 1) {
+    // If MMB hold just completed (entered or exited a mode), ignore this release
+    if (penDrawingMode.mmbHoldCompleted) {
+      penDrawingMode.mmbHoldCompleted = false; // Reset flag
+      penDrawingMode.middleMouseDownTime = null;
+      penDrawingMode.pendingPen = null;
+      penDrawingMode.pendingDrawableObject = null;
+      return;
+    }
+
+    // If user releases before pen hold timeout fired, cancel it (quick click does nothing for pens)
+    if (penDrawingMode.holdTimeout) {
+      clearTimeout(penDrawingMode.holdTimeout);
+      penDrawingMode.holdTimeout = null;
+      penDrawingMode.pendingPen = null;
+      penDrawingMode.pendingDrawableObject = null;
+      penDrawingMode.middleMouseDownTime = null;
+      // Quick click on pen does nothing - only hold activates drawing mode
+      return;
+    }
+
     // If in reading mode, don't exit on release - stay in mode until user clicks elsewhere
     if (bookReadingState.active) {
       return;
@@ -9684,6 +10837,11 @@ function onMouseUp(event) {
     return;
   }
 
+  // End drawing stroke if in drawing mode (LMB release)
+  if (event.button === 0 && penDrawingMode.active && penDrawingMode.isStrokeActive) {
+    endDrawingStroke();
+  }
+
   if (isDragging && selectedObject) {
     // Check for pen holder insertion
     const insertionResult = checkPenHolderInsertion(selectedObject);
@@ -9725,6 +10883,16 @@ function onMouseUp(event) {
         selectedObject.userData.inHolder = null;
         selectedObject.userData.holderSlot = null;
       }
+
+      // If dropping a pen, make it lie flat unless in drawing mode
+      if (selectedObject.userData.type === 'pen' && !penDrawingMode.active) {
+        makePenFlat(selectedObject);
+      }
+    }
+
+    // Clear held pen reference if we're not in drawing mode
+    if (selectedObject.userData.type === 'pen' && !penDrawingMode.active) {
+      penDrawingMode.heldPen = null;
     }
 
     isDragging = false;
@@ -10042,6 +11210,25 @@ function calculatePullResistance(draggedObject, currentX, currentZ, targetX, tar
 
 function onMouseWheel(event) {
   updateMousePosition(event);
+
+  // If in inspection+drawing mode: scroll zooms in/out on the object (no rotation)
+  if (inspectionDrawingState.active && inspectionDrawingState.objectWorldPos) {
+    event.preventDefault();
+
+    // Zoom: scroll up = zoom in (closer), scroll down = zoom out (further)
+    const zoomDelta = event.deltaY > 0 ? 0.08 : -0.08;
+    inspectionDrawingState.zoomDistance = Math.max(0.3, Math.min(2.0, inspectionDrawingState.zoomDistance + zoomDelta));
+
+    // Update camera position using cached object position
+    const objectWorldPos = inspectionDrawingState.objectWorldPos;
+
+    camera.position.set(
+      objectWorldPos.x + inspectionDrawingState.panOffsetX,
+      objectWorldPos.y + inspectionDrawingState.zoomDistance,
+      objectWorldPos.z + 0.65 + inspectionDrawingState.panOffsetZ
+    );
+    return;
+  }
 
   // If in book reading mode: scroll zooms in/out on the book (no rotation)
   if (bookReadingState.active && bookReadingState.book && bookReadingState.bookWorldPos) {
@@ -10694,6 +11881,8 @@ function updateCustomizationPanel(object) {
     case 'pen':
       const penBodyColor = object.userData.mainColor || '#3b82f6';
       const penInkColor = object.userData.inkColor || object.userData.mainColor || '#3b82f6';
+      const penLineWidth = object.userData.lineWidth || 2;
+      const penSaveFolder = object.userData.drawingsSaveFolder || '';
       dynamicOptions.innerHTML = `
         <div class="customization-group" style="margin-top: 20px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.1);">
           <label>Body Color</label>
@@ -10721,8 +11910,71 @@ function updateCustomizationPanel(object) {
             <div class="color-swatch${penInkColor === '#06b6d4' ? ' selected' : ''}" style="background: #06b6d4; width: 32px; height: 32px; border-radius: 8px; cursor: pointer; border: 2px solid ${penInkColor === '#06b6d4' ? '#fff' : 'transparent'};" data-color="#06b6d4"></div>
           </div>
         </div>
+        <div class="customization-group" style="margin-top: 15px;">
+          <label>Line Width</label>
+          <div style="display: flex; align-items: center; gap: 10px; margin-top: 8px;">
+            <input type="range" id="pen-line-width" min="1" max="10" value="${penLineWidth}"
+                   style="flex: 1; cursor: pointer;">
+            <span id="pen-line-width-val" style="color: rgba(255,255,255,0.7); font-size: 12px; min-width: 30px;">${penLineWidth}px</span>
+          </div>
+        </div>
+        <div class="customization-group" style="margin-top: 15px;">
+          <label>Save Drawings To</label>
+          <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 8px;">
+            <div id="pen-save-folder-display" style="font-size: 11px; color: rgba(255,255,255,0.6); word-break: break-all; min-height: 20px;">
+              ${penSaveFolder || 'Default (app data folder)'}
+            </div>
+            <button id="pen-select-folder-btn" style="padding: 8px 12px; background: rgba(79, 70, 229, 0.3); border: 1px solid rgba(79, 70, 229, 0.5); border-radius: 6px; color: #fff; cursor: pointer; font-size: 12px;">
+              📁 Select Folder
+            </button>
+            ${penSaveFolder ? `
+              <button id="pen-clear-folder-btn" style="padding: 8px 12px; background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 6px; color: #ef4444; cursor: pointer; font-size: 12px;">
+                Clear (use default)
+              </button>
+            ` : ''}
+          </div>
+        </div>
+        <div class="customization-group" style="margin-top: 15px;">
+          <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+            <input type="checkbox" id="pen-show-ray" ${object.userData.showDrawingRay ? 'checked' : ''} style="width: 18px; height: 18px; accent-color: #4f46e5;">
+            Show Drawing Ray (Debug)
+          </label>
+          <div style="font-size: 11px; color: rgba(255,255,255,0.5); margin-top: 8px; line-height: 1.5;">
+            When checked, visualizes the ray used to calculate drawing position on surfaces.
+          </div>
+        </div>
+        <div class="customization-group" style="margin-top: 15px;">
+          <div style="padding: 12px; background: rgba(79, 70, 229, 0.2); border-radius: 8px; border: 1px solid rgba(79, 70, 229, 0.3);">
+            <div style="font-size: 13px; color: rgba(255,255,255,0.9); margin-bottom: 8px;">🖊️ Drawing Mode</div>
+            <div style="font-size: 11px; color: rgba(255,255,255,0.6); line-height: 1.5;">
+              1. Pick up the pen (LMB)<br>
+              2. Hold MMB on pen to enter drawing mode<br>
+              3. Move pen over notebook/paper and hold LMB to draw<br>
+              4. Hold MMB again to exit and save<br>
+              <br>
+              💡 You can also hold MMB on a notebook/paper to enter inspection mode with zoom and panning.
+            </div>
+          </div>
+        </div>
       `;
       setupPenCustomizationHandlers(object);
+      break;
+
+    case 'notebook':
+    case 'paper':
+      const hasTransparentBg = object.userData.transparentBackground === true;
+      dynamicOptions.innerHTML = `
+        <div class="customization-group" style="margin-top: 20px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.1);">
+          <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+            <input type="checkbox" id="transparent-background" ${hasTransparentBg ? 'checked' : ''} style="width: 18px; height: 18px; accent-color: #4f46e5;">
+            Transparent Background
+          </label>
+          <div style="font-size: 11px; color: rgba(255,255,255,0.5); margin-top: 8px; line-height: 1.5;">
+            When unchecked, drawings will have a white background. When checked, drawings will have a transparent background.
+          </div>
+        </div>
+      `;
+      setupNotebookPaperCustomizationHandlers(object);
       break;
 
     case 'laptop':
@@ -11983,6 +13235,121 @@ function setupPenCustomizationHandlers(object) {
         });
       });
     }
+
+    // Line width slider
+    const lineWidthSlider = document.getElementById('pen-line-width');
+    const lineWidthVal = document.getElementById('pen-line-width-val');
+    if (lineWidthSlider && lineWidthVal) {
+      lineWidthSlider.addEventListener('input', (e) => {
+        const width = parseInt(e.target.value);
+        object.userData.lineWidth = width;
+        lineWidthVal.textContent = width + 'px';
+        // Also update the global penDrawingMode line width
+        penDrawingMode.lineWidth = width;
+        saveState();
+      });
+    }
+
+    // Drawings save folder selection
+    const selectFolderBtn = document.getElementById('pen-select-folder-btn');
+    const clearFolderBtn = document.getElementById('pen-clear-folder-btn');
+    const folderDisplay = document.getElementById('pen-save-folder-display');
+
+    if (selectFolderBtn) {
+      selectFolderBtn.addEventListener('click', async () => {
+        if (window.electronAPI && window.electronAPI.selectDrawingsFolder) {
+          try {
+            const result = await window.electronAPI.selectDrawingsFolder();
+            if (result.success && !result.canceled && result.folderPath) {
+              object.userData.drawingsSaveFolder = result.folderPath;
+              // Also update the global penDrawingMode saveFolder
+              penDrawingMode.saveFolder = result.folderPath;
+              if (folderDisplay) {
+                folderDisplay.textContent = result.folderPath;
+              }
+              saveState();
+              // Refresh the customization panel to show the clear button
+              updateCustomizationPanel(object);
+            }
+          } catch (err) {
+            console.error('Error selecting drawings folder:', err);
+          }
+        }
+      });
+    }
+
+    if (clearFolderBtn) {
+      clearFolderBtn.addEventListener('click', () => {
+        object.userData.drawingsSaveFolder = null;
+        penDrawingMode.saveFolder = null;
+        if (folderDisplay) {
+          folderDisplay.textContent = 'Default (app data folder)';
+        }
+        saveState();
+        // Refresh the customization panel to hide the clear button
+        updateCustomizationPanel(object);
+      });
+    }
+
+    // Show drawing ray checkbox
+    const showRayCheckbox = document.getElementById('pen-show-ray');
+    if (showRayCheckbox) {
+      showRayCheckbox.addEventListener('change', (e) => {
+        object.userData.showDrawingRay = e.target.checked;
+        penDrawingMode.showRay = e.target.checked;
+        saveState();
+      });
+    }
+  }, 0);
+}
+
+function setupNotebookPaperCustomizationHandlers(object) {
+  setTimeout(() => {
+    const transparentBgCheckbox = document.getElementById('transparent-background');
+
+    if (transparentBgCheckbox) {
+      transparentBgCheckbox.addEventListener('change', (e) => {
+        object.userData.transparentBackground = e.target.checked;
+
+        // If there's an existing canvas, recreate it with the new background
+        if (object.userData.drawingCanvas) {
+          const ctx = object.userData.drawingCtx;
+          const canvas = object.userData.drawingCanvas;
+
+          // Clear canvas and redraw with new background
+          if (e.target.checked) {
+            ctx.clearRect(0, 0, 512, 512);
+          } else {
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, 512, 512);
+          }
+
+          // Redraw all existing strokes
+          if (object.userData.drawingLines && object.userData.drawingLines.length > 0) {
+            object.userData.drawingLines.forEach(stroke => {
+              if (stroke.points && stroke.points.length >= 2) {
+                ctx.beginPath();
+                ctx.strokeStyle = stroke.color || '#000000';
+                ctx.lineWidth = stroke.width || 2;
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+
+                ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
+                for (let i = 1; i < stroke.points.length; i++) {
+                  ctx.lineTo(stroke.points[i].x, stroke.points[i].y);
+                }
+                ctx.stroke();
+              }
+            });
+          }
+
+          // Update the 3D texture
+          updateDrawingTexture(object);
+        }
+
+        saveState();
+      });
+    }
   }, 0);
 }
 
@@ -12951,6 +14318,36 @@ function getInteractionContent(object) {
                 Page ${object.userData.currentPage + 1} / ${object.userData.totalPages}
               </span>
               <button class="timer-btn start" id="magazine-next" ${object.userData.currentPage >= object.userData.totalPages - 1 ? 'disabled' : ''}>Next →</button>
+            </div>
+          ` : ''}
+        </div>
+      `;
+
+    case 'notebook':
+    case 'paper':
+      // Notebook and paper are drawing surfaces
+      const hasDrawings = object.userData.drawingLines && object.userData.drawingLines.length > 0;
+      return `
+        <div class="timer-controls">
+          <div class="timer-display">
+            <div class="time" style="font-size: 24px;">${object.userData.type === 'notebook' ? '📓 Notebook' : '📄 Paper'}</div>
+            <div style="color: rgba(255,255,255,0.7); margin-top: 15px; font-size: 14px;">
+              This is a drawing surface.
+            </div>
+          </div>
+          <div style="margin-top: 15px; padding: 15px; background: rgba(79, 70, 229, 0.1); border: 1px solid rgba(79, 70, 229, 0.3); border-radius: 8px;">
+            <div style="color: rgba(255,255,255,0.8); font-size: 13px; margin-bottom: 10px;">How to draw:</div>
+            <ol style="color: rgba(255,255,255,0.7); font-size: 12px; margin: 0; padding-left: 20px; line-height: 1.8;">
+              <li>Add a pen to the desk</li>
+              <li>Hover over the pen and press <strong>MMB</strong> to enter drawing mode</li>
+              <li>Move the pen over this surface</li>
+              <li>Hold <strong>LMB</strong> to draw</li>
+              <li>Press <strong>MMB</strong> again to exit drawing mode</li>
+            </ol>
+          </div>
+          ${hasDrawings ? `
+            <div style="margin-top: 15px; color: rgba(255,255,255,0.5); font-size: 12px;">
+              ✏️ This surface has drawings
             </div>
           ` : ''}
         </div>
@@ -15510,6 +16907,13 @@ function performQuickInteraction(object, clickedMesh = null) {
       // Pen holder is now just a container, no interaction
       break;
 
+    case 'notebook':
+    case 'paper':
+      // Drawing surfaces - open interaction modal to show instructions
+      enterExamineMode(object);
+      openInteractionModal(object);
+      break;
+
     default:
       // For non-toggle objects, open the interaction modal instead
       if (object.userData.interactive) {
@@ -16955,6 +18359,106 @@ function exitBookReadingMode() {
 
   bookReadingState.book = null;
   bookReadingState.bookWorldPos = null;
+}
+
+// ============================================================================
+// INSPECTION + DRAWING MODE (for notebooks/paper)
+// ============================================================================
+
+function enterInspectionDrawingMode(drawableObject) {
+  if (inspectionDrawingState.active) return;
+
+  inspectionDrawingState.active = true;
+  inspectionDrawingState.drawableObject = drawableObject;
+
+  // Reset zoom and pan offsets
+  inspectionDrawingState.zoomDistance = 0.85;
+  inspectionDrawingState.panOffsetX = 0;
+  inspectionDrawingState.panOffsetZ = 0;
+
+  // Store original camera state
+  inspectionDrawingState.originalCameraPos = camera.position.clone();
+  inspectionDrawingState.originalCameraYaw = cameraLookState.yaw;
+  inspectionDrawingState.originalCameraPitch = cameraLookState.pitch;
+
+  // Get object position in world coordinates and cache it
+  const objectWorldPos = new THREE.Vector3();
+  drawableObject.getWorldPosition(objectWorldPos);
+  inspectionDrawingState.objectWorldPos = objectWorldPos;
+
+  // Calculate target camera position - at comfortable viewing height above the object
+  const targetCameraPos = new THREE.Vector3(
+    objectWorldPos.x,
+    objectWorldPos.y + inspectionDrawingState.zoomDistance,
+    objectWorldPos.z + 0.65
+  );
+
+  // Animate camera to inspection position
+  const startPos = camera.position.clone();
+  const startTime = Date.now();
+  const duration = 400;
+
+  function animateToInspection() {
+    const elapsed = Date.now() - startTime;
+    const progress = Math.min(elapsed / duration, 1);
+    const eased = 1 - Math.pow(1 - progress, 3); // Ease out cubic
+
+    camera.position.lerpVectors(startPos, targetCameraPos, eased);
+
+    // Point camera down at object
+    const lookAtY = objectWorldPos.y + 0.03;
+    const verticalDist = camera.position.y - lookAtY;
+    const horizontalDist = Math.abs(camera.position.z - objectWorldPos.z);
+    const targetPitch = -Math.atan2(verticalDist, horizontalDist);
+    cameraLookState.pitch = inspectionDrawingState.originalCameraPitch + (targetPitch - inspectionDrawingState.originalCameraPitch) * eased;
+    updateCameraLook();
+
+    if (progress < 1) {
+      requestAnimationFrame(animateToInspection);
+    }
+  }
+
+  animateToInspection();
+}
+
+function exitInspectionDrawingMode() {
+  if (!inspectionDrawingState.active) return;
+
+  inspectionDrawingState.active = false;
+
+  // Animate camera back to original position
+  if (inspectionDrawingState.originalCameraPos) {
+    const startPos = camera.position.clone();
+    const targetPos = inspectionDrawingState.originalCameraPos;
+    const startPitch = cameraLookState.pitch;
+    const targetPitch = inspectionDrawingState.originalCameraPitch;
+    const startYaw = cameraLookState.yaw;
+    const targetYaw = inspectionDrawingState.originalCameraYaw;
+    const startTime = Date.now();
+    const duration = 300;
+
+    function animateFromInspection() {
+      const elapsed = Date.now() - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+      const eased = 1 - Math.pow(1 - progress, 3);
+
+      camera.position.lerpVectors(startPos, targetPos, eased);
+
+      // Restore camera look direction
+      cameraLookState.pitch = startPitch + (targetPitch - startPitch) * eased;
+      cameraLookState.yaw = startYaw + (targetYaw - startYaw) * eased;
+      updateCameraLook();
+
+      if (progress < 1) {
+        requestAnimationFrame(animateFromInspection);
+      }
+    }
+
+    animateFromInspection();
+  }
+
+  inspectionDrawingState.drawableObject = null;
+  inspectionDrawingState.objectWorldPos = null;
 }
 
 // ============================================================================
@@ -18561,6 +20065,11 @@ async function saveStateImmediate() {
         case 'pen':
           data.penColor = obj.userData.penColor;
           data.inkColor = obj.userData.inkColor;
+          data.lineWidth = obj.userData.lineWidth || 2;
+          // Save drawings folder path if set
+          if (obj.userData.drawingsSaveFolder) {
+            data.drawingsSaveFolder = obj.userData.drawingsSaveFolder;
+          }
           // Save holder info if pen is in a holder
           if (obj.userData.inHolder) {
             const holderIndex = deskObjects.indexOf(obj.userData.inHolder);
@@ -18593,6 +20102,17 @@ async function saveStateImmediate() {
           } else {
             data.currentTime = obj.userData.currentTime || 0;
             data.wasPlaying = obj.userData.isPlaying || false;
+          }
+          break;
+        case 'notebook':
+        case 'paper':
+          // Save drawing data
+          if (obj.userData.drawingLines && obj.userData.drawingLines.length > 0) {
+            data.drawingLines = obj.userData.drawingLines;
+            data.hasDrawingData = true;
+          }
+          if (obj.userData.drawingFileName) {
+            data.drawingFileName = obj.userData.drawingFileName;
           }
           break;
         case 'dictaphone':
@@ -19038,6 +20558,13 @@ async function loadState() {
                 if (objData.inkColor) {
                   obj.userData.inkColor = objData.inkColor;
                 }
+                if (objData.lineWidth) {
+                  obj.userData.lineWidth = objData.lineWidth;
+                }
+                // Restore drawings save folder
+                if (objData.drawingsSaveFolder) {
+                  obj.userData.drawingsSaveFolder = objData.drawingsSaveFolder;
+                }
                 // Update pen body color from mainColor
                 if (objData.mainColor) {
                   obj.children.forEach(child => {
@@ -19075,6 +20602,24 @@ async function loadState() {
                 if (objData.saturationLevel !== undefined) obj.userData.saturationLevel = objData.saturationLevel;
                 if (objData.lowCutoff !== undefined) obj.userData.lowCutoff = objData.lowCutoff;
                 if (objData.highCutoff !== undefined) obj.userData.highCutoff = objData.highCutoff;
+                break;
+              case 'notebook':
+              case 'paper':
+                // Restore drawing data
+                if (objData.drawingLines && objData.drawingLines.length > 0) {
+                  obj.userData.drawingLines = objData.drawingLines;
+                  // Redraw all strokes after state is loaded
+                  setTimeout(() => {
+                    redrawAllStrokes(obj);
+                  }, 100);
+                }
+                if (objData.drawingFileName) {
+                  obj.userData.drawingFileName = objData.drawingFileName;
+                }
+                // Load drawing from file storage if flagged
+                if (objData.hasDrawingData) {
+                  loadDrawingFromFile(obj);
+                }
                 break;
               case 'dictaphone':
                 // Restore recordings folder path and next recording number
@@ -19157,6 +20702,11 @@ function animate() {
 
     // Update debug collision visualization positions
     updateCollisionDebugPositions();
+
+    // Update camera ray visualization if enabled
+    if (debugState.showCameraRay) {
+      updateCameraRayHelper();
+    }
 
     // Update spatial audio for all active sound sources
     // This ensures sounds update in real-time as objects move
