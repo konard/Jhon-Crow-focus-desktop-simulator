@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   selectMusicFile: () => ipcRenderer.invoke('select-music-file'),
   readAudioFile: (filePath) => ipcRenderer.invoke('read-audio-file', filePath),
   refreshMusicFolder: (folderPath) => ipcRenderer.invoke('refresh-music-folder', folderPath),
+  // Generic sound file selection (for custom sounds)
+  selectSoundFile: () => ipcRenderer.invoke('select-sound-file'),
   // Dictaphone - recording folder selection and saving
   selectRecordingsFolder: (format) => ipcRenderer.invoke('select-recordings-folder', format),
   // saveRecording: dataFormat indicates what format the audio data is in ('webm' or 'wav')
