@@ -148,6 +148,597 @@ function getSharedAudioContext() {
 }
 
 // ============================================================================
+// UI SOUND EFFECTS SYSTEM
+// ============================================================================
+// Synthesized sounds for interactive elements (button clicks, switches, etc.)
+// All sounds are generated using Web Audio API for consistent, low-latency playback.
+// Custom sounds can be loaded from files and will override synthesized sounds.
+
+// Global settings for UI sounds (can be customized per object)
+const uiSoundSettings = {
+  enabled: true,              // Global on/off switch for UI sounds
+  masterVolume: 0.5,          // Master volume for all UI sounds (0-1)
+  buttonClickVolume: 0.4,     // Volume for cassette player button clicks
+  lampSwitchVolume: 0.5,      // Volume for lamp switch sounds
+  clockTickVolume: 0.3,       // Volume for clock ticking
+  impactVolume: 0.6,          // Volume for object impact sounds
+  frictionVolume: 0.3,        // Volume for friction sounds
+};
+
+/**
+ * Play a custom sound from a data URL
+ * @param {string} dataUrl - Data URL of the audio file
+ * @param {number} volume - Volume level (0-1)
+ * @param {THREE.Object3D} object - Optional object for spatial audio
+ * @returns {Promise<void>}
+ */
+async function playCustomSound(dataUrl, volume = 1.0, object = null) {
+  if (!dataUrl || volume <= 0) return;
+
+  try {
+    // Create an Audio element for playback (simpler than Web Audio API for custom files)
+    const audio = new Audio(dataUrl);
+    audio.volume = Math.min(1, Math.max(0, volume));
+
+    // Play the sound
+    const playPromise = audio.play();
+    if (playPromise) {
+      playPromise.catch(err => {
+        console.warn('Custom sound playback failed:', err);
+      });
+    }
+  } catch (error) {
+    console.error('Error playing custom sound:', error);
+  }
+}
+
+// Clock tick state tracker (to play tick only on second change)
+let clockTickState = {
+  lastSecond: -1  // Track last second to detect change
+};
+
+/**
+ * Play a mechanical button click sound (cassette player style)
+ * Creates a sharp click with mechanical character - similar to old tape player buttons
+ * @param {THREE.Object3D} object - The object emitting the sound (for spatial positioning)
+ * @param {string} buttonType - Type of button: 'play', 'stop', 'prev', 'next'
+ */
+function playButtonClickSound(object, buttonType = 'play') {
+  if (!uiSoundSettings.enabled) return;
+
+  // Get object-specific volume setting (default to global)
+  const objectVolume = object?.userData?.buttonClickVolume ?? uiSoundSettings.buttonClickVolume;
+  const volume = objectVolume * uiSoundSettings.masterVolume;
+
+  // Skip if volume is 0 (disabled)
+  if (volume <= 0) return;
+
+  // Check for custom sound
+  const customSound = object?.userData?.customButtonClickSound;
+  if (customSound) {
+    playCustomSound(customSound, volume, object);
+    return;
+  }
+
+  const audioCtx = getSharedAudioContext();
+  const now = audioCtx.currentTime;
+
+  // Create noise buffer for click sound
+  const bufferSize = audioCtx.sampleRate * 0.05; // 50ms of noise
+  const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+
+  // Fill with noise - more percussive character
+  for (let i = 0; i < bufferSize; i++) {
+    data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (bufferSize * 0.1));
+  }
+
+  // Create source from buffer
+  const noiseSource = audioCtx.createBufferSource();
+  noiseSource.buffer = buffer;
+
+  // Bandpass filter to shape the click sound
+  const bandpass = audioCtx.createBiquadFilter();
+  bandpass.type = 'bandpass';
+  bandpass.frequency.value = buttonType === 'play' ? 3000 : 2500; // Slightly different per button
+  bandpass.Q.value = 2;
+
+  // Highpass to remove low rumble
+  const highpass = audioCtx.createBiquadFilter();
+  highpass.type = 'highpass';
+  highpass.frequency.value = 800;
+
+  // Main gain envelope
+  const gainNode = audioCtx.createGain();
+  gainNode.gain.setValueAtTime(volume * 0.8, now);
+  gainNode.gain.exponentialRampToValueAtTime(0.001, now + 0.04);
+
+  // Add a second click component for mechanical feel (spring sound)
+  const osc = audioCtx.createOscillator();
+  osc.type = 'square';
+  osc.frequency.setValueAtTime(1200, now);
+  osc.frequency.exponentialRampToValueAtTime(400, now + 0.015);
+
+  const oscGain = audioCtx.createGain();
+  oscGain.gain.setValueAtTime(volume * 0.15, now);
+  oscGain.gain.exponentialRampToValueAtTime(0.001, now + 0.02);
+
+  // Apply spatial audio if object is provided
+  let finalNode = gainNode;
+  if (object && sharedAudioSystem.masterGain) {
+    const { pan, volume: spatialVolume } = calculateSpatialAudio(object);
+    const panner = audioCtx.createStereoPanner();
+    panner.pan.value = pan;
+
+    const spatialGain = audioCtx.createGain();
+    spatialGain.gain.value = spatialVolume;
+
+    gainNode.connect(panner);
+    panner.connect(spatialGain);
+    oscGain.connect(panner);
+    spatialGain.connect(sharedAudioSystem.masterGain);
+  } else {
+    noiseSource.connect(bandpass);
+    bandpass.connect(highpass);
+    highpass.connect(gainNode);
+    gainNode.connect(audioCtx.destination);
+
+    osc.connect(oscGain);
+    oscGain.connect(audioCtx.destination);
+  }
+
+  // Connect noise path
+  noiseSource.connect(bandpass);
+  bandpass.connect(highpass);
+  highpass.connect(gainNode);
+
+  // Connect oscillator path
+  osc.connect(oscGain);
+
+  // If spatial, connect to master
+  if (object && sharedAudioSystem.masterGain) {
+    // Already connected above
+  } else {
+    gainNode.connect(audioCtx.destination);
+    oscGain.connect(audioCtx.destination);
+  }
+
+  // Start and stop
+  noiseSource.start(now);
+  noiseSource.stop(now + 0.05);
+  osc.start(now);
+  osc.stop(now + 0.03);
+}
+
+/**
+ * Play a lamp switch toggle sound (click with slight buzzing)
+ * @param {THREE.Object3D} object - The lamp object
+ * @param {boolean} turningOn - Whether the lamp is being turned on
+ */
+function playLampSwitchSound(object, turningOn = true) {
+  if (!uiSoundSettings.enabled) return;
+
+  // Get object-specific volume setting (default to global)
+  const objectVolume = object?.userData?.switchSoundVolume ?? uiSoundSettings.lampSwitchVolume;
+  const volume = objectVolume * uiSoundSettings.masterVolume;
+
+  // Skip if volume is 0 (disabled)
+  if (volume <= 0) return;
+
+  // Check for custom sound
+  const customSound = object?.userData?.customSwitchSound;
+  if (customSound) {
+    playCustomSound(customSound, volume, object);
+    return;
+  }
+
+  const audioCtx = getSharedAudioContext();
+  const now = audioCtx.currentTime;
+
+  // Create click component (switch mechanism)
+  const bufferSize = audioCtx.sampleRate * 0.03;
+  const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+
+  for (let i = 0; i < bufferSize; i++) {
+    data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (bufferSize * 0.08));
+  }
+
+  const clickSource = audioCtx.createBufferSource();
+  clickSource.buffer = buffer;
+
+  // Bandpass filter for plastic click character
+  const bandpass = audioCtx.createBiquadFilter();
+  bandpass.type = 'bandpass';
+  bandpass.frequency.value = 2000;
+  bandpass.Q.value = 3;
+
+  const clickGain = audioCtx.createGain();
+  clickGain.gain.setValueAtTime(volume * 0.6, now);
+  clickGain.gain.exponentialRampToValueAtTime(0.001, now + 0.03);
+
+  // Note: Electrical buzz removed per user feedback - turn-on uses same sound as turn-off
+  // The click sound alone is sufficient for both on and off states
+
+  clickSource.connect(bandpass);
+  bandpass.connect(clickGain);
+  clickGain.connect(audioCtx.destination);
+
+  clickSource.start(now);
+  clickSource.stop(now + 0.03);
+}
+
+/**
+ * Play a clock tick sound
+ * @param {THREE.Object3D} object - The clock object
+ */
+function playClockTickSound(object) {
+  if (!uiSoundSettings.enabled) return;
+
+  // Get object-specific volume setting (default to global)
+  const objectVolume = object?.userData?.tickSoundVolume ?? uiSoundSettings.clockTickVolume;
+  const volume = objectVolume * uiSoundSettings.masterVolume;
+
+  // Skip if volume is 0 (disabled) or object has ticking disabled
+  if (volume <= 0 || object?.userData?.tickingEnabled === false) return;
+
+  // Check for custom sound
+  const customSound = object?.userData?.customTickSound;
+  if (customSound) {
+    playCustomSound(customSound, volume, object);
+    return;
+  }
+
+  const audioCtx = getSharedAudioContext();
+  const now = audioCtx.currentTime;
+
+  // Create short percussive tick
+  const osc = audioCtx.createOscillator();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(4000, now);
+  osc.frequency.exponentialRampToValueAtTime(800, now + 0.005);
+
+  const gainNode = audioCtx.createGain();
+  gainNode.gain.setValueAtTime(volume * 0.4, now);
+  gainNode.gain.exponentialRampToValueAtTime(0.001, now + 0.015);
+
+  // Add noise for mechanical character
+  const bufferSize = audioCtx.sampleRate * 0.02;
+  const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+
+  for (let i = 0; i < bufferSize; i++) {
+    data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (bufferSize * 0.1));
+  }
+
+  const noiseSource = audioCtx.createBufferSource();
+  noiseSource.buffer = buffer;
+
+  const noiseFilter = audioCtx.createBiquadFilter();
+  noiseFilter.type = 'bandpass';
+  noiseFilter.frequency.value = 3000;
+  noiseFilter.Q.value = 5;
+
+  const noiseGain = audioCtx.createGain();
+  noiseGain.gain.setValueAtTime(volume * 0.25, now);
+  noiseGain.gain.exponentialRampToValueAtTime(0.001, now + 0.01);
+
+  // Apply spatial audio
+  let finalDestination = audioCtx.destination;
+  if (object && sharedAudioSystem.masterGain) {
+    const { pan, volume: spatialVolume } = calculateSpatialAudio(object);
+    const panner = audioCtx.createStereoPanner();
+    panner.pan.value = pan;
+
+    const spatialGain = audioCtx.createGain();
+    spatialGain.gain.value = spatialVolume;
+
+    gainNode.connect(panner);
+    noiseGain.connect(panner);
+    panner.connect(spatialGain);
+    spatialGain.connect(sharedAudioSystem.masterGain);
+    finalDestination = null; // Don't connect to destination directly
+  }
+
+  osc.connect(gainNode);
+  noiseSource.connect(noiseFilter);
+  noiseFilter.connect(noiseGain);
+
+  if (finalDestination) {
+    gainNode.connect(finalDestination);
+    noiseGain.connect(finalDestination);
+  }
+
+  osc.start(now);
+  osc.stop(now + 0.015);
+  noiseSource.start(now);
+  noiseSource.stop(now + 0.02);
+}
+
+/**
+ * Play an impact sound when an object hits a surface
+ * @param {THREE.Object3D} object - The object that impacted
+ * @param {number} impactForce - Force of impact (0-1, affects volume and pitch)
+ * @param {string} surfaceType - Type of surface: 'desk', 'floor', 'object'
+ */
+function playImpactSound(object, impactForce = 0.5, surfaceType = 'desk') {
+  if (!uiSoundSettings.enabled) return;
+
+  // Get object-specific volume setting (default to global)
+  const objectVolume = object?.userData?.impactSoundVolume ?? uiSoundSettings.impactVolume;
+  const volume = objectVolume * uiSoundSettings.masterVolume * Math.min(impactForce + 0.3, 1);
+
+  // Skip if volume is 0 (disabled)
+  if (volume <= 0) return;
+
+  // Check for custom sound
+  const customSound = object?.userData?.customImpactSound;
+  if (customSound) {
+    playCustomSound(customSound, volume, object);
+    return;
+  }
+
+  const audioCtx = getSharedAudioContext();
+  const now = audioCtx.currentTime;
+
+  // Get object type for sound variation
+  const objectType = object?.userData?.type || 'default';
+
+  // Enhanced material properties for more realistic sounds
+  // Properties: basePitch (Hz), resonance (Q), materialType, decay (seconds), brightness
+  const objectMaterialMap = {
+    'clock': { pitch: 250, resonance: 2.0, material: 'wood', decay: 0.25, brightness: 0.6 },
+    'lamp': { pitch: 180, resonance: 1.5, material: 'ceramic', decay: 0.2, brightness: 0.5 },
+    'plant': { pitch: 200, resonance: 1.2, material: 'ceramic', decay: 0.18, brightness: 0.4 },
+    'coffee': { pitch: 400, resonance: 3.5, material: 'ceramic', decay: 0.15, brightness: 0.8 },
+    'laptop': { pitch: 150, resonance: 1.0, material: 'plastic', decay: 0.12, brightness: 0.3 },
+    'notebook': { pitch: 500, resonance: 0.8, material: 'paper', decay: 0.08, brightness: 0.9 },
+    'books': { pitch: 280, resonance: 1.0, material: 'paper', decay: 0.15, brightness: 0.7 },
+    'magazine': { pitch: 550, resonance: 0.7, material: 'paper', decay: 0.07, brightness: 0.95 },
+    'pen-holder': { pitch: 320, resonance: 2.5, material: 'ceramic', decay: 0.2, brightness: 0.7 },
+    'pen': { pitch: 600, resonance: 4.0, material: 'plastic', decay: 0.06, brightness: 0.85 },
+    'photo-frame': { pitch: 350, resonance: 2.0, material: 'wood', decay: 0.18, brightness: 0.6 },
+    'globe': { pitch: 220, resonance: 1.8, material: 'plastic', decay: 0.22, brightness: 0.55 },
+    'trophy': { pitch: 280, resonance: 4.0, material: 'metal', decay: 0.35, brightness: 0.9 },
+    'hourglass': { pitch: 300, resonance: 3.0, material: 'glass', decay: 0.3, brightness: 0.85 },
+    'paper': { pitch: 700, resonance: 0.5, material: 'paper', decay: 0.05, brightness: 1.0 },
+    'metronome': { pitch: 240, resonance: 2.5, material: 'wood', decay: 0.25, brightness: 0.6 },
+    'cassette-player': { pitch: 350, resonance: 1.5, material: 'plastic', decay: 0.15, brightness: 0.5 },
+    'big-cassette-player': { pitch: 280, resonance: 1.5, material: 'plastic', decay: 0.2, brightness: 0.5 },
+    'dictaphone': { pitch: 380, resonance: 1.8, material: 'plastic', decay: 0.14, brightness: 0.55 },
+    'default': { pitch: 300, resonance: 1.5, material: 'wood', decay: 0.2, brightness: 0.6 }
+  };
+
+  const materialProps = objectMaterialMap[objectType] || objectMaterialMap['default'];
+  const pitch = materialProps.pitch * (1 + impactForce * 0.2);
+
+  // Create layered impact sound with multiple components for realism
+
+  // 1. Primary impact thud (low frequency body resonance)
+  const thudOsc = audioCtx.createOscillator();
+  thudOsc.type = 'sine';
+  thudOsc.frequency.setValueAtTime(pitch, now);
+  thudOsc.frequency.exponentialRampToValueAtTime(pitch * 0.25, now + materialProps.decay);
+
+  const thudGain = audioCtx.createGain();
+  thudGain.gain.setValueAtTime(volume * 0.6, now);
+  thudGain.gain.exponentialRampToValueAtTime(0.001, now + materialProps.decay * 1.5);
+
+  // 2. Material resonance (gives character to the sound)
+  const resonanceOsc = audioCtx.createOscillator();
+  resonanceOsc.type = materialProps.material === 'metal' ? 'triangle' : 'sine';
+  const resonanceFreq = pitch * materialProps.resonance;
+  resonanceOsc.frequency.setValueAtTime(resonanceFreq, now);
+  resonanceOsc.frequency.exponentialRampToValueAtTime(resonanceFreq * 0.8, now + materialProps.decay);
+
+  const resonanceGain = audioCtx.createGain();
+  const resonanceVol = materialProps.material === 'metal' ? 0.3 : 0.15;
+  resonanceGain.gain.setValueAtTime(volume * resonanceVol, now + 0.005);
+  resonanceGain.gain.exponentialRampToValueAtTime(0.001, now + materialProps.decay * 1.2);
+
+  // 3. Impact noise (texture and attack)
+  const bufferSize = audioCtx.sampleRate * Math.max(0.06, materialProps.decay * 0.8);
+  const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+
+  // Different noise profiles for different materials
+  for (let i = 0; i < bufferSize; i++) {
+    const envelope = Math.exp(-i / (bufferSize * 0.15));
+    if (materialProps.material === 'paper') {
+      // Paper: more crinkly, higher frequency noise
+      data[i] = (Math.random() * 2 - 1) * envelope * 1.2;
+    } else if (materialProps.material === 'metal' || materialProps.material === 'glass') {
+      // Metal/Glass: sharp attack, ringing
+      const ring = Math.sin(i / bufferSize * Math.PI * 40) * envelope * 0.3;
+      data[i] = (Math.random() * 2 - 1) * envelope + ring;
+    } else {
+      // Wood/Plastic/Ceramic: standard noise
+      data[i] = (Math.random() * 2 - 1) * envelope;
+    }
+  }
+
+  const noiseSource = audioCtx.createBufferSource();
+  noiseSource.buffer = buffer;
+
+  // Material-specific filtering
+  const materialFilterFreq = {
+    'metal': 2500,
+    'glass': 2000,
+    'ceramic': 1200,
+    'wood': 800,
+    'plastic': 1000,
+    'paper': 3000
+  };
+
+  const lowpass = audioCtx.createBiquadFilter();
+  lowpass.type = 'lowpass';
+  lowpass.frequency.value = (materialFilterFreq[materialProps.material] || 800) * materialProps.brightness;
+  lowpass.Q.value = materialProps.resonance * 0.3;
+
+  // Surface type also affects the filter
+  const surfaceFilterMult = {
+    'desk': 1.0,
+    'floor': 0.6,
+    'object': 1.2
+  };
+  lowpass.frequency.value *= (surfaceFilterMult[surfaceType] || 1.0);
+
+  const noiseGain = audioCtx.createGain();
+  noiseGain.gain.setValueAtTime(volume * 0.5 * materialProps.brightness, now);
+  noiseGain.gain.exponentialRampToValueAtTime(0.001, now + materialProps.decay * 0.8);
+
+  // Connect everything
+  thudOsc.connect(thudGain);
+  thudGain.connect(audioCtx.destination);
+
+  resonanceOsc.connect(resonanceGain);
+  resonanceGain.connect(audioCtx.destination);
+
+  noiseSource.connect(lowpass);
+  lowpass.connect(noiseGain);
+  noiseGain.connect(audioCtx.destination);
+
+  // Start and stop
+  thudOsc.start(now);
+  thudOsc.stop(now + materialProps.decay * 1.5);
+  resonanceOsc.start(now + 0.005);
+  resonanceOsc.stop(now + materialProps.decay * 1.2);
+  noiseSource.start(now);
+  noiseSource.stop(now + materialProps.decay * 0.8);
+}
+
+/**
+ * Play a friction/sliding sound when an object is being dragged
+ * @param {THREE.Object3D} object - The object being dragged
+ * @param {number} velocity - Velocity of movement (affects volume and pitch)
+ */
+let frictionSoundState = new Map(); // Track active friction sounds per object
+
+function startFrictionSound(object, velocity = 0.5) {
+  if (!uiSoundSettings.enabled) return;
+
+  const objectId = object?.userData?.id;
+  if (!objectId) return;
+
+  // Get object-specific volume setting (default to global)
+  const objectVolume = object?.userData?.frictionSoundVolume ?? uiSoundSettings.frictionVolume;
+  const baseVolume = objectVolume * uiSoundSettings.masterVolume;
+
+  // Skip if volume is 0 (disabled)
+  if (baseVolume <= 0) return;
+
+  // Check for custom friction sound (note: custom friction sounds are played once, not looped)
+  const customSound = object?.userData?.customFrictionSound;
+  if (customSound) {
+    // For custom sounds, play only if not already playing for this object
+    if (!frictionSoundState.has(objectId)) {
+      playCustomSound(customSound, baseVolume * Math.min(velocity * 2, 1), object);
+      // Mark as playing temporarily to avoid spam
+      frictionSoundState.set(objectId, { isCustom: true, lastUpdate: Date.now() });
+    } else {
+      // Update timestamp to keep it alive
+      const state = frictionSoundState.get(objectId);
+      if (state.isCustom) {
+        state.lastUpdate = Date.now();
+      }
+    }
+    return;
+  }
+
+  const audioCtx = getSharedAudioContext();
+
+  // Check if we already have an active friction sound for this object
+  if (frictionSoundState.has(objectId)) {
+    // Update existing sound's volume based on velocity
+    const state = frictionSoundState.get(objectId);
+    const targetVolume = baseVolume * Math.min(velocity * 2, 1);
+    state.gainNode.gain.setTargetAtTime(targetVolume, audioCtx.currentTime, 0.05);
+    state.lastUpdate = Date.now();
+    return;
+  }
+
+  // Create new friction sound
+  const bufferSize = audioCtx.sampleRate * 2; // 2 seconds of noise
+  const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+
+  // Create granular noise for friction texture
+  for (let i = 0; i < bufferSize; i++) {
+    data[i] = Math.random() * 2 - 1;
+  }
+
+  const noiseSource = audioCtx.createBufferSource();
+  noiseSource.buffer = buffer;
+  noiseSource.loop = true;
+
+  // Bandpass filter for friction character
+  const bandpass = audioCtx.createBiquadFilter();
+  bandpass.type = 'bandpass';
+  bandpass.frequency.value = 2000 + velocity * 2000; // Higher velocity = higher pitch
+  bandpass.Q.value = 1.5;
+
+  // Lowpass to smooth out harshness
+  const lowpass = audioCtx.createBiquadFilter();
+  lowpass.type = 'lowpass';
+  lowpass.frequency.value = 4000;
+
+  const gainNode = audioCtx.createGain();
+  gainNode.gain.setValueAtTime(baseVolume * Math.min(velocity * 2, 1), audioCtx.currentTime);
+
+  noiseSource.connect(bandpass);
+  bandpass.connect(lowpass);
+  lowpass.connect(gainNode);
+  gainNode.connect(audioCtx.destination);
+
+  noiseSource.start();
+
+  // Store state
+  frictionSoundState.set(objectId, {
+    source: noiseSource,
+    gainNode: gainNode,
+    bandpass: bandpass,
+    lastUpdate: Date.now()
+  });
+}
+
+function stopFrictionSound(object) {
+  const objectId = object?.userData?.id;
+  if (!objectId) return;
+
+  const state = frictionSoundState.get(objectId);
+  if (state) {
+    const audioCtx = getSharedAudioContext();
+    // Fade out
+    state.gainNode.gain.setTargetAtTime(0, audioCtx.currentTime, 0.1);
+
+    // Stop after fade
+    setTimeout(() => {
+      try {
+        state.source.stop();
+      } catch (e) {
+        // Already stopped
+      }
+      frictionSoundState.delete(objectId);
+    }, 200);
+  }
+}
+
+// Cleanup stale friction sounds (called periodically)
+function cleanupFrictionSounds() {
+  const now = Date.now();
+  for (const [objectId, state] of frictionSoundState.entries()) {
+    if (now - state.lastUpdate > 100) { // No update in 100ms = object stopped moving
+      if (state.isCustom) {
+        // For custom sounds, just remove from state (no audio node to stop)
+        frictionSoundState.delete(objectId);
+      } else {
+        stopFrictionSound({ userData: { id: objectId } });
+      }
+    }
+  }
+}
+
+// ============================================================================
 // ACTIVITY LOGGING SYSTEM
 // ============================================================================
 // Comprehensive logging system to track all user actions and application events
@@ -5783,6 +6374,16 @@ function cassetteStop(object) {
 
 // Handle button click on cassette player
 function handleCassetteButtonClick(object, buttonType) {
+  // Play mechanical button click sound
+  playButtonClickSound(object, buttonType);
+
+  // Log button click
+  activityLog.add('CLICK', 'Cassette player button clicked', {
+    playerType: object.userData.type,
+    playerId: object.userData.id,
+    buttonType: buttonType
+  });
+
   switch (buttonType) {
     case 'prev':
       cassettePrevTrack(object);
@@ -7167,6 +7768,10 @@ function updateFallingObjects() {
       if (!obj.userData.hasBounced && Math.abs(obj.userData.fallVelocityY) > 0.25) {
         // First impact with enough velocity - do a tiny bounce (5%)
         // This gives a subtle landing effect without excessive bouncing
+        // Play impact sound on first hit
+        const impactForce = Math.min(Math.abs(obj.userData.fallVelocityY) / 0.5, 1);
+        playImpactSound(obj, impactForce, 'floor');
+
         obj.userData.fallVelocityY = Math.abs(obj.userData.fallVelocityY) * 0.05;
         obj.userData.hasBounced = true;
       } else {
@@ -9371,6 +9976,12 @@ function updatePhysics() {
       obj.position.x += vel.x;
       obj.position.z += vel.z;
 
+      // Play friction sound when object is sliding
+      const velocity = Math.sqrt(vel.x * vel.x + vel.z * vel.z);
+      if (velocity > 0.02) {
+        startFrictionSound(obj, velocity);
+      }
+
       // Apply friction
       vel.x *= physicsState.friction;
       vel.z *= physicsState.friction;
@@ -9771,12 +10382,22 @@ function updateClock() {
     }
   }
 
+  // Check if second changed (for clock ticking sound)
+  const currentSecond = now.getSeconds();
+  const secondChanged = currentSecond !== clockTickState.lastSecond;
+  clockTickState.lastSecond = currentSecond;
+
   // Update 3D clock objects
   deskObjects.forEach(obj => {
     if (obj.userData.type === 'clock') {
       const hourHand = obj.getObjectByName('hourHand');
       const minuteHand = obj.getObjectByName('minuteHand');
       const secondHand = obj.getObjectByName('secondHand');
+
+      // Play tick sound when second changes (if ticking is enabled for this clock)
+      if (secondChanged && obj.userData.tickingEnabled !== false) {
+        playClockTickSound(obj);
+      }
 
       // Calculate angles for real time display
       // Hands rotate clockwise, so we use negative angles
@@ -13304,9 +13925,14 @@ function updateCustomizationPanel(object) {
             <div style="color: rgba(255,255,255,0.4); font-size: 11px;">
               ${trackCount} tracks found
             </div>
-            <button id="cassette-select-folder" style="padding: 10px 15px; background: rgba(79, 70, 229, 0.3); border: 1px solid rgba(79, 70, 229, 0.5); border-radius: 8px; color: #fff; cursor: pointer;">
-              ${object.userData.musicFolderPath ? 'Change Folder' : 'Select Music Folder'}
-            </button>
+            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+              <button id="cassette-select-folder" style="padding: 10px 15px; background: rgba(79, 70, 229, 0.3); border: 1px solid rgba(79, 70, 229, 0.5); border-radius: 8px; color: #fff; cursor: pointer; flex: 1; min-width: 120px;">
+                ${object.userData.musicFolderPath ? 'Change Folder' : 'Select Folder'}
+              </button>
+              <button id="cassette-select-file" style="padding: 10px 15px; background: rgba(168, 85, 247, 0.3); border: 1px solid rgba(168, 85, 247, 0.5); border-radius: 8px; color: #a855f7; cursor: pointer; flex: 1; min-width: 120px;">
+                Select File
+              </button>
+            </div>
             ${object.userData.musicFolderPath ? `
               <button id="cassette-refresh-folder" style="padding: 10px 15px; background: rgba(34, 197, 94, 0.2); border: 1px solid rgba(34, 197, 94, 0.4); border-radius: 8px; color: #22c55e; cursor: pointer;">
                 Refresh Folder
@@ -13496,6 +14122,213 @@ function updateCustomizationPanel(object) {
       setupDictaphoneCustomizationHandlers(object);
       break;
   }
+
+  // Add sound settings for objects that have sounds
+  addSoundSettingsToPanel(object, dynamicOptions);
+}
+
+// Generate and add sound settings UI to the customization panel
+function addSoundSettingsToPanel(object, dynamicOptions) {
+  const objectType = object.userData.type;
+
+  // Define which sounds each object type has
+  const objectSoundConfig = {
+    'clock': {
+      tickingEnabled: { label: 'Clock Ticking', default: true },
+      tickSoundVolume: { label: 'Tick Volume', default: 0.3, min: 0, max: 1 }
+    },
+    'lamp': {
+      switchSoundVolume: { label: 'Switch Sound Volume', default: 0.5, min: 0, max: 1 }
+    },
+    'cassette-player': {
+      buttonClickVolume: { label: 'Button Click Volume', default: 0.4, min: 0, max: 1 }
+    },
+    'big-cassette-player': {
+      buttonClickVolume: { label: 'Button Click Volume', default: 0.4, min: 0, max: 1 }
+    }
+  };
+
+  // All objects have impact and friction sounds
+  const commonSounds = {
+    impactSoundVolume: { label: 'Impact Sound Volume', default: 0.6, min: 0, max: 1 },
+    frictionSoundVolume: { label: 'Friction Sound Volume', default: 0.3, min: 0, max: 1 }
+  };
+
+  // Get object-specific sounds
+  const objectSounds = objectSoundConfig[objectType] || {};
+
+  // Combine with common sounds
+  const allSounds = { ...objectSounds, ...commonSounds };
+
+  // Create sound settings section
+  let soundSettingsHTML = `
+    <div class="customization-group" style="margin-top: 20px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.1);">
+      <div id="sound-settings-toggle" style="display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; cursor: pointer;">
+        <span style="color: rgba(255,255,255,0.8); font-size: 12px;">🔊 Sound Settings</span>
+        <span id="sound-settings-arrow" style="color: rgba(255,255,255,0.5); font-size: 12px;">▼</span>
+      </div>
+      <div id="sound-settings-content" style="display: none; padding: 12px; border: 1px solid rgba(255,255,255,0.1); border-top: none; border-radius: 0 0 8px 8px; background: rgba(0,0,0,0.2);">
+  `;
+
+  // Add toggles and sliders for each sound
+  for (const [key, config] of Object.entries(allSounds)) {
+    const currentValue = object.userData[key] !== undefined ? object.userData[key] : config.default;
+    const customSoundKey = `custom${key.charAt(0).toUpperCase() + key.slice(1).replace('Volume', '')}Sound`;
+    const hasCustomSound = object.userData[customSoundKey] ? true : false;
+
+    if (key.endsWith('Enabled')) {
+      // Boolean toggle
+      soundSettingsHTML += `
+        <div style="margin-bottom: 12px;">
+          <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; color: rgba(255,255,255,0.8); font-size: 12px;">
+            <input type="checkbox" id="sound-${key}" ${currentValue ? 'checked' : ''}
+              style="width: 18px; height: 18px; cursor: pointer; accent-color: #4f46e5;">
+            <span>${config.label}</span>
+          </label>
+        </div>
+      `;
+    } else {
+      // Volume slider with custom sound file selection
+      const volumePercent = Math.round(currentValue * 100);
+      soundSettingsHTML += `
+        <div style="margin-bottom: 16px; padding: 10px; background: rgba(255,255,255,0.02); border-radius: 6px; border: 1px solid rgba(255,255,255,0.05);">
+          <label style="color: rgba(255,255,255,0.7); font-size: 11px; display: flex; justify-content: space-between; margin-bottom: 6px;">
+            <span>${config.label}</span>
+            <span id="sound-${key}-display">${volumePercent}%</span>
+          </label>
+          <input type="range" id="sound-${key}" min="0" max="100" value="${volumePercent}"
+            style="width: 100%; height: 6px; margin-bottom: 8px; cursor: pointer; accent-color: #4f46e5;">
+          <div style="display: flex; gap: 6px; align-items: center;">
+            <button id="sound-${key}-select"
+              style="flex: 1; padding: 6px 10px; font-size: 10px; background: ${hasCustomSound ? 'rgba(79, 70, 229, 0.3)' : 'rgba(255,255,255,0.1)'}; color: rgba(255,255,255,0.9); border: 1px solid ${hasCustomSound ? 'rgba(79, 70, 229, 0.6)' : 'rgba(255,255,255,0.2)'}; border-radius: 4px; cursor: pointer; transition: all 0.2s;">
+              ${hasCustomSound ? '✓ Custom Sound' : '📁 Custom Sound'}
+            </button>
+            ${hasCustomSound ? `
+              <button id="sound-${key}-clear"
+                style="padding: 6px 10px; font-size: 10px; background: rgba(239, 68, 68, 0.2); color: rgba(255,255,255,0.8); border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 4px; cursor: pointer; transition: all 0.2s;">
+                ✕
+              </button>
+            ` : ''}
+          </div>
+        </div>
+      `;
+    }
+  }
+
+  soundSettingsHTML += `
+        <div style="margin-top: 8px; padding: 8px; background: rgba(79, 70, 229, 0.1); border-radius: 6px;">
+          <div style="font-size: 10px; color: rgba(255,255,255,0.5); line-height: 1.4;">
+            💡 Set volume to 0% to disable a sound. Click "Custom Sound" to use your own audio file.
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  dynamicOptions.innerHTML += soundSettingsHTML;
+
+  // Set up event handlers with timeout to ensure DOM is ready
+  setTimeout(() => {
+    // Toggle accordion
+    const toggle = document.getElementById('sound-settings-toggle');
+    const content = document.getElementById('sound-settings-content');
+    const arrow = document.getElementById('sound-settings-arrow');
+
+    if (toggle && content) {
+      toggle.addEventListener('click', () => {
+        const isHidden = content.style.display === 'none';
+        content.style.display = isHidden ? 'block' : 'none';
+        if (arrow) arrow.textContent = isHidden ? '▲' : '▼';
+      });
+    }
+
+    // Set up handlers for each sound setting
+    for (const [key, config] of Object.entries(allSounds)) {
+      const element = document.getElementById(`sound-${key}`);
+      if (!element) continue;
+
+      if (key.endsWith('Enabled')) {
+        // Checkbox handler
+        element.addEventListener('change', (e) => {
+          object.userData[key] = e.target.checked;
+          saveState();
+        });
+      } else {
+        // Slider handler
+        const display = document.getElementById(`sound-${key}-display`);
+        element.addEventListener('input', (e) => {
+          const value = parseInt(e.target.value) / 100;
+          object.userData[key] = value;
+          if (display) display.textContent = `${e.target.value}%`;
+          saveState();
+        });
+
+        // Add scroll-based adjustment
+        addScrollToSlider(element);
+
+        // Custom sound file selection handler
+        const selectButton = document.getElementById(`sound-${key}-select`);
+        if (selectButton) {
+          selectButton.addEventListener('click', async () => {
+            try {
+              const result = await window.electronAPI.selectSoundFile();
+              if (result.success && !result.canceled) {
+                // Store the custom sound data URL
+                const customSoundKey = `custom${key.charAt(0).toUpperCase() + key.slice(1).replace('Volume', '')}Sound`;
+                object.userData[customSoundKey] = result.dataUrl;
+
+                // Update button appearance
+                selectButton.textContent = '✓ Custom Sound';
+                selectButton.style.background = 'rgba(79, 70, 229, 0.3)';
+                selectButton.style.borderColor = 'rgba(79, 70, 229, 0.6)';
+
+                // Add clear button if it doesn't exist
+                let clearButton = document.getElementById(`sound-${key}-clear`);
+                if (!clearButton) {
+                  clearButton = document.createElement('button');
+                  clearButton.id = `sound-${key}-clear`;
+                  clearButton.textContent = '✕';
+                  clearButton.style.cssText = 'padding: 6px 10px; font-size: 10px; background: rgba(239, 68, 68, 0.2); color: rgba(255,255,255,0.8); border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 4px; cursor: pointer; transition: all 0.2s;';
+                  selectButton.parentElement.appendChild(clearButton);
+
+                  // Add click handler for clear button
+                  clearButton.addEventListener('click', () => {
+                    delete object.userData[customSoundKey];
+                    selectButton.textContent = '📁 Custom Sound';
+                    selectButton.style.background = 'rgba(255,255,255,0.1)';
+                    selectButton.style.borderColor = 'rgba(255,255,255,0.2)';
+                    clearButton.remove();
+                    saveState();
+                  });
+                }
+
+                saveState();
+              }
+            } catch (error) {
+              console.error('Error selecting custom sound:', error);
+            }
+          });
+        }
+
+        // Custom sound clear button handler (if exists on load)
+        const clearButton = document.getElementById(`sound-${key}-clear`);
+        if (clearButton) {
+          clearButton.addEventListener('click', () => {
+            const customSoundKey = `custom${key.charAt(0).toUpperCase() + key.slice(1).replace('Volume', '')}Sound`;
+            delete object.userData[customSoundKey];
+            const selectButton = document.getElementById(`sound-${key}-select`);
+            if (selectButton) {
+              selectButton.textContent = '📁 Custom Sound';
+              selectButton.style.background = 'rgba(255,255,255,0.1)';
+              selectButton.style.borderColor = 'rgba(255,255,255,0.2)';
+            }
+            clearButton.remove();
+            saveState();
+          });
+        }
+      }
+    }
+  }, 0);
 }
 
 // Helper function to add scroll-based slider adjustment
@@ -14077,6 +14910,7 @@ function setupCassetteCustomizationHandlers(object) {
             object.userData.musicFolderPath = result.folderPath;
             object.userData.audioFiles = result.audioFiles;
             object.userData.currentTrackIndex = 0;
+            object.userData.isSingleFile = false;
 
             if (result.audioFiles.length > 0) {
               updateCassetteScreen(object, result.audioFiles[0].name);
@@ -14094,6 +14928,44 @@ function setupCassetteCustomizationHandlers(object) {
           }
         } catch (error) {
           console.error('Error selecting music folder:', error);
+        }
+      });
+    }
+
+    // Single file selection button
+    const selectFileBtn = document.getElementById('cassette-select-file');
+    if (selectFileBtn) {
+      selectFileBtn.addEventListener('click', async () => {
+        try {
+          const result = await window.electronAPI.selectMusicFile();
+          if (result.success && !result.canceled) {
+            // Remember if player was playing before file change
+            const wasPlaying = object.userData.isPlaying;
+
+            // Stop current playback before changing file
+            if (wasPlaying) {
+              stopPlayerAudio(object);
+            }
+
+            object.userData.musicFolderPath = result.folderPath;
+            object.userData.audioFiles = result.audioFiles;
+            object.userData.currentTrackIndex = 0;
+            object.userData.isSingleFile = true;
+
+            if (result.audioFiles.length > 0) {
+              updateCassetteScreen(object, result.audioFiles[0].name);
+
+              // If player was playing, start playing the file
+              if (wasPlaying) {
+                playCassetteTrack(object, 0, 0);
+              }
+            }
+
+            saveState();
+            updateCustomizationPanel(object);
+          }
+        } catch (error) {
+          console.error('Error selecting music file:', error);
         }
       });
     }
@@ -16299,7 +17171,17 @@ function setupLampHandlers(object) {
   const status = document.getElementById('lamp-status');
 
   toggleBtn.addEventListener('click', () => {
-    object.userData.isOn = !object.userData.isOn;
+    const turningOn = !object.userData.isOn;
+    object.userData.isOn = turningOn;
+
+    // Play lamp switch sound
+    playLampSwitchSound(object, turningOn);
+
+    // Log lamp toggle click (from modal)
+    activityLog.add('CLICK', 'Lamp switch toggled (modal)', {
+      lampId: object.userData.id,
+      state: turningOn ? 'ON' : 'OFF'
+    });
 
     const bulb = object.getObjectByName('bulb');
     const light = object.getObjectByName('lampLight');
@@ -17956,7 +18838,17 @@ function performQuickInteraction(object, clickedMesh = null) {
   switch (type) {
     case 'lamp':
       // Toggle lamp on/off
-      object.userData.isOn = !object.userData.isOn;
+      const turningOnLamp = !object.userData.isOn;
+      object.userData.isOn = turningOnLamp;
+
+      // Play lamp switch sound
+      playLampSwitchSound(object, turningOnLamp);
+
+      // Log lamp toggle click
+      activityLog.add('CLICK', 'Lamp switch toggled', {
+        lampId: object.userData.id,
+        state: turningOnLamp ? 'ON' : 'OFF'
+      });
 
       const bulb = object.getObjectByName('bulb');
       const light = object.getObjectByName('lampLight');
@@ -17977,6 +18869,11 @@ function performQuickInteraction(object, clickedMesh = null) {
       break;
 
     case 'hourglass':
+      // Log hourglass flip click
+      activityLog.add('CLICK', 'Hourglass flipped', {
+        hourglassId: object.userData.id
+      });
+
       // Flip hourglass animation around X axis (upside down flip)
       const startRotationX = object.rotation.x;
       const endRotationX = startRotationX + Math.PI;
@@ -18014,8 +18911,16 @@ function performQuickInteraction(object, clickedMesh = null) {
       // Toggle globe rotation
       if (object.userData.rotationSpeed > 0) {
         object.userData.rotationSpeed = 0;
+        // Log globe stop click
+        activityLog.add('CLICK', 'Globe rotation stopped', {
+          globeId: object.userData.id
+        });
       } else {
         object.userData.rotationSpeed = 0.01;
+        // Log globe start click
+        activityLog.add('CLICK', 'Globe rotation started', {
+          globeId: object.userData.id
+        });
       }
       break;
 
@@ -18023,10 +18928,18 @@ function performQuickInteraction(object, clickedMesh = null) {
       // Middle-click on clock stops the timer alert sound (without picking up)
       if (timerState.isAlerting) {
         stopTimerAlert();
+        // Log clock alarm stop click
+        activityLog.add('CLICK', 'Clock alarm stopped', {
+          clockId: object.userData.id
+        });
       } else if (object.userData.interactive) {
         // If no alert, open the timer modal
         enterExamineMode(object);
         openInteractionModal(object);
+        // Log clock modal open click
+        activityLog.add('CLICK', 'Clock interaction opened', {
+          clockId: object.userData.id
+        });
       }
       break;
 
@@ -18037,11 +18950,19 @@ function performQuickInteraction(object, clickedMesh = null) {
         // Reset pitch and tempo curve start times when starting
         object.userData.pitchCurveStartTime = Date.now();
         object.userData.tempoCurveStartTime = Date.now();
+        // Log metronome start click
+        activityLog.add('CLICK', 'Metronome started', {
+          metronomeId: object.userData.id
+        });
       } else {
         // Reset pendulum when stopped
         object.userData.pendulumAngle = 0;
         const pendulum = object.getObjectByName('pendulum');
         if (pendulum) pendulum.rotation.z = 0;
+        // Log metronome stop click
+        activityLog.add('CLICK', 'Metronome stopped', {
+          metronomeId: object.userData.id
+        });
       }
       break;
 
@@ -21991,6 +22912,9 @@ function animate() {
 
     // Update falling objects animation
     updateFallingObjects();
+
+    // Cleanup stale friction sounds (objects that stopped moving)
+    cleanupFrictionSounds();
 
     // Update debug collision visualization positions
     updateCollisionDebugPositions();

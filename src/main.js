@@ -423,6 +423,94 @@ ipcMain.handle('select-music-folder', async () => {
   }
 });
 
+// Open file selection dialog to select a single audio file
+ipcMain.handle('select-music-file', async () => {
+  try {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openFile'],
+      title: 'Select Audio File',
+      filters: [
+        { name: 'Audio Files', extensions: ['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a', 'webm', 'opus'] }
+      ]
+    });
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return { success: true, canceled: true };
+    }
+
+    const filePath = result.filePaths[0];
+    const fileName = path.basename(filePath);
+    const nameWithoutExt = path.basename(filePath, path.extname(filePath));
+    const folderPath = path.dirname(filePath);
+
+    // Return single file as array with one element to match folder selection format
+    const audioFiles = [{
+      name: nameWithoutExt,
+      fullName: fileName,
+      path: filePath
+    }];
+
+    return {
+      success: true,
+      folderPath: folderPath,
+      audioFiles: audioFiles,
+      isSingleFile: true
+    };
+  } catch (error) {
+    console.error('Error selecting music file:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Open file selection dialog to select a sound file for custom sounds
+ipcMain.handle('select-sound-file', async () => {
+  try {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openFile'],
+      title: 'Select Sound File',
+      filters: [
+        { name: 'Audio Files', extensions: ['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a', 'webm', 'opus'] }
+      ]
+    });
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return { success: true, canceled: true };
+    }
+
+    const filePath = result.filePaths[0];
+    const fileName = path.basename(filePath);
+
+    // Read the file and return as base64 data URL
+    const fileBuffer = fs.readFileSync(filePath);
+    const base64 = fileBuffer.toString('base64');
+    const ext = path.extname(filePath).toLowerCase().replace('.', '');
+
+    // Map extension to MIME type
+    const mimeTypes = {
+      'mp3': 'audio/mpeg',
+      'wav': 'audio/wav',
+      'ogg': 'audio/ogg',
+      'flac': 'audio/flac',
+      'aac': 'audio/aac',
+      'm4a': 'audio/mp4',
+      'webm': 'audio/webm',
+      'opus': 'audio/opus'
+    };
+
+    const mimeType = mimeTypes[ext] || 'audio/mpeg';
+    const dataUrl = `data:${mimeType};base64,${base64}`;
+
+    return {
+      success: true,
+      fileName: fileName,
+      dataUrl: dataUrl
+    };
+  } catch (error) {
+    console.error('Error selecting sound file:', error);
+    return { success: false, error: error.message };
+  }
+});
+
 // Read audio file and return as base64 data URL
 ipcMain.handle('read-audio-file', async (event, filePath) => {
   try {
