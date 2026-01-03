@@ -1159,37 +1159,44 @@ let keyboardHookProcess = null;
 // This uses SetWindowsHookEx with WH_KEYBOARD_LL to intercept keys before Windows processes them
 function getKeyboardHookScript() {
   return `
-Add-Type -TypeDefinition @"
+$ErrorActionPreference = "Stop"
+
+try {
+    Add-Type -TypeDefinition @"
 using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
-using System.Windows.Forms;
+using System.Threading;
 
 public class KeyboardHook {
     private const int WH_KEYBOARD_LL = 13;
     private const int WM_KEYDOWN = 0x0100;
+    private const int WM_KEYUP = 0x0101;
     private const int WM_SYSKEYDOWN = 0x0104;
+    private const int WM_SYSKEYUP = 0x0105;
 
-    // Key codes
+    // Virtual key codes
     private const int VK_TAB = 0x09;
     private const int VK_ESCAPE = 0x1B;
     private const int VK_LWIN = 0x5B;
     private const int VK_RWIN = 0x5C;
     private const int VK_F4 = 0x73;
-    private const int VK_MENU = 0x12; // Alt key
+    private const int VK_LMENU = 0xA4; // Left Alt
+    private const int VK_RMENU = 0xA5; // Right Alt
 
     private static IntPtr hookId = IntPtr.Zero;
-    private static LowLevelKeyboardProc proc = HookCallback;
-    private static bool altPressed = false;
+    private static LowLevelKeyboardProc procDelegate;
+    private static volatile bool altPressed = false;
+    private static volatile bool running = true;
 
-    public delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+    private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
 
     [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
     private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
 
     [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool UnhookWindowsHookEx(IntPtr hhk);
+    private static extern bool UnhookWindowsHookEx(IntPtr hhk);
 
     [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
     private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
@@ -1197,63 +1204,120 @@ public class KeyboardHook {
     [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
     private static extern IntPtr GetModuleHandle(string lpModuleName);
 
-    public static void Start() {
-        using (Process curProcess = Process.GetCurrentProcess())
-        using (ProcessModule curModule = curProcess.MainModule) {
-            hookId = SetWindowsHookEx(WH_KEYBOARD_LL, proc, GetModuleHandle(curModule.ModuleName), 0);
-        }
-        Console.WriteLine("HOOK_STARTED");
-        Application.Run();
+    [DllImport("user32.dll")]
+    private static extern bool GetMessage(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax);
+
+    [DllImport("user32.dll")]
+    private static extern bool TranslateMessage(ref MSG lpMsg);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr DispatchMessage(ref MSG lpMsg);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MSG {
+        public IntPtr hwnd;
+        public uint message;
+        public IntPtr wParam;
+        public IntPtr lParam;
+        public uint time;
+        public POINT pt;
     }
 
-    public static void Stop() {
-        if (hookId != IntPtr.Zero) {
-            UnhookWindowsHookEx(hookId);
-            hookId = IntPtr.Zero;
-        }
-        Application.Exit();
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT {
+        public int x;
+        public int y;
     }
 
     private static IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam) {
         if (nCode >= 0) {
             int vkCode = Marshal.ReadInt32(lParam);
-            bool isKeyDown = (wParam == (IntPtr)WM_KEYDOWN || wParam == (IntPtr)WM_SYSKEYDOWN);
+            int msg = wParam.ToInt32();
+            bool isKeyDown = (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN);
+            bool isKeyUp = (msg == WM_KEYUP || msg == WM_SYSKEYUP);
 
             // Track Alt key state
-            if (vkCode == VK_MENU) {
+            if (vkCode == VK_LMENU || vkCode == VK_RMENU) {
                 altPressed = isKeyDown;
             }
 
-            // Block Windows keys
+            // Block Windows keys (both left and right)
             if (vkCode == VK_LWIN || vkCode == VK_RWIN) {
                 Console.WriteLine("BLOCKED: Windows key");
+                Console.Out.Flush();
                 return (IntPtr)1;
             }
 
-            // Block Alt+Tab
-            if (altPressed && vkCode == VK_TAB && isKeyDown) {
+            // Block Alt+Tab (task switcher)
+            if (altPressed && vkCode == VK_TAB) {
                 Console.WriteLine("BLOCKED: Alt+Tab");
+                Console.Out.Flush();
                 return (IntPtr)1;
             }
 
-            // Block Alt+F4
-            if (altPressed && vkCode == VK_F4 && isKeyDown) {
+            // Block Alt+F4 (close window)
+            if (altPressed && vkCode == VK_F4) {
                 Console.WriteLine("BLOCKED: Alt+F4");
+                Console.Out.Flush();
                 return (IntPtr)1;
             }
 
-            // Block Alt+Escape
-            if (altPressed && vkCode == VK_ESCAPE && isKeyDown) {
+            // Block Alt+Escape (window cycling)
+            if (altPressed && vkCode == VK_ESCAPE) {
                 Console.WriteLine("BLOCKED: Alt+Escape");
+                Console.Out.Flush();
                 return (IntPtr)1;
             }
         }
         return CallNextHookEx(hookId, nCode, wParam, lParam);
     }
-}
-"@ -ReferencedAssemblies System.Windows.Forms
 
-[KeyboardHook]::Start()
+    public static void Start() {
+        // Keep delegate alive to prevent garbage collection
+        procDelegate = new LowLevelKeyboardProc(HookCallback);
+
+        using (Process curProcess = Process.GetCurrentProcess())
+        using (ProcessModule curModule = curProcess.MainModule) {
+            hookId = SetWindowsHookEx(WH_KEYBOARD_LL, procDelegate, GetModuleHandle(curModule.ModuleName), 0);
+        }
+
+        if (hookId == IntPtr.Zero) {
+            int error = Marshal.GetLastWin32Error();
+            Console.WriteLine("HOOK_FAILED: Error code " + error);
+            Console.Out.Flush();
+            return;
+        }
+
+        Console.WriteLine("HOOK_STARTED");
+        Console.Out.Flush();
+
+        // Message loop - required for low-level hooks to work
+        MSG msg;
+        while (running && GetMessage(out msg, IntPtr.Zero, 0, 0)) {
+            TranslateMessage(ref msg);
+            DispatchMessage(ref msg);
+        }
+
+        // Cleanup
+        if (hookId != IntPtr.Zero) {
+            UnhookWindowsHookEx(hookId);
+            hookId = IntPtr.Zero;
+        }
+        Console.WriteLine("HOOK_STOPPED");
+        Console.Out.Flush();
+    }
+
+    public static void Stop() {
+        running = false;
+    }
+}
+"@ -ReferencedAssemblies System.Core
+
+    Write-Host "Starting keyboard hook..."
+    [KeyboardHook]::Start()
+} catch {
+    Write-Host "HOOK_ERROR: $($_.Exception.Message)"
+}
 `;
 }
 
@@ -1271,40 +1335,58 @@ function startKeyboardHook() {
     const scriptPath = path.join(tempDir, `keyboard-hook-${timestamp}.ps1`);
 
     try {
-      // Write script to temp file
+      // Write script to temp file with UTF-8 BOM for proper PowerShell encoding
       const scriptContent = getKeyboardHookScript();
-      fs.writeFileSync(scriptPath, scriptContent, 'utf8');
+      const bom = Buffer.from([0xEF, 0xBB, 0xBF]); // UTF-8 BOM
+      const content = Buffer.from(scriptContent, 'utf8');
+      fs.writeFileSync(scriptPath, Buffer.concat([bom, content]));
       console.log('Keyboard hook script written to:', scriptPath);
 
       // Execute the script file - this will run until stopped
       keyboardHookProcess = spawn('powershell.exe', [
         '-NoProfile',
         '-ExecutionPolicy', 'Bypass',
-        '-WindowStyle', 'Hidden',
         '-File', scriptPath
       ], {
         detached: false,
-        stdio: ['pipe', 'pipe', 'pipe']
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true
       });
 
       let hookStarted = false;
+      let allOutput = '';
 
       keyboardHookProcess.stdout.on('data', (data) => {
         const output = data.toString();
-        console.log('Keyboard hook output:', output);
-        if (output.includes('HOOK_STARTED') && !hookStarted) {
+        allOutput += output;
+        console.log('Keyboard hook output:', output.trim());
+        if ((output.includes('HOOK_STARTED') || allOutput.includes('HOOK_STARTED')) && !hookStarted) {
           hookStarted = true;
           keyboardHookEnabled = true;
           resolve({ success: true });
         }
+        if (output.includes('HOOK_FAILED') || output.includes('HOOK_ERROR')) {
+          const errorMatch = output.match(/HOOK_(?:FAILED|ERROR):?\s*(.+)/);
+          const errorMsg = errorMatch ? errorMatch[1] : output;
+          console.error('Keyboard hook failed:', errorMsg);
+          if (!hookStarted) {
+            reject(new Error('Keyboard hook failed: ' + errorMsg));
+          }
+        }
       });
 
       keyboardHookProcess.stderr.on('data', (data) => {
-        console.error('Keyboard hook error:', data.toString());
+        const errOutput = data.toString();
+        console.error('Keyboard hook stderr:', errOutput);
+        // Some PowerShell errors go to stderr
+        if (!hookStarted && errOutput.length > 0) {
+          allOutput += ' STDERR: ' + errOutput;
+        }
       });
 
       keyboardHookProcess.on('close', (code) => {
         console.log('Keyboard hook process exited with code:', code);
+        console.log('Full output was:', allOutput);
         keyboardHookProcess = null;
         keyboardHookEnabled = false;
 
@@ -1314,7 +1396,7 @@ function startKeyboardHook() {
         } catch (e) { }
 
         if (!hookStarted) {
-          reject(new Error('Keyboard hook process ended before starting'));
+          reject(new Error('Keyboard hook process ended before starting. Output: ' + allOutput.substring(0, 500)));
         }
       });
 
@@ -1325,16 +1407,17 @@ function startKeyboardHook() {
         reject(err);
       });
 
-      // Timeout if hook doesn't start in 10 seconds
+      // Timeout if hook doesn't start in 15 seconds
       setTimeout(() => {
         if (!hookStarted) {
+          console.log('Keyboard hook timeout. Output so far:', allOutput);
           if (keyboardHookProcess) {
             keyboardHookProcess.kill();
             keyboardHookProcess = null;
           }
-          reject(new Error('Keyboard hook start timeout'));
+          reject(new Error('Keyboard hook start timeout. Output: ' + allOutput.substring(0, 500)));
         }
-      }, 10000);
+      }, 15000);
 
     } catch (err) {
       // Clean up temp file on error
@@ -1484,14 +1567,12 @@ app.on('before-quit', async () => {
 let otherAppsMuted = false;
 
 // Helper function to generate the PowerShell audio control script content
+// Uses proper COM interop with Activator.CreateInstance for MMDeviceEnumerator
 function getAudioControlScriptContent() {
   return `
 Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
-
-[Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
-internal class MMDeviceEnumerator { }
 
 internal enum EDataFlow { eRender = 0, eCapture = 1, eAll = 2 }
 internal enum ERole { eConsole = 0, eMultimedia = 1, eCommunications = 2 }
@@ -1551,9 +1632,17 @@ internal interface ISimpleAudioVolume {
 }
 
 public class AudioManager {
+    // CLSID for MMDeviceEnumerator
+    private static readonly Guid CLSID_MMDeviceEnumerator = new Guid("BCDE0395-E52F-467C-8E3D-C4579291692E");
+
+    private static IMMDeviceEnumerator CreateDeviceEnumerator() {
+        Type comType = Type.GetTypeFromCLSID(CLSID_MMDeviceEnumerator);
+        return (IMMDeviceEnumerator)Activator.CreateInstance(comType);
+    }
+
     public static void MuteOtherApps(int excludePID) {
         try {
-            var enumerator = (IMMDeviceEnumerator)(new MMDeviceEnumerator());
+            var enumerator = CreateDeviceEnumerator();
             IMMDevice device;
             enumerator.GetDefaultAudioEndpoint(EDataFlow.eRender, ERole.eMultimedia, out device);
 
@@ -1569,6 +1658,7 @@ public class AudioManager {
             sessionEnumerator.GetCount(out count);
 
             Guid guid = Guid.Empty;
+            int mutedCount = 0;
 
             for (int i = 0; i < count; i++) {
                 IAudioSessionControl ctl;
@@ -1584,10 +1674,12 @@ public class AudioManager {
                     var vol = ctl as ISimpleAudioVolume;
                     if (vol != null) {
                         vol.SetMute(true, ref guid);
+                        mutedCount++;
                         Console.WriteLine("Muted PID: " + pid);
                     }
                 }
             }
+            Console.WriteLine("Muted " + mutedCount + " applications");
             Console.WriteLine("SUCCESS");
         } catch (Exception ex) {
             Console.WriteLine("ERROR: " + ex.Message);
@@ -1596,7 +1688,7 @@ public class AudioManager {
 
     public static void UnmuteAllApps() {
         try {
-            var enumerator = (IMMDeviceEnumerator)(new MMDeviceEnumerator());
+            var enumerator = CreateDeviceEnumerator();
             IMMDevice device;
             enumerator.GetDefaultAudioEndpoint(EDataFlow.eRender, ERole.eMultimedia, out device);
 
@@ -1612,6 +1704,7 @@ public class AudioManager {
             sessionEnumerator.GetCount(out count);
 
             Guid guid = Guid.Empty;
+            int unmutedCount = 0;
 
             for (int i = 0; i < count; i++) {
                 IAudioSessionControl ctl;
@@ -1620,15 +1713,17 @@ public class AudioManager {
                 var vol = ctl as ISimpleAudioVolume;
                 if (vol != null) {
                     vol.SetMute(false, ref guid);
+                    unmutedCount++;
                 }
             }
+            Console.WriteLine("Unmuted " + unmutedCount + " applications");
             Console.WriteLine("SUCCESS");
         } catch (Exception ex) {
             Console.WriteLine("ERROR: " + ex.Message);
         }
     }
 }
-"@ -ReferencedAssemblies System.Runtime.InteropServices
+"@
 `;
 }
 
@@ -1640,8 +1735,10 @@ function executePowerShellScript(scriptContent) {
     const scriptPath = path.join(tempDir, `audio-control-${timestamp}.ps1`);
 
     try {
-      // Write script to temp file
-      fs.writeFileSync(scriptPath, scriptContent, 'utf8');
+      // Write script to temp file with UTF-8 BOM for proper PowerShell encoding
+      const bom = Buffer.from([0xEF, 0xBB, 0xBF]); // UTF-8 BOM
+      const content = Buffer.from(scriptContent, 'utf8');
+      fs.writeFileSync(scriptPath, Buffer.concat([bom, content]));
       console.log('PowerShell script written to:', scriptPath);
 
       // Execute the script file
