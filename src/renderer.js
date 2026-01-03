@@ -127,6 +127,111 @@ function getSharedAudioContext() {
 }
 
 // ============================================================================
+// ACTIVITY LOGGING SYSTEM
+// ============================================================================
+// Comprehensive logging system to track all user actions and application events
+// for debugging and analysis purposes. Logs include timestamps and detailed context.
+
+const activityLog = {
+  entries: [],
+  maxEntries: 10000, // Limit to prevent memory issues
+  startTime: Date.now(),
+  isRecording: false, // Whether live recording to file is active
+
+  // Add a log entry with timestamp and context
+  add(category, action, details = {}) {
+    const timestamp = new Date().toISOString();
+    const elapsed = ((Date.now() - this.startTime) / 1000).toFixed(2);
+
+    const entry = {
+      timestamp,
+      elapsed: `${elapsed}s`,
+      category,
+      action,
+      details
+    };
+
+    this.entries.push(entry);
+
+    // Trim old entries if we exceed the limit
+    if (this.entries.length > this.maxEntries) {
+      this.entries.shift();
+    }
+
+    // If recording is active, stream to file immediately
+    if (this.isRecording) {
+      this.streamEntryToFile(entry);
+    }
+
+    // Also log to console for real-time debugging (can be disabled in production)
+    if (window.location.search.includes('verbose-log')) {
+      console.log(`[${category}] ${action}`, details);
+    }
+  },
+
+  // Stream a single entry to file (during live recording)
+  async streamEntryToFile(entry) {
+    try {
+      const detailsStr = Object.keys(entry.details).length > 0
+        ? `\n  Details: ${JSON.stringify(entry.details, null, 2).split('\n').join('\n  ')}`
+        : '';
+
+      const formattedEntry = `[${entry.timestamp}] [+${entry.elapsed}] [${entry.category}] ${entry.action}${detailsStr}`;
+
+      await window.electronAPI.appendLogEntry(formattedEntry);
+    } catch (error) {
+      console.error('Failed to stream log entry to file:', error);
+      // Don't recursively log this error to avoid infinite loop
+    }
+  },
+
+  // Get formatted log header
+  getLogHeader() {
+    return `Focus Desktop Simulator - Activity Log
+Generated: ${new Date().toISOString()}
+Session Duration: ${((Date.now() - this.startTime) / 1000).toFixed(2)}s
+
+${'='.repeat(80)}
+`;
+  },
+
+  // Get formatted log content for export
+  getFormattedLog() {
+    const header = `Focus Desktop Simulator - Activity Log
+Generated: ${new Date().toISOString()}
+Session Duration: ${((Date.now() - this.startTime) / 1000).toFixed(2)}s
+Total Entries: ${this.entries.length}
+
+${'='.repeat(80)}
+
+`;
+
+    const entries = this.entries.map(entry => {
+      const detailsStr = Object.keys(entry.details).length > 0
+        ? `\n  Details: ${JSON.stringify(entry.details, null, 2).split('\n').join('\n  ')}`
+        : '';
+
+      return `[${entry.timestamp}] [+${entry.elapsed}] [${entry.category}] ${entry.action}${detailsStr}`;
+    }).join('\n\n');
+
+    return header + entries;
+  },
+
+  // Clear all log entries
+  clear() {
+    this.entries = [];
+    this.startTime = Date.now();
+  }
+};
+
+// Initialize logging system
+activityLog.add('SYSTEM', 'Application started', {
+  userAgent: navigator.userAgent,
+  screenResolution: `${window.screen.width}x${window.screen.height}`,
+  windowSize: `${window.innerWidth}x${window.innerHeight}`
+});
+
+// ============================================================================
 // AUDIO LOADING OVERLAY
 // ============================================================================
 // State for cancellable audio loading
@@ -1964,6 +2069,7 @@ function init() {
   // Hide loading screen
   setTimeout(() => {
     document.getElementById('loading').classList.add('hidden');
+    activityLog.add('SYSTEM', 'Application initialized and ready');
   }, 500);
 }
 
@@ -6630,12 +6736,28 @@ function addObjectToDesk(type, options = {}) {
     saveState();
   }
 
+  // Log object creation
+  activityLog.add('OBJECT', 'Object added to desk', {
+    type: object.userData.type,
+    id: object.userData.id,
+    position: { x: object.position.x.toFixed(2), z: object.position.z.toFixed(2) },
+    rotation: object.rotation.y.toFixed(2),
+    scale: (options.scale || 1.0).toFixed(2)
+  });
+
   return object;
 }
 
 function removeObject(object) {
   const index = deskObjects.indexOf(object);
   if (index > -1) {
+    // Log object removal
+    activityLog.add('OBJECT', 'Object removed from desk', {
+      type: object.userData.type,
+      id: object.userData.id,
+      position: { x: object.position.x.toFixed(2), z: object.position.z.toFixed(2) }
+    });
+
     deskObjects.splice(index, 1);
     scene.remove(object);
     // Clean up physics data
@@ -6661,6 +6783,11 @@ function removeObject(object) {
 
 // Clear all objects from the desk
 function clearAllObjects() {
+  const objectCount = deskObjects.length;
+
+  // Log clearing all objects
+  activityLog.add('OBJECT', 'Clearing all objects from desk', { count: objectCount });
+
   // Remove all objects from scene and physics
   while (deskObjects.length > 0) {
     const obj = deskObjects.pop();
@@ -6813,6 +6940,12 @@ function enterPenDrawingMode() {
   // Show drawing mode indicator
   showDrawingModeIndicator(true);
 
+  // Log entering drawing mode
+  activityLog.add('MODE', 'Entered pen drawing mode', {
+    penId: penDrawingMode.heldPen.userData.id,
+    lineWidth: penDrawingMode.lineWidth
+  });
+
   console.log('Drawing mode: ON - Use LMB on notebook/paper to draw');
 }
 
@@ -6852,6 +6985,11 @@ function enterPenDrawingModeWithPen(pen) {
 // Exit drawing mode and save any drawings
 function exitPenDrawingMode() {
   penDrawingMode.active = false;
+
+  // Log exiting drawing mode
+  activityLog.add('MODE', 'Exited pen drawing mode', {
+    penId: penDrawingMode.heldPen ? penDrawingMode.heldPen.userData.id : null
+  });
 
   // Drop the pen (make it lie flat on the desk)
   if (penDrawingMode.heldPen) {
@@ -7307,6 +7445,15 @@ function endDrawingStroke() {
       penDrawingMode.targetObject.userData.drawingLines = [];
     }
     penDrawingMode.targetObject.userData.drawingLines.push(strokeData);
+
+    // Log drawing stroke completion
+    activityLog.add('DRAWING', 'Drawing stroke completed', {
+      targetObject: penDrawingMode.targetObject.userData.type,
+      targetId: penDrawingMode.targetObject.userData.id,
+      pointsCount: penDrawingMode.drawingPath.length,
+      color: strokeData.color,
+      lineWidth: strokeData.width
+    });
   }
 
   penDrawingMode.drawingPath = [];
@@ -7751,6 +7898,15 @@ function updateObjectColor(object, colorType, colorValue) {
     scene.add(newObject);
     selectedObject = newObject;
   }
+
+  // Log color change
+  activityLog.add('OBJECT', `Object ${colorType === 'mainColor' ? 'main color' : 'accent color'} changed`, {
+    type: object.userData.type,
+    id: object.userData.id,
+    colorType: colorType,
+    oldColor: colorType === 'mainColor' ? oldMainColor : oldAccentColor,
+    newColor: colorValue
+  });
 
   saveState();
 }
@@ -9611,7 +9767,11 @@ function setupEventListeners() {
 
   // Menu toggle
   document.getElementById('menu-toggle').addEventListener('click', () => {
-    document.getElementById('menu').classList.toggle('open');
+    const menu = document.getElementById('menu');
+    const isOpening = !menu.classList.contains('open');
+    menu.classList.toggle('open');
+
+    activityLog.add('UI', isOpening ? 'Menu opened' : 'Menu closed');
   });
 
   // Initialize palette system (Photoshop-style with categories and variants)
@@ -9671,17 +9831,89 @@ function setupEventListeners() {
   // Delete button
   document.getElementById('delete-object').addEventListener('click', () => {
     if (selectedObject) {
+      activityLog.add('USER_ACTION', 'Delete object button clicked', {
+        type: selectedObject.userData.type,
+        id: selectedObject.userData.id
+      });
+
       removeObject(selectedObject);
       selectedObject = null;
       document.getElementById('customization-panel').classList.remove('open');
     }
   });
 
+  // Log recording button - starts/stops live log streaming to file
+  const logRecordBtn = document.getElementById('log-record-btn');
+  logRecordBtn.addEventListener('click', async () => {
+    if (!activityLog.isRecording) {
+      // Start recording
+      activityLog.add('USER_ACTION', 'Start log recording button clicked');
+
+      try {
+        const headerContent = activityLog.getLogHeader();
+        const result = await window.electronAPI.startLogRecording(headerContent);
+
+        if (result.success && !result.canceled) {
+          activityLog.isRecording = true;
+
+          // Update button appearance
+          logRecordBtn.style.background = 'rgba(239, 68, 68, 0.2)';
+          logRecordBtn.style.borderColor = 'rgba(239, 68, 68, 0.4)';
+          logRecordBtn.style.color = '#ef4444';
+          logRecordBtn.textContent = '⏹️ Stop Log Recording';
+
+          activityLog.add('SYSTEM', 'Log recording started', { filePath: result.filePath });
+          console.log('Log recording started:', result.filePath);
+        } else if (result.canceled) {
+          activityLog.add('USER_ACTION', 'Log recording canceled');
+        } else {
+          activityLog.add('ERROR', 'Failed to start log recording', { error: result.error });
+          console.error('Failed to start log recording:', result.error);
+          alert('Failed to start log recording: ' + result.error);
+        }
+      } catch (error) {
+        activityLog.add('ERROR', 'Log recording error', { error: error.message });
+        console.error('Error starting log recording:', error);
+        alert('Error starting log recording: ' + error.message);
+      }
+    } else {
+      // Stop recording
+      activityLog.add('USER_ACTION', 'Stop log recording button clicked');
+
+      try {
+        const result = await window.electronAPI.stopLogRecording();
+
+        if (result.success) {
+          activityLog.isRecording = false;
+
+          // Update button appearance
+          logRecordBtn.style.background = 'rgba(34, 197, 94, 0.2)';
+          logRecordBtn.style.borderColor = 'rgba(34, 197, 94, 0.4)';
+          logRecordBtn.style.color = '#22c55e';
+          logRecordBtn.textContent = '📋 Start Log Recording';
+
+          console.log('Log recording stopped:', result.filePath);
+        } else {
+          console.error('Failed to stop log recording:', result.error);
+          alert('Failed to stop log recording: ' + result.error);
+        }
+      } catch (error) {
+        console.error('Error stopping log recording:', error);
+        alert('Error stopping log recording: ' + error.message);
+      }
+    }
+
+    document.getElementById('menu').classList.remove('open');
+  });
+
   // Clear desk button - removes all objects from desk
   document.getElementById('clear-desk-btn').addEventListener('click', () => {
     if (confirm('Are you sure you want to remove all objects from the desk?')) {
+      activityLog.add('USER_ACTION', 'Clear all objects confirmed');
       clearAllObjects();
       document.getElementById('menu').classList.remove('open');
+    } else {
+      activityLog.add('USER_ACTION', 'Clear all objects canceled');
     }
   });
 
@@ -9771,9 +10003,20 @@ function setupEventListeners() {
   if (objectCollisionRadiusSlider && objectCollisionRadiusValue) {
     objectCollisionRadiusSlider.addEventListener('input', (e) => {
       if (!selectedObject) return;
+      const oldValue = selectedObject.userData.objectCollisionRadiusMultiplier || 1.0;
       const percentage = parseInt(e.target.value);
-      selectedObject.userData.objectCollisionRadiusMultiplier = percentage / 100;
+      const newValue = percentage / 100;
+      selectedObject.userData.objectCollisionRadiusMultiplier = newValue;
       objectCollisionRadiusValue.textContent = percentage + '%';
+
+      // Log collision width change
+      activityLog.add('OBJECT', 'Object collision width changed (edit mode)', {
+        type: selectedObject.userData.type,
+        id: selectedObject.userData.id,
+        oldValue: (oldValue * 100).toFixed(0) + '%',
+        newValue: percentage + '%'
+      });
+
       saveState();
       // Update collision debug visualization if enabled
       if (debugState.showCollisionRadii) {
@@ -9783,8 +10026,19 @@ function setupEventListeners() {
     // Add scroll-based adjustment
     addScrollToSlider(objectCollisionRadiusSlider, (value) => {
       if (!selectedObject) return;
-      selectedObject.userData.objectCollisionRadiusMultiplier = value / 100;
+      const oldValue = selectedObject.userData.objectCollisionRadiusMultiplier || 1.0;
+      const newValue = value / 100;
+      selectedObject.userData.objectCollisionRadiusMultiplier = newValue;
       objectCollisionRadiusValue.textContent = value + '%';
+
+      // Log collision width change
+      activityLog.add('OBJECT', 'Object collision width changed (edit mode)', {
+        type: selectedObject.userData.type,
+        id: selectedObject.userData.id,
+        oldValue: (oldValue * 100).toFixed(0) + '%',
+        newValue: value + '%'
+      });
+
       saveState();
       if (debugState.showCollisionRadii) {
         updateCollisionDebugHelpers();
@@ -9798,9 +10052,20 @@ function setupEventListeners() {
   if (objectCollisionHeightSlider && objectCollisionHeightValue) {
     objectCollisionHeightSlider.addEventListener('input', (e) => {
       if (!selectedObject) return;
+      const oldValue = selectedObject.userData.objectCollisionHeightMultiplier || 1.0;
       const percentage = parseInt(e.target.value);
-      selectedObject.userData.objectCollisionHeightMultiplier = percentage / 100;
+      const newValue = percentage / 100;
+      selectedObject.userData.objectCollisionHeightMultiplier = newValue;
       objectCollisionHeightValue.textContent = percentage + '%';
+
+      // Log collision height change
+      activityLog.add('OBJECT', 'Object collision height changed (edit mode)', {
+        type: selectedObject.userData.type,
+        id: selectedObject.userData.id,
+        oldValue: (oldValue * 100).toFixed(0) + '%',
+        newValue: percentage + '%'
+      });
+
       saveState();
       // Update collision debug visualization if enabled
       if (debugState.showCollisionRadii) {
@@ -9810,8 +10075,19 @@ function setupEventListeners() {
     // Add scroll-based adjustment
     addScrollToSlider(objectCollisionHeightSlider, (value) => {
       if (!selectedObject) return;
-      selectedObject.userData.objectCollisionHeightMultiplier = value / 100;
+      const oldValue = selectedObject.userData.objectCollisionHeightMultiplier || 1.0;
+      const newValue = value / 100;
+      selectedObject.userData.objectCollisionHeightMultiplier = newValue;
       objectCollisionHeightValue.textContent = value + '%';
+
+      // Log collision height change
+      activityLog.add('OBJECT', 'Object collision height changed (edit mode)', {
+        type: selectedObject.userData.type,
+        id: selectedObject.userData.id,
+        oldValue: (oldValue * 100).toFixed(0) + '%',
+        newValue: value + '%'
+      });
+
       saveState();
       if (debugState.showCollisionRadii) {
         updateCollisionDebugHelpers();
@@ -9832,6 +10108,13 @@ function setupEventListeners() {
       if (objectCollisionRadiusValue) objectCollisionRadiusValue.textContent = '100%';
       if (objectCollisionHeightSlider) objectCollisionHeightSlider.value = 100;
       if (objectCollisionHeightValue) objectCollisionHeightValue.textContent = '100%';
+
+      // Log collision reset
+      activityLog.add('OBJECT', 'Object collision settings reset to default (edit mode)', {
+        type: selectedObject.userData.type,
+        id: selectedObject.userData.id
+      });
+
       saveState();
       // Update collision debug visualization if enabled
       if (debugState.showCollisionRadii) {
@@ -9940,10 +10223,22 @@ function setupPointerLock(container) {
       pointerLockState.showInstructions = false;
       crosshair.classList.add('visible');
       instructions.classList.remove('visible');
+
+      // Log pointer lock activated
+      activityLog.add('MODE', 'Pointer lock activated (FPS camera mode)', {
+        cameraPosition: {
+          x: camera.position.x.toFixed(2),
+          y: camera.position.y.toFixed(2),
+          z: camera.position.z.toFixed(2)
+        }
+      });
     } else {
       // Pointer is unlocked
       pointerLockState.isLocked = false;
       crosshair.classList.remove('visible');
+
+      // Log pointer lock deactivated
+      activityLog.add('MODE', 'Pointer lock deactivated', {});
     }
   }
 
@@ -10244,6 +10539,14 @@ function onMouseDown(event) {
   // This ensures edit mode exits when clicking outside the panel
   const panel = document.getElementById('customization-panel');
   if (panel && panel.classList.contains('open')) {
+    // Log exit edit mode before clearing selectedObject
+    if (selectedObject) {
+      activityLog.add('MODE', 'Exited edit mode (customization panel)', {
+        objectType: selectedObject.userData.type,
+        objectId: selectedObject.userData.id
+      });
+    }
+
     panel.classList.remove('open');
     selectedObject = null;
     // Clear dynamic options
@@ -10406,11 +10709,26 @@ function onMouseDown(event) {
         object.userData.isLifted = false;
         object.userData.isPullingOut = true; // Mark as pulling out from under a stack
         // Keep the current Y position, don't lift
+
+        // Log object pickup (pulling from stack)
+        activityLog.add('OBJECT', 'Object picked up (pulling from stack)', {
+          type: object.userData.type,
+          id: object.userData.id,
+          position: { x: object.position.x.toFixed(2), z: object.position.z.toFixed(2), y: object.position.y.toFixed(2) },
+          objectsOnTop: objectsOnTop.length
+        });
       } else {
         // No objects on top - lift normally
         object.userData.isLifted = true;
         object.userData.isPullingOut = false;
         object.userData.targetY = object.userData.originalY + CONFIG.physics.liftHeight;
+
+        // Log object pickup (lifting)
+        activityLog.add('OBJECT', 'Object picked up (lifting)', {
+          type: object.userData.type,
+          id: object.userData.id,
+          position: { x: object.position.x.toFixed(2), z: object.position.z.toFixed(2), y: object.position.y.toFixed(2) }
+        });
       }
     }
   }
@@ -10865,6 +11183,14 @@ function onMouseUp(event) {
         penBody.rotation.x = 0;
         penBody.rotation.z = 0;
       }
+
+      // Log pen insertion into holder
+      activityLog.add('OBJECT', 'Pen inserted into holder', {
+        type: selectedObject.userData.type,
+        id: selectedObject.userData.id,
+        position: { x: insertionResult.x.toFixed(2), z: insertionResult.z.toFixed(2), y: insertionResult.y.toFixed(2) },
+        slot: insertionResult.slot
+      });
     } else {
       // Check if dropping on top of another object (stacking)
       const dropY = calculateStackingY(selectedObject);
@@ -10887,6 +11213,15 @@ function onMouseUp(event) {
       if (selectedObject.userData.type === 'pen' && !penDrawingMode.active) {
         makePenFlat(selectedObject);
       }
+
+      // Log object drop
+      activityLog.add('OBJECT', 'Object dropped', {
+        type: selectedObject.userData.type,
+        id: selectedObject.userData.id,
+        position: { x: selectedObject.position.x.toFixed(2), z: selectedObject.position.z.toFixed(2), y: dropY.toFixed(2) },
+        rotation: selectedObject.rotation.y.toFixed(2),
+        scale: selectedObject.scale.x.toFixed(2)
+      });
     }
 
     // Clear held pen reference if we're not in drawing mode
@@ -11322,6 +11657,15 @@ function onMouseWheel(event) {
         // Adjust original Y position for when object returns to desk
         adjustObjectYForScale(object, oldScale, newScale);
         saveState();
+
+        // Log object scaling
+        activityLog.add('OBJECT', 'Object scaled', {
+          type: object.userData.type,
+          id: object.userData.id,
+          oldScale: oldScale.toFixed(2),
+          newScale: newScale.toFixed(2),
+          scaleDelta: scaleDelta.toFixed(2)
+        });
       }
       return;
     }
@@ -11346,6 +11690,15 @@ function onMouseWheel(event) {
     object.rotation.y += rotationDelta;
     object.userData.rotationY = object.rotation.y;
     saveState();
+
+    // Log object rotation
+    activityLog.add('OBJECT', 'Object rotated', {
+      type: object.userData.type,
+      id: object.userData.id,
+      rotationDelta: rotationDelta.toFixed(2),
+      newRotation: object.rotation.y.toFixed(2)
+    });
+
     return;
   }
 
@@ -11404,6 +11757,15 @@ function onMouseWheel(event) {
           // Adjust Y position to keep object on desk surface
           adjustObjectYForScale(object, oldScale, newScale);
           saveState();
+
+          // Log object scaling
+          activityLog.add('OBJECT', 'Object scaled', {
+            type: object.userData.type,
+            id: object.userData.id,
+            oldScale: oldScale.toFixed(2),
+            newScale: newScale.toFixed(2),
+            scaleDelta: scaleDelta.toFixed(2)
+          });
         }
       } else {
         // Rotate object around Y axis (perpendicular to desk)
@@ -11489,6 +11851,13 @@ function handleRightClick(event) {
       // Update customization panel
       document.getElementById('customization-title').textContent = `Customize: ${object.userData.name}`;
       document.getElementById('customization-panel').classList.add('open');
+
+      // Log edit mode opened
+      activityLog.add('MODE', 'Entered edit mode (customization panel)', {
+        objectType: object.userData.type,
+        objectId: object.userData.id,
+        objectName: object.userData.name
+      });
 
       // Highlight current colors
       document.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('selected'));
@@ -13872,12 +14241,25 @@ function enterExamineMode(object) {
 
   // Add visual hint that object is being examined
   document.body.style.cursor = 'zoom-out';
+
+  // Log entering examine mode
+  activityLog.add('MODE', 'Entered examine mode', {
+    objectType: object.userData.type,
+    objectId: object.userData.id,
+    examineDistance: examineDistance.toFixed(2)
+  });
 }
 
 function exitExamineMode() {
   if (!examineState.active || !examineState.object) return;
 
   const object = examineState.object;
+
+  // Log exiting examine mode
+  activityLog.add('MODE', 'Exited examine mode', {
+    objectType: object.userData.type,
+    objectId: object.userData.id
+  });
 
   // Store original position locally before clearing state
   const originalPosition = examineState.originalPosition.clone();
@@ -18278,6 +18660,12 @@ function enterBookReadingMode(book) {
   bookReadingState.originalCameraYaw = cameraLookState.yaw;
   bookReadingState.originalCameraPitch = cameraLookState.pitch;
 
+  // Log entering book reading mode
+  activityLog.add('MODE', 'Entered book reading mode', {
+    bookType: book.userData.type,
+    bookId: book.userData.id
+  });
+
   // Get book position in world coordinates and cache it
   // This avoids recalculating on every keypress during pan/zoom
   const bookWorldPos = new THREE.Vector3();
@@ -18325,6 +18713,12 @@ function enterBookReadingMode(book) {
 
 function exitBookReadingMode() {
   if (!bookReadingState.active) return;
+
+  // Log exiting book reading mode
+  activityLog.add('MODE', 'Exited book reading mode', {
+    bookType: bookReadingState.book ? bookReadingState.book.userData.type : null,
+    bookId: bookReadingState.book ? bookReadingState.book.userData.id : null
+  });
 
   bookReadingState.active = false;
 
@@ -18485,6 +18879,12 @@ function enterPlayerMode(player) {
     playerModeState.buttonTypes = playerModeState.miniPlayerButtonTypes;
   }
 
+  // Log entering player mode
+  activityLog.add('MODE', 'Entered cassette player mode', {
+    playerType: player.userData.type,
+    playerId: player.userData.id
+  });
+
   // Reset zoom and pan offsets
   playerModeState.zoomDistance = 0.25;
   playerModeState.panOffsetX = 0;
@@ -18554,6 +18954,12 @@ function enterPlayerMode(player) {
 
 function exitPlayerMode() {
   if (!playerModeState.active) return;
+
+  // Log exiting player mode
+  activityLog.add('MODE', 'Exited cassette player mode', {
+    playerType: playerModeState.player ? playerModeState.player.userData.type : null,
+    playerId: playerModeState.player ? playerModeState.player.userData.id : null
+  });
 
   playerModeState.active = false;
 
@@ -19813,6 +20219,11 @@ function updateCameraLook() {
 }
 
 function onWindowResize() {
+  activityLog.add('WINDOW', 'Window resized', {
+    width: window.innerWidth,
+    height: window.innerHeight
+  });
+
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
