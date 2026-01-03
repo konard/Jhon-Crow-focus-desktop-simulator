@@ -43,6 +43,16 @@ const CONFIG = {
     dropSpeed: 0.2,
     gravity: 0.02
   },
+  // Falling off table settings
+  falling: {
+    enabled: true,           // Whether objects can fall off the table
+    resistanceEnabled: false, // Whether fall resistance is applied
+    resistance: 0.5,         // Fall resistance value (0-1, higher = harder to push off)
+    floorY: -2.0,            // Y position of the floor where objects land
+    fallSpeed: 0.15,         // Speed of falling animation
+    bounceHeight: 0.1,       // Bounce height when hitting the floor
+    deleteFlashDuration: 200 // Duration of red flash when deleting objects (ms)
+  },
   colors: {
     background: 0x1a1a2e,
     ambient: 0x404060,
@@ -81,6 +91,17 @@ let debugState = {
   showCollisionRadii: false,
   collisionHelpers: [],  // Array of THREE.Mesh objects for visualizing collisions
   showCameraRay: false   // Show camera crosshair ray for debugging
+};
+
+// Fallen objects state (objects that have fallen off the table onto the floor)
+let fallenObjectsState = {
+  objects: [],            // Array of objects on the floor, ordered by fall time (last fallen first)
+  fallingObjects: [],     // Objects currently falling (mid-animation)
+  tippingObjects: [],     // Objects currently tipping at the edge (pre-fall rotation)
+  floorMesh: null,        // Reference to the floor mesh for raycasting
+  mmbHoldTimeout: null,   // Timeout for MMB hold detection on floor
+  mmbDownTime: null,      // Time when MMB was pressed on floor
+  isFlashing: false       // Whether floor is currently flashing red
 };
 
 // Camera ray visualization helper
@@ -2308,12 +2329,74 @@ function createFloor() {
   const floorMaterial = new THREE.MeshStandardMaterial({
     color: CONFIG.colors.ground,
     roughness: 0.9,
-    metalness: 0
+    metalness: 0,
+    emissive: 0x000000,
+    emissiveIntensity: 0
   });
   const floor = new THREE.Mesh(floorGeometry, floorMaterial);
   floor.rotation.x = -Math.PI / 2;
+  floor.position.y = CONFIG.falling.floorY;
   floor.receiveShadow = true;
+  floor.userData.isFloor = true;  // Mark as floor for raycasting identification
+  floor.userData.originalColor = CONFIG.colors.ground;
+  fallenObjectsState.floorMesh = floor;
   scene.add(floor);
+}
+
+// Flash the floor with bright pink glow when deleting objects
+function flashFloorRed() {
+  if (!fallenObjectsState.floorMesh || fallenObjectsState.isFlashing) return;
+
+  fallenObjectsState.isFlashing = true;
+  const floor = fallenObjectsState.floorMesh;
+  const originalEmissive = floor.material.emissive.getHex();
+  const originalEmissiveIntensity = floor.material.emissiveIntensity;
+  const originalColor = floor.material.color.getHex();
+
+  // Bright pink flash color (derived from floor's blue-gray 0x2d3748 -> saturated hot pink)
+  const flashColor = 0xff1493; // Deep pink / hot pink
+
+  // Darken the floor during flash (make it almost black to contrast with bright glow)
+  floor.material.color.setHex(0x0a0a12);
+
+  // Set to bright pink emissive with very high intensity for dramatic glow
+  floor.material.emissive.setHex(flashColor);
+  floor.material.emissiveIntensity = 8.0; // Much brighter glow
+
+  // Flash effect - fade out
+  const startTime = Date.now();
+  const duration = CONFIG.falling.deleteFlashDuration;
+
+  function animateFlash() {
+    const elapsed = Date.now() - startTime;
+    const progress = Math.min(elapsed / duration, 1);
+
+    // Ease out the intensity with a fast initial burst
+    const easedProgress = 1 - Math.pow(1 - progress, 2);
+    floor.material.emissiveIntensity = 8.0 * (1 - easedProgress);
+
+    // Gradually restore floor color
+    const r1 = 0x0a, g1 = 0x0a, b1 = 0x12; // Dark flash color
+    const r2 = (originalColor >> 16) & 0xff;
+    const g2 = (originalColor >> 8) & 0xff;
+    const b2 = originalColor & 0xff;
+    const r = Math.round(r1 + (r2 - r1) * easedProgress);
+    const g = Math.round(g1 + (g2 - g1) * easedProgress);
+    const b = Math.round(b1 + (b2 - b1) * easedProgress);
+    floor.material.color.setHex((r << 16) | (g << 8) | b);
+
+    if (progress < 1) {
+      requestAnimationFrame(animateFlash);
+    } else {
+      // Reset to original
+      floor.material.color.setHex(originalColor);
+      floor.material.emissive.setHex(originalEmissive);
+      floor.material.emissiveIntensity = originalEmissiveIntensity;
+      fallenObjectsState.isFlashing = false;
+    }
+  }
+
+  animateFlash();
 }
 
 // ============================================================================
@@ -6852,6 +6935,412 @@ function resetFallenObject(object) {
 }
 
 // ============================================================================
+// FALLING OFF TABLE FUNCTIONS
+// ============================================================================
+
+// Start the tipping animation for an object at the edge of the table
+// Object pivots around the desk edge before falling
+function startTippingAtEdge(object, edgeDirection) {
+  if (object.userData.isTippingAtEdge || object.userData.isFallingOffTable || object.userData.isOnFloor) return;
+
+  const deskHalfWidth = CONFIG.desk.width / 2;
+  const deskHalfDepth = CONFIG.desk.depth / 2;
+
+  object.userData.isTippingAtEdge = true;
+  object.userData.tipStartTime = Date.now();
+  object.userData.tipAngle = 0;  // Current tip angle
+  object.userData.tipAngularVelocity = 0.02;  // Initial angular velocity
+
+  // Determine which edge the object is tipping over
+  // edgeDirection: 'posX', 'negX', 'posZ', 'negZ'
+  object.userData.tipEdgeDirection = edgeDirection;
+
+  // Store the object's CURRENT position (don't reset it)
+  object.userData.tipStartX = object.position.x;
+  object.userData.tipStartZ = object.position.z;
+
+  // Store the edge pivot point
+  if (edgeDirection === 'posX') {
+    object.userData.tipPivotX = deskHalfWidth;
+    object.userData.tipPivotZ = object.position.z;
+  } else if (edgeDirection === 'negX') {
+    object.userData.tipPivotX = -deskHalfWidth;
+    object.userData.tipPivotZ = object.position.z;
+  } else if (edgeDirection === 'posZ') {
+    object.userData.tipPivotX = object.position.x;
+    object.userData.tipPivotZ = deskHalfDepth;
+  } else if (edgeDirection === 'negZ') {
+    object.userData.tipPivotX = object.position.x;
+    object.userData.tipPivotZ = -deskHalfDepth;
+  }
+
+  // Store the initial horizontal velocity
+  const vel = physicsState.velocities.get(object.userData.id);
+  if (vel) {
+    object.userData.tipVelocityX = vel.x;
+    object.userData.tipVelocityZ = vel.z;
+    // Initial angular velocity is proportional to push velocity
+    const pushSpeed = Math.sqrt(vel.x * vel.x + vel.z * vel.z);
+    object.userData.tipAngularVelocity = Math.min(0.15, 0.02 + pushSpeed * 0.5);
+  } else {
+    object.userData.tipVelocityX = 0;
+    object.userData.tipVelocityZ = 0;
+  }
+
+  // Add to tipping objects array
+  if (!fallenObjectsState.tippingObjects.includes(object)) {
+    fallenObjectsState.tippingObjects.push(object);
+  }
+
+  // Mark as fallen to skip normal physics, but NOT on floor yet
+  object.userData.isFallen = true;
+}
+
+// Update tipping objects animation (called in animate loop)
+function updateTippingObjects() {
+  const deskSurfaceY = getDeskSurfaceY();
+  const gravity = 0.003;  // Angular acceleration due to gravity
+
+  for (let i = fallenObjectsState.tippingObjects.length - 1; i >= 0; i--) {
+    const obj = fallenObjectsState.tippingObjects[i];
+
+    if (!obj.userData.isTippingAtEdge) {
+      fallenObjectsState.tippingObjects.splice(i, 1);
+      continue;
+    }
+
+    // Update tip angle with angular velocity (accelerating due to gravity)
+    obj.userData.tipAngularVelocity += gravity;
+    obj.userData.tipAngle += obj.userData.tipAngularVelocity;
+
+    const physics = getObjectPhysics(obj);
+    const objectHeight = physics.height * (obj.scale?.y || 1);
+    const halfHeight = objectHeight * 0.5;
+
+    // The object tips around its bottom edge that's at the desk edge
+    // As it tips, it rotates and moves AWAY from the desk
+    const edgeDir = obj.userData.tipEdgeDirection;
+    const tipAngle = obj.userData.tipAngle;
+    const cosAngle = Math.cos(tipAngle);
+    const sinAngle = Math.sin(tipAngle);
+
+    // Calculate how far the center has moved from the starting position
+    // At angle 0: center is at starting position, upright
+    // At angle 90°: center is horizontal, moved outward by halfHeight
+    const startX = obj.userData.tipStartX;
+    const startZ = obj.userData.tipStartZ;
+
+    if (edgeDir === 'posX' || edgeDir === 'negX') {
+      // Tipping over X edge - rotate around Z axis
+      // posX means tipping to the right (positive X direction) - top falls AWAY from desk
+      // Negative rotation tips the top away from desk center (toward +X for posX)
+      const rotationSign = edgeDir === 'posX' ? -1 : 1;
+      obj.rotation.z = rotationSign * tipAngle;
+
+      // As object tips, center moves outward (away from desk)
+      // Y position: starts at desk height, goes down as it tips
+      // X position: starts at initial X, moves outward by halfHeight * sin(angle)
+      obj.position.x = startX + (-rotationSign) * halfHeight * sinAngle;
+      obj.position.y = deskSurfaceY + halfHeight * cosAngle;
+    } else {
+      // Tipping over Z edge - rotate around X axis
+      // posZ means tipping away in positive Z direction - top falls AWAY from desk
+      // Positive rotation tips the top away from desk center (toward +Z for posZ)
+      const rotationSign = edgeDir === 'posZ' ? 1 : -1;
+      obj.rotation.x = rotationSign * tipAngle;
+
+      // As object tips, center moves outward (away from desk)
+      obj.position.z = startZ + rotationSign * halfHeight * sinAngle;
+      obj.position.y = deskSurfaceY + halfHeight * cosAngle;
+    }
+
+    // Check if tipped past the critical angle (past ~90 degrees) - start falling
+    if (obj.userData.tipAngle > Math.PI / 2) {
+      // Transition from tipping to falling
+      obj.userData.isTippingAtEdge = false;
+
+      // Transfer the angular velocity to fall velocities
+      const fallSpeed = obj.userData.tipAngularVelocity * 0.3;
+      if (edgeDir === 'posX') {
+        obj.userData.fallVelocityX = fallSpeed;
+        obj.userData.fallVelocityZ = 0;
+      } else if (edgeDir === 'negX') {
+        obj.userData.fallVelocityX = -fallSpeed;
+        obj.userData.fallVelocityZ = 0;
+      } else if (edgeDir === 'posZ') {
+        obj.userData.fallVelocityX = 0;
+        obj.userData.fallVelocityZ = fallSpeed;
+      } else if (edgeDir === 'negZ') {
+        obj.userData.fallVelocityX = 0;
+        obj.userData.fallVelocityZ = -fallSpeed;
+      }
+
+      // Remove from tipping array
+      fallenObjectsState.tippingObjects.splice(i, 1);
+
+      // Start the falling phase
+      obj.userData.isFallingOffTable = true;
+      obj.userData.fallStartY = obj.position.y;
+      obj.userData.fallStartTime = Date.now();
+      obj.userData.fallVelocityY = -obj.userData.tipAngularVelocity * 0.5;  // Initial downward velocity from tip
+      obj.userData.fallEdgeX = obj.position.x;
+      obj.userData.fallEdgeZ = obj.position.z;
+      obj.userData.hasBounced = false;
+
+      if (!fallenObjectsState.fallingObjects.includes(obj)) {
+        fallenObjectsState.fallingObjects.push(obj);
+      }
+    }
+  }
+}
+
+// Start the falling animation for an object going off the table
+function startFallingOffTable(object) {
+  if (object.userData.isFallingOffTable || object.userData.isOnFloor) return;
+
+  object.userData.isFallingOffTable = true;
+  object.userData.fallStartY = object.position.y;
+  object.userData.fallStartTime = Date.now();
+  object.userData.fallVelocityY = 0;
+  object.userData.fallEdgeX = object.position.x;
+  object.userData.fallEdgeZ = object.position.z;
+
+  // Store the velocity at the moment of falling for continued horizontal movement
+  const vel = physicsState.velocities.get(object.userData.id);
+  if (vel) {
+    object.userData.fallVelocityX = vel.x;
+    object.userData.fallVelocityZ = vel.z;
+  } else {
+    object.userData.fallVelocityX = 0;
+    object.userData.fallVelocityZ = 0;
+  }
+
+  // Add to falling objects array for animation
+  if (!fallenObjectsState.fallingObjects.includes(object)) {
+    fallenObjectsState.fallingObjects.push(object);
+  }
+
+  // Also mark as "fallen" to skip normal desk physics
+  object.userData.isFallen = true;
+}
+
+// Update falling objects animation (called in animate loop)
+function updateFallingObjects() {
+  const gravity = 0.015;  // Gravity acceleration
+  const floorY = CONFIG.falling.floorY;
+  const bounceHeight = CONFIG.falling.bounceHeight;
+
+  for (let i = fallenObjectsState.fallingObjects.length - 1; i >= 0; i--) {
+    const obj = fallenObjectsState.fallingObjects[i];
+
+    if (!obj.userData.isFallingOffTable) {
+      fallenObjectsState.fallingObjects.splice(i, 1);
+      continue;
+    }
+
+    // Apply gravity
+    obj.userData.fallVelocityY = (obj.userData.fallVelocityY || 0) - gravity;
+
+    // Apply velocities
+    obj.position.y += obj.userData.fallVelocityY;
+    obj.position.x += (obj.userData.fallVelocityX || 0) * 0.5;  // Dampen horizontal
+    obj.position.z += (obj.userData.fallVelocityZ || 0) * 0.5;
+
+    // Dampen horizontal velocity
+    obj.userData.fallVelocityX *= 0.95;
+    obj.userData.fallVelocityZ *= 0.95;
+
+    // Add tumbling rotation while falling
+    obj.rotation.x += (obj.userData.fallVelocityX || 0) * 0.5;
+    obj.rotation.z += (obj.userData.fallVelocityZ || 0) * 0.5;
+
+    // Check if hit the floor
+    const physics = getObjectPhysics(obj);
+    const objectHeight = physics.height * (obj.scale?.y || 1);
+    const floorHitY = floorY + objectHeight * 0.5;
+
+    if (obj.position.y <= floorHitY) {
+      // Clamp position to floor level immediately
+      obj.position.y = floorHitY;
+
+      // Check if this is the first impact (tiny bounce) or subsequent (settle)
+      if (!obj.userData.hasBounced && Math.abs(obj.userData.fallVelocityY) > 0.25) {
+        // First impact with enough velocity - do a tiny bounce (5%)
+        // This gives a subtle landing effect without excessive bouncing
+        obj.userData.fallVelocityY = Math.abs(obj.userData.fallVelocityY) * 0.05;
+        obj.userData.hasBounced = true;
+      } else {
+        // Either already bounced, or velocity too low for noticeable bounce
+        // Settle on floor immediately
+        obj.userData.fallVelocityY = 0;
+        obj.userData.isFallingOffTable = false;
+        obj.userData.isOnFloor = true;
+        obj.userData.floorLandTime = Date.now();
+
+        // Add to fallen objects list (at the beginning, so last fallen is first)
+        if (!fallenObjectsState.objects.includes(obj)) {
+          fallenObjectsState.objects.unshift(obj);
+        }
+
+        // Remove from falling array
+        fallenObjectsState.fallingObjects.splice(i, 1);
+
+        // Save state
+        saveState();
+      }
+    }
+  }
+}
+
+// Return the last fallen object from the floor to the table
+function returnObjectFromFloor(floorX, floorZ) {
+  if (fallenObjectsState.objects.length === 0) return null;
+
+  // Get the last fallen object (first in the array)
+  const object = fallenObjectsState.objects.shift();
+
+  // Find the nearest desk edge to the fall position
+  const deskHalfWidth = CONFIG.desk.width / 2 - 0.5;
+  const deskHalfDepth = CONFIG.desk.depth / 2 - 0.5;
+
+  // Determine which edge is closest
+  let targetX = object.position.x;
+  let targetZ = object.position.z;
+
+  // Clamp to within desk bounds
+  targetX = Math.max(-deskHalfWidth, Math.min(deskHalfWidth, targetX));
+  targetZ = Math.max(-deskHalfDepth, Math.min(deskHalfDepth, targetZ));
+
+  // Reset object state
+  object.userData.isFallen = false;
+  object.userData.isOnFloor = false;
+  object.userData.isFallingOffTable = false;
+  object.userData.isTippingAtEdge = false;
+  object.userData.hasBounced = false;
+  object.userData.fallVelocityY = 0;
+  object.userData.fallVelocityX = 0;
+  object.userData.fallVelocityZ = 0;
+  object.userData.tipAngle = 0;
+  object.userData.tipAngularVelocity = 0;
+
+  // Reset rotation to upright
+  const yRotation = object.rotation.y;
+  const creator = PRESET_CREATORS[object.userData.type];
+  if (creator) {
+    const temp = creator({});
+    object.rotation.x = temp.rotation.x;
+    object.rotation.z = temp.rotation.z;
+    object.rotation.y = yRotation;
+    const physics = getObjectPhysics(object);
+    object.position.y = getDeskSurfaceY() + physics.baseOffset * (object.scale?.y || 1);
+    scene.remove(temp);
+  } else {
+    object.rotation.x = 0;
+    object.rotation.z = 0;
+  }
+
+  // Move to desk position
+  object.position.x = targetX;
+  object.position.z = targetZ;
+  object.userData.originalY = object.position.y;
+  object.userData.targetY = object.position.y;
+
+  // Reset physics state
+  physicsState.velocities.set(object.userData.id, { x: 0, z: 0 });
+  physicsState.angularVelocities.set(object.userData.id, 0);
+  physicsState.tiltState.set(object.userData.id, { x: 0, z: 0 });
+  physicsState.tiltVelocities.set(object.userData.id, { x: 0, z: 0 });
+  object.userData.baseTiltX = undefined;
+
+  saveState();
+  return object;
+}
+
+// Delete an object that's on the floor
+function deleteObjectFromFloor(object) {
+  if (!object.userData.isOnFloor) return false;
+
+  // Remove from fallen objects list
+  const index = fallenObjectsState.objects.indexOf(object);
+  if (index !== -1) {
+    fallenObjectsState.objects.splice(index, 1);
+  }
+
+  // Flash the floor red
+  flashFloorRed();
+
+  // Remove the object completely
+  removeObject(object);
+
+  return true;
+}
+
+// Pick up an object from the floor (for regular dragging)
+function pickUpObjectFromFloor(object) {
+  if (!object.userData.isOnFloor) return false;
+
+  // Remove from fallen objects list
+  const index = fallenObjectsState.objects.indexOf(object);
+  if (index !== -1) {
+    fallenObjectsState.objects.splice(index, 1);
+  }
+
+  // Reset fallen state
+  object.userData.isOnFloor = false;
+  object.userData.isFallen = false;
+  object.userData.isFallingOffTable = false;
+  object.userData.isTippingAtEdge = false;
+
+  return true;
+}
+
+// Check if a falling or tipping object can be caught (for mouse interaction)
+function checkCatchFallingObject(mouseX, mouseY) {
+  updateMousePosition({ clientX: mouseX, clientY: mouseY });
+  raycaster.setFromCamera(mouse, camera);
+
+  // First check tipping objects
+  for (const obj of fallenObjectsState.tippingObjects) {
+    const intersects = raycaster.intersectObject(obj, true);
+    if (intersects.length > 0) {
+      // Catch the tipping object!
+      obj.userData.isTippingAtEdge = false;
+      obj.userData.isFallen = false;
+
+      // Remove from tipping array
+      const index = fallenObjectsState.tippingObjects.indexOf(obj);
+      if (index !== -1) {
+        fallenObjectsState.tippingObjects.splice(index, 1);
+      }
+
+      return obj;
+    }
+  }
+
+  // Then check falling objects
+  for (const obj of fallenObjectsState.fallingObjects) {
+    // Check if ray intersects with falling object
+    const intersects = raycaster.intersectObject(obj, true);
+    if (intersects.length > 0) {
+      // Catch the object!
+      obj.userData.isFallingOffTable = false;
+      obj.userData.isFallen = false;
+      obj.userData.hasBounced = false;
+
+      // Remove from falling array
+      const index = fallenObjectsState.fallingObjects.indexOf(obj);
+      if (index !== -1) {
+        fallenObjectsState.fallingObjects.splice(index, 1);
+      }
+
+      return obj;
+    }
+  }
+
+  return null;
+}
+
+// ============================================================================
 // PEN ORIENTATION FUNCTIONS (for drawing mode)
 // ============================================================================
 
@@ -8886,21 +9375,73 @@ function updatePhysics() {
       vel.x *= physicsState.friction;
       vel.z *= physicsState.friction;
 
-      // Clamp to desk bounds with bounce
-      if (obj.position.x > deskHalfWidth) {
-        obj.position.x = deskHalfWidth;
-        vel.x = -vel.x * physicsState.bounceFactor;
-      } else if (obj.position.x < -deskHalfWidth) {
-        obj.position.x = -deskHalfWidth;
-        vel.x = -vel.x * physicsState.bounceFactor;
-      }
+      // Check if falling off table is enabled
+      if (CONFIG.falling.enabled) {
+        // Check if object has crossed desk boundaries - start falling
+        const margin = 0.1; // Small margin before falling
+        const isOverEdge = obj.position.x > deskHalfWidth + margin ||
+                           obj.position.x < -deskHalfWidth - margin ||
+                           obj.position.z > deskHalfDepth + margin ||
+                           obj.position.z < -deskHalfDepth - margin;
 
-      if (obj.position.z > deskHalfDepth) {
-        obj.position.z = deskHalfDepth;
-        vel.z = -vel.z * physicsState.bounceFactor;
-      } else if (obj.position.z < -deskHalfDepth) {
-        obj.position.z = -deskHalfDepth;
-        vel.z = -vel.z * physicsState.bounceFactor;
+        if (isOverEdge && !obj.userData.isFallingOffTable && !obj.userData.isTippingAtEdge) {
+          // Determine which edge the object is over
+          let edgeDirection = null;
+          if (obj.position.x > deskHalfWidth) edgeDirection = 'posX';
+          else if (obj.position.x < -deskHalfWidth) edgeDirection = 'negX';
+          else if (obj.position.z > deskHalfDepth) edgeDirection = 'posZ';
+          else if (obj.position.z < -deskHalfDepth) edgeDirection = 'negZ';
+
+          // Apply fall resistance if enabled
+          if (CONFIG.falling.resistanceEnabled) {
+            const resistanceForce = CONFIG.falling.resistance;
+            // Push back toward center
+            if (obj.position.x > deskHalfWidth) {
+              vel.x -= resistanceForce * 0.1;
+              obj.position.x = Math.min(obj.position.x, deskHalfWidth + margin);
+            } else if (obj.position.x < -deskHalfWidth) {
+              vel.x += resistanceForce * 0.1;
+              obj.position.x = Math.max(obj.position.x, -deskHalfWidth - margin);
+            }
+            if (obj.position.z > deskHalfDepth) {
+              vel.z -= resistanceForce * 0.1;
+              obj.position.z = Math.min(obj.position.z, deskHalfDepth + margin);
+            } else if (obj.position.z < -deskHalfDepth) {
+              vel.z += resistanceForce * 0.1;
+              obj.position.z = Math.max(obj.position.z, -deskHalfDepth - margin);
+            }
+            // If velocity still pushing over edge, start tipping at edge with physics
+            const stillPushingOver = (obj.position.x > deskHalfWidth && vel.x > resistanceForce * 0.15) ||
+                                     (obj.position.x < -deskHalfWidth && vel.x < -resistanceForce * 0.15) ||
+                                     (obj.position.z > deskHalfDepth && vel.z > resistanceForce * 0.15) ||
+                                     (obj.position.z < -deskHalfDepth && vel.z < -resistanceForce * 0.15);
+            if (stillPushingOver && edgeDirection) {
+              startTippingAtEdge(obj, edgeDirection);
+            }
+          } else {
+            // No resistance, start tipping immediately
+            if (edgeDirection) {
+              startTippingAtEdge(obj, edgeDirection);
+            }
+          }
+        }
+      } else {
+        // Falling disabled - clamp to desk bounds with bounce (original behavior)
+        if (obj.position.x > deskHalfWidth) {
+          obj.position.x = deskHalfWidth;
+          vel.x = -vel.x * physicsState.bounceFactor;
+        } else if (obj.position.x < -deskHalfWidth) {
+          obj.position.x = -deskHalfWidth;
+          vel.x = -vel.x * physicsState.bounceFactor;
+        }
+
+        if (obj.position.z > deskHalfDepth) {
+          obj.position.z = deskHalfDepth;
+          vel.z = -vel.z * physicsState.bounceFactor;
+        } else if (obj.position.z < -deskHalfDepth) {
+          obj.position.z = -deskHalfDepth;
+          vel.z = -vel.z * physicsState.bounceFactor;
+        }
       }
 
       // Move objects stacked on top using friction physics
@@ -9997,6 +10538,74 @@ function setupEventListeners() {
     });
   }
 
+  // Falling settings accordion
+  const fallingAccordionToggle = document.getElementById('falling-accordion-toggle');
+  const fallingAccordionContent = document.getElementById('falling-accordion-content');
+  if (fallingAccordionToggle && fallingAccordionContent) {
+    fallingAccordionToggle.addEventListener('click', () => {
+      fallingAccordionToggle.classList.toggle('open');
+      fallingAccordionContent.classList.toggle('open');
+    });
+  }
+
+  // Falling enabled checkbox
+  const fallingEnabledCheckbox = document.getElementById('falling-enabled-checkbox');
+  if (fallingEnabledCheckbox) {
+    // Load saved value from localStorage
+    const savedFallingEnabled = localStorage.getItem('fallingEnabled');
+    if (savedFallingEnabled !== null) {
+      CONFIG.falling.enabled = savedFallingEnabled === 'true';
+      fallingEnabledCheckbox.checked = CONFIG.falling.enabled;
+    }
+
+    fallingEnabledCheckbox.addEventListener('change', (e) => {
+      CONFIG.falling.enabled = e.target.checked;
+      localStorage.setItem('fallingEnabled', CONFIG.falling.enabled.toString());
+    });
+  }
+
+  // Fall resistance enabled checkbox
+  const fallResistanceEnabledCheckbox = document.getElementById('fall-resistance-enabled-checkbox');
+  const fallResistanceSliderContainer = document.getElementById('fall-resistance-slider-container');
+  const fallResistanceSlider = document.getElementById('fall-resistance-slider');
+  const fallResistanceValue = document.getElementById('fall-resistance-value');
+
+  if (fallResistanceEnabledCheckbox && fallResistanceSliderContainer && fallResistanceSlider) {
+    // Load saved values from localStorage
+    const savedResistanceEnabled = localStorage.getItem('fallResistanceEnabled');
+    if (savedResistanceEnabled !== null) {
+      CONFIG.falling.resistanceEnabled = savedResistanceEnabled === 'true';
+      fallResistanceEnabledCheckbox.checked = CONFIG.falling.resistanceEnabled;
+      fallResistanceSliderContainer.style.opacity = CONFIG.falling.resistanceEnabled ? '1' : '0.5';
+      fallResistanceSlider.disabled = !CONFIG.falling.resistanceEnabled;
+    }
+
+    const savedResistance = localStorage.getItem('fallResistance');
+    if (savedResistance !== null) {
+      CONFIG.falling.resistance = parseFloat(savedResistance);
+      fallResistanceSlider.value = CONFIG.falling.resistance * 100;
+      if (fallResistanceValue) {
+        fallResistanceValue.textContent = Math.round(CONFIG.falling.resistance * 100) + '%';
+      }
+    }
+
+    fallResistanceEnabledCheckbox.addEventListener('change', (e) => {
+      CONFIG.falling.resistanceEnabled = e.target.checked;
+      fallResistanceSliderContainer.style.opacity = e.target.checked ? '1' : '0.5';
+      fallResistanceSlider.disabled = !e.target.checked;
+      localStorage.setItem('fallResistanceEnabled', CONFIG.falling.resistanceEnabled.toString());
+    });
+
+    fallResistanceSlider.addEventListener('input', (e) => {
+      const percentage = parseInt(e.target.value);
+      CONFIG.falling.resistance = percentage / 100;
+      if (fallResistanceValue) {
+        fallResistanceValue.textContent = percentage + '%';
+      }
+      localStorage.setItem('fallResistance', CONFIG.falling.resistance.toString());
+    });
+  }
+
   // Per-object collision radius slider
   const objectCollisionRadiusSlider = document.getElementById('object-collision-radius-slider');
   const objectCollisionRadiusValue = document.getElementById('object-collision-radius-value');
@@ -10401,6 +11010,49 @@ function onMouseDown(event) {
           performQuickInteraction(object, clickedMesh);
         }
       }
+    } else {
+      // No desk object clicked - check if clicking on floor
+      // Check for floor intersection to handle floor objects
+      if (fallenObjectsState.floorMesh) {
+        const floorIntersects = raycaster.intersectObject(fallenObjectsState.floorMesh);
+        if (floorIntersects.length > 0) {
+          const floorPoint = floorIntersects[0].point;
+
+          // Check if clicking on a fallen object on the floor
+          const floorObjectIntersects = raycaster.intersectObjects(fallenObjectsState.objects, true);
+          if (floorObjectIntersects.length > 0) {
+            // Clicking on a floor object - handle like normal desk object
+            let floorObject = floorObjectIntersects[0].object;
+            while (floorObject.parent && !deskObjects.includes(floorObject)) {
+              floorObject = floorObject.parent;
+            }
+            if (floorObject.userData.isOnFloor) {
+              // Set up MMB hold timeout for delete, or quick click to do nothing
+              fallenObjectsState.mmbDownTime = Date.now();
+              fallenObjectsState.mmbHoldTimeout = setTimeout(() => {
+                // Hold for 300ms - delete the object with red flash
+                deleteObjectFromFloor(floorObject);
+                fallenObjectsState.mmbHoldTimeout = null;
+              }, 300);
+              return;
+            }
+          }
+
+          // Clicking on empty floor - set up to return object or delete on hold
+          if (fallenObjectsState.objects.length > 0) {
+            fallenObjectsState.mmbDownTime = Date.now();
+            fallenObjectsState.mmbHoldTimeout = setTimeout(() => {
+              // Hold for 300ms on empty floor - delete last fallen object
+              if (fallenObjectsState.objects.length > 0) {
+                const objToDelete = fallenObjectsState.objects[0];
+                deleteObjectFromFloor(objToDelete);
+              }
+              fallenObjectsState.mmbHoldTimeout = null;
+            }, 300);
+          }
+          return;
+        }
+      }
     }
     return;
   }
@@ -10533,6 +11185,115 @@ function onMouseDown(event) {
   updateMousePosition(event);
 
   raycaster.setFromCamera(mouse, camera);
+
+  // Check if clicking on a tipping object (to catch it before it falls)
+  if (fallenObjectsState.tippingObjects.length > 0) {
+    const tippingIntersects = raycaster.intersectObjects(fallenObjectsState.tippingObjects, true);
+    if (tippingIntersects.length > 0) {
+      let tippingObj = tippingIntersects[0].object;
+      while (tippingObj.parent && !deskObjects.includes(tippingObj)) {
+        tippingObj = tippingObj.parent;
+      }
+
+      if (tippingObj.userData.isTippingAtEdge) {
+        // Catch the tipping object!
+        tippingObj.userData.isTippingAtEdge = false;
+        tippingObj.userData.isFallen = false;
+
+        // Remove from tipping array
+        const index = fallenObjectsState.tippingObjects.indexOf(tippingObj);
+        if (index !== -1) {
+          fallenObjectsState.tippingObjects.splice(index, 1);
+        }
+
+        // Start dragging the caught object
+        selectedObject = tippingObj;
+        isDragging = true;
+        dragLayerOffset = 0;
+
+        // Reset rotation to upright
+        const yRotation = tippingObj.rotation.y;
+        const creator = PRESET_CREATORS[tippingObj.userData.type];
+        if (creator) {
+          const temp = creator({});
+          tippingObj.rotation.x = temp.rotation.x;
+          tippingObj.rotation.z = temp.rotation.z;
+          tippingObj.rotation.y = yRotation;
+          scene.remove(temp);
+        } else {
+          tippingObj.rotation.x = 0;
+          tippingObj.rotation.z = 0;
+        }
+
+        tippingObj.userData.isLifted = true;
+        tippingObj.userData.isPullingOut = false;
+        const physics = getObjectPhysics(tippingObj);
+        tippingObj.position.y = getDeskSurfaceY() + physics.baseOffset * (tippingObj.scale?.y || 1);
+        tippingObj.userData.originalY = tippingObj.position.y;
+        tippingObj.userData.targetY = tippingObj.position.y + CONFIG.physics.liftHeight;
+
+        document.getElementById('customization-panel').classList.remove('open');
+        return;
+      }
+    }
+  }
+
+  // Check if clicking on a falling object (to catch it mid-fall)
+  if (fallenObjectsState.fallingObjects.length > 0) {
+    const fallingIntersects = raycaster.intersectObjects(fallenObjectsState.fallingObjects, true);
+    if (fallingIntersects.length > 0) {
+      // Find the root falling object
+      let fallingObj = fallingIntersects[0].object;
+      while (fallingObj.parent && !deskObjects.includes(fallingObj)) {
+        fallingObj = fallingObj.parent;
+      }
+
+      if (fallingObj.userData.isFallingOffTable) {
+        // Catch the falling object!
+        fallingObj.userData.isFallingOffTable = false;
+        fallingObj.userData.isFallen = false;
+        fallingObj.userData.hasBounced = false;
+        fallingObj.userData.isTippingAtEdge = false;
+
+        // Remove from falling array
+        const index = fallenObjectsState.fallingObjects.indexOf(fallingObj);
+        if (index !== -1) {
+          fallenObjectsState.fallingObjects.splice(index, 1);
+        }
+
+        // Start dragging the caught object
+        selectedObject = fallingObj;
+        isDragging = true;
+        dragLayerOffset = 0;
+
+        // Reset rotation to upright
+        const yRotation = fallingObj.rotation.y;
+        const creator = PRESET_CREATORS[fallingObj.userData.type];
+        if (creator) {
+          const temp = creator({});
+          fallingObj.rotation.x = temp.rotation.x;
+          fallingObj.rotation.z = temp.rotation.z;
+          fallingObj.rotation.y = yRotation;
+          scene.remove(temp);
+        } else {
+          fallingObj.rotation.x = 0;
+          fallingObj.rotation.z = 0;
+        }
+
+        fallingObj.userData.isLifted = true;
+        fallingObj.userData.isPullingOut = false;
+        // Set target Y to desk level + lift height
+        const physics = getObjectPhysics(fallingObj);
+        fallingObj.position.y = getDeskSurfaceY() + physics.baseOffset * (fallingObj.scale?.y || 1);
+        fallingObj.userData.originalY = fallingObj.position.y;
+        fallingObj.userData.targetY = fallingObj.position.y + CONFIG.physics.liftHeight;
+
+        document.getElementById('customization-panel').classList.remove('open');
+        return;
+      }
+    }
+  }
+
   const intersects = raycaster.intersectObjects(deskObjects, true);
 
   // Close customization panel when clicking anywhere (both on objects or empty space)
@@ -10691,6 +11452,11 @@ function onMouseDown(event) {
       // Reset fallen object when picked up
       if (object.userData.isFallen) {
         resetFallenObject(object);
+      }
+
+      // If picking up object from floor, remove from floor list
+      if (object.userData.isOnFloor) {
+        pickUpObjectFromFloor(object);
       }
 
       // If picking up a pen, make it vertical and track as held pen
@@ -10918,7 +11684,7 @@ function onMouseMove(event) {
   }
 
   if (isDragging && selectedObject) {
-    // Clamp to desk bounds
+    // Desk bounds for reference (not clamping during drag to allow dropping on floor)
     const halfWidth = CONFIG.desk.width / 2 - 0.2;
     const halfDepth = CONFIG.desk.depth / 2 - 0.2;
 
@@ -10933,8 +11699,10 @@ function onMouseMove(event) {
 
       if (intersects.length > 0) {
         const point = intersects[0].point;
-        newX = Math.max(-halfWidth, Math.min(halfWidth, point.x));
-        newZ = Math.max(-halfDepth, Math.min(halfDepth, point.z));
+        // Allow free positioning - no clamping to desk bounds
+        // Objects can be dragged past desk edge to drop on floor
+        newX = point.x;
+        newZ = point.z;
       } else {
         return; // No valid position
       }
@@ -10945,8 +11713,10 @@ function onMouseMove(event) {
 
       if (intersects.length > 0) {
         const point = intersects[0].point;
-        newX = Math.max(-halfWidth, Math.min(halfWidth, point.x));
-        newZ = Math.max(-halfDepth, Math.min(halfDepth, point.z));
+        // Allow free positioning - no clamping to desk bounds
+        // Objects can be dragged past desk edge to drop on floor
+        newX = point.x;
+        newZ = point.z;
       } else {
         return; // No valid position
       }
@@ -11097,6 +11867,28 @@ function onMouseUp(event) {
       return;
     }
 
+    // Handle floor MMB release (quick click returns object, hold deletes - handled by timeout)
+    if (fallenObjectsState.mmbHoldTimeout) {
+      // Quick click before 300ms - return object from floor
+      clearTimeout(fallenObjectsState.mmbHoldTimeout);
+      fallenObjectsState.mmbHoldTimeout = null;
+
+      // Return the last fallen object to the table
+      if (fallenObjectsState.objects.length > 0) {
+        updateMousePosition(event);
+        raycaster.setFromCamera(mouse, camera);
+        if (fallenObjectsState.floorMesh) {
+          const floorIntersects = raycaster.intersectObject(fallenObjectsState.floorMesh);
+          if (floorIntersects.length > 0) {
+            const floorPoint = floorIntersects[0].point;
+            returnObjectFromFloor(floorPoint.x, floorPoint.z);
+          }
+        }
+      }
+      fallenObjectsState.mmbDownTime = null;
+      return;
+    }
+
     // If in reading mode, don't exit on release - stay in mode until user clicks elsewhere
     if (bookReadingState.active) {
       return;
@@ -11160,6 +11952,66 @@ function onMouseUp(event) {
   }
 
   if (isDragging && selectedObject) {
+    // Check if object is being dropped beyond desk bounds (start falling)
+    const deskHalfWidth = CONFIG.desk.width / 2;
+    const deskHalfDepth = CONFIG.desk.depth / 2;
+    const isOverDeskEdge = selectedObject.position.x > deskHalfWidth ||
+                           selectedObject.position.x < -deskHalfWidth ||
+                           selectedObject.position.z > deskHalfDepth ||
+                           selectedObject.position.z < -deskHalfDepth;
+
+    if (isOverDeskEdge && CONFIG.falling.enabled) {
+      // Object dropped beyond desk edge - check if close enough to edge for tipping
+      // Store the drag velocity for continued horizontal movement during fall
+      const vel = physicsState.velocities.get(selectedObject.userData.id);
+      if (vel) {
+        vel.x = physicsState.dragVelocity.x * 0.02;
+        vel.z = physicsState.dragVelocity.z * 0.02;
+      }
+
+      // Determine which edge the object is over and distance from edge
+      let edgeDirection = null;
+      let distanceFromEdge = 0;
+
+      if (selectedObject.position.x > deskHalfWidth) {
+        edgeDirection = 'posX';
+        distanceFromEdge = selectedObject.position.x - deskHalfWidth;
+      } else if (selectedObject.position.x < -deskHalfWidth) {
+        edgeDirection = 'negX';
+        distanceFromEdge = -deskHalfWidth - selectedObject.position.x;
+      } else if (selectedObject.position.z > deskHalfDepth) {
+        edgeDirection = 'posZ';
+        distanceFromEdge = selectedObject.position.z - deskHalfDepth;
+      } else if (selectedObject.position.z < -deskHalfDepth) {
+        edgeDirection = 'negZ';
+        distanceFromEdge = -deskHalfDepth - selectedObject.position.z;
+      }
+
+      // Only use tipping animation if object is close to the edge (within 0.3 units)
+      // If dragged far from desk, just fall straight down
+      const closeToEdge = distanceFromEdge < 0.3;
+
+      if (edgeDirection && closeToEdge) {
+        startTippingAtEdge(selectedObject, edgeDirection);
+      } else {
+        // Object is too far from edge or no clear direction - fall straight down
+        startFallingOffTable(selectedObject);
+      }
+
+      // Clear lifting state
+      selectedObject.userData.isLifted = false;
+      selectedObject.userData.isPullingOut = false;
+
+      isDragging = false;
+      dragLayerOffset = 0;
+      physicsState.lastDragPosition = null;
+      physicsState.lastDragTime = 0;
+      physicsState.dragVelocity = { x: 0, z: 0 };
+
+      saveState();
+      return;
+    }
+
     // Check for pen holder insertion
     const insertionResult = checkPenHolderInsertion(selectedObject);
 
@@ -20280,6 +21132,14 @@ async function saveStateImmediate() {
         data.objectCollisionHeightMultiplier = obj.userData.objectCollisionHeightMultiplier;
       }
 
+      // Save floor/fallen state
+      if (obj.userData.isOnFloor) {
+        data.isOnFloor = true;
+        data.y = obj.position.y;  // Save Y position when on floor
+        data.rotationX = obj.rotation.x;
+        data.rotationZ = obj.rotation.z;
+      }
+
       // Save type-specific data
       switch (obj.userData.type) {
         case 'photo-frame':
@@ -21065,6 +21925,19 @@ async function loadState() {
             if (objData.objectCollisionHeightMultiplier !== undefined) {
               obj.userData.objectCollisionHeightMultiplier = objData.objectCollisionHeightMultiplier;
             }
+
+            // Restore floor state for fallen objects
+            if (objData.isOnFloor) {
+              obj.userData.isOnFloor = true;
+              obj.userData.isFallen = true;
+              if (objData.y !== undefined) obj.position.y = objData.y;
+              if (objData.rotationX !== undefined) obj.rotation.x = objData.rotationX;
+              if (objData.rotationZ !== undefined) obj.rotation.z = objData.rotationZ;
+              // Add to fallen objects list
+              if (!fallenObjectsState.objects.includes(obj)) {
+                fallenObjectsState.objects.push(obj);
+              }
+            }
           }
         });
 
@@ -21112,6 +21985,12 @@ function animate() {
   try {
     // Update physics
     updatePhysics();
+
+    // Update tipping objects at desk edge
+    updateTippingObjects();
+
+    // Update falling objects animation
+    updateFallingObjects();
 
     // Update debug collision visualization positions
     updateCollisionDebugPositions();
@@ -21162,8 +22041,10 @@ function animate() {
         obj.userData.isReturning = false;
       }
     }
-    // Normal lift/drop animation (only when not examining)
-    else if (obj.userData.targetY !== undefined && !obj.userData.isExamining) {
+    // Normal lift/drop animation (only when not examining, falling, tipping, or on floor)
+    else if (obj.userData.targetY !== undefined && !obj.userData.isExamining &&
+             !obj.userData.isFallingOffTable && !obj.userData.isTippingAtEdge &&
+             !obj.userData.isOnFloor && !obj.userData.isFallen) {
       const diff = obj.userData.targetY - obj.position.y;
       if (Math.abs(diff) > 0.001) {
         const speed = obj.userData.isLifted ? CONFIG.physics.liftSpeed : CONFIG.physics.dropSpeed;
