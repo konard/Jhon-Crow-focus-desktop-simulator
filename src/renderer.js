@@ -7632,6 +7632,11 @@ function startStackTippingAtEdge(baseObject, edgeDirection, stackCoG) {
         stackedObj.userData.tipStartY = stackedObj.position.y;  // Store starting Y for stacked objects
         // Link to base object so they tip in sync
         stackedObj.userData.tippingWithBase = baseObject.userData.id;
+        // Store relative offset from base object for rigid body tipping
+        // This ensures the stack tips as a unit, not with each object tipping independently
+        stackedObj.userData.tipBaseOffsetX = stackedObj.position.x - baseObject.position.x;
+        stackedObj.userData.tipBaseOffsetZ = stackedObj.position.z - baseObject.position.z;
+        stackedObj.userData.tipBaseOffsetY = stackedObj.position.y - baseObject.position.y;
 
         // Add to tipping objects array
         if (!fallenObjectsState.tippingObjects.includes(stackedObj)) {
@@ -7655,11 +7660,31 @@ function updateTippingObjects() {
       continue;
     }
 
-    // Update tip angle with angular velocity (accelerating due to gravity)
-    obj.userData.tipAngularVelocity += gravity;
-    // Cap angular velocity to prevent objects from moving too fast and passing through each other
-    obj.userData.tipAngularVelocity = Math.min(obj.userData.tipAngularVelocity, 0.12);
-    obj.userData.tipAngle += obj.userData.tipAngularVelocity;
+    // If this object is tipping with a base object (part of a stack), sync its tipping state
+    // This ensures the entire stack tips as a rigid unit, preventing objects from passing through each other
+    if (obj.userData.tippingWithBase) {
+      const baseObj = deskObjects.find(o => o.userData.id === obj.userData.tippingWithBase);
+      if (baseObj && baseObj.userData.isTippingAtEdge) {
+        // Sync tip angle and angular velocity with the base object
+        obj.userData.tipAngle = baseObj.userData.tipAngle;
+        obj.userData.tipAngularVelocity = baseObj.userData.tipAngularVelocity;
+        // Skip independent physics update - position will be calculated from synced angle below
+      } else {
+        // Base object no longer tipping - this object is now independent
+        obj.userData.tippingWithBase = null;
+        // Continue with normal physics
+        obj.userData.tipAngularVelocity += gravity;
+        obj.userData.tipAngularVelocity = Math.min(obj.userData.tipAngularVelocity, 0.12);
+        obj.userData.tipAngle += obj.userData.tipAngularVelocity;
+      }
+    } else {
+      // This is a base object or independent object - update with gravity
+      // Update tip angle with angular velocity (accelerating due to gravity)
+      obj.userData.tipAngularVelocity += gravity;
+      // Cap angular velocity to prevent objects from moving too fast and passing through each other
+      obj.userData.tipAngularVelocity = Math.min(obj.userData.tipAngularVelocity, 0.12);
+      obj.userData.tipAngle += obj.userData.tipAngularVelocity;
+    }
 
     const physics = getObjectPhysics(obj);
     const objectHeight = physics.height * (obj.scale?.y || 1);
@@ -7672,42 +7697,87 @@ function updateTippingObjects() {
     const cosAngle = Math.cos(tipAngle);
     const sinAngle = Math.sin(tipAngle);
 
-    // Calculate how far the center has moved from the starting position
-    // At angle 0: center is at starting position, upright
-    // At angle 90°: center is horizontal, moved outward by halfHeight
-    const startX = obj.userData.tipStartX;
-    const startZ = obj.userData.tipStartZ;
+    // Check if this object is tipping as part of a stack (following a base object)
+    // If so, calculate position relative to the base object to maintain rigid body behavior
+    if (obj.userData.tippingWithBase) {
+      const baseObj = deskObjects.find(o => o.userData.id === obj.userData.tippingWithBase);
+      if (baseObj) {
+        // For stacked objects, position is calculated by rotating the offset around the base
+        // The offset (tipBaseOffsetX/Y/Z) represents the original relative position
+        // As the stack tips, this offset rotates with the tip angle
+        const offsetX = obj.userData.tipBaseOffsetX || 0;
+        const offsetY = obj.userData.tipBaseOffsetY || 0;
+        const offsetZ = obj.userData.tipBaseOffsetZ || 0;
 
-    // Get the starting Y position (for stacked objects this is above desk level)
-    // Fall back to desk surface + half height if not set (for backwards compatibility)
-    const baseY = obj.userData.tipStartY !== undefined ?
-                  obj.userData.tipStartY :
-                  (deskSurfaceY + halfHeight);
+        if (edgeDir === 'posX' || edgeDir === 'negX') {
+          // Tipping over X edge - rotate around Z axis
+          const rotationSign = edgeDir === 'posX' ? -1 : 1;
+          obj.rotation.z = rotationSign * tipAngle;
 
-    if (edgeDir === 'posX' || edgeDir === 'negX') {
-      // Tipping over X edge - rotate around Z axis
-      // posX means tipping to the right (positive X direction) - top falls AWAY from desk
-      // Negative rotation tips the top away from desk center (toward +X for posX)
-      const rotationSign = edgeDir === 'posX' ? -1 : 1;
-      obj.rotation.z = rotationSign * tipAngle;
+          // Rotate the offset vector around the tipping axis
+          // The X offset stays (moves with the base's X motion)
+          // The Y offset rotates in the XY plane as the stack tips
+          const rotatedOffsetX = offsetX + offsetY * sinAngle * (-rotationSign);
+          const rotatedOffsetY = offsetY * cosAngle;
 
-      // As object tips, center moves outward (away from desk)
-      // Y position: starts at initial height, goes down as it tips
-      // X position: starts at initial X, moves outward by halfHeight * sin(angle)
-      obj.position.x = startX + (-rotationSign) * halfHeight * sinAngle;
-      // Y drops from starting position as object tips (cosAngle goes from 1 to 0)
-      obj.position.y = baseY - halfHeight * (1 - cosAngle);
+          // Position = base position + rotated offset
+          obj.position.x = baseObj.position.x + rotatedOffsetX;
+          obj.position.y = baseObj.position.y + rotatedOffsetY;
+          obj.position.z = baseObj.position.z + offsetZ;
+        } else {
+          // Tipping over Z edge - rotate around X axis
+          const rotationSign = edgeDir === 'posZ' ? 1 : -1;
+          obj.rotation.x = rotationSign * tipAngle;
+
+          // Rotate the offset vector around the tipping axis
+          const rotatedOffsetZ = offsetZ + offsetY * sinAngle * rotationSign;
+          const rotatedOffsetY = offsetY * cosAngle;
+
+          // Position = base position + rotated offset
+          obj.position.x = baseObj.position.x + offsetX;
+          obj.position.y = baseObj.position.y + rotatedOffsetY;
+          obj.position.z = baseObj.position.z + rotatedOffsetZ;
+        }
+      }
     } else {
-      // Tipping over Z edge - rotate around X axis
-      // posZ means tipping away in positive Z direction - top falls AWAY from desk
-      // Positive rotation tips the top away from desk center (toward +Z for posZ)
-      const rotationSign = edgeDir === 'posZ' ? 1 : -1;
-      obj.rotation.x = rotationSign * tipAngle;
+      // Independent object or base object - calculate position normally
+      // Calculate how far the center has moved from the starting position
+      // At angle 0: center is at starting position, upright
+      // At angle 90°: center is horizontal, moved outward by halfHeight
+      const startX = obj.userData.tipStartX;
+      const startZ = obj.userData.tipStartZ;
 
-      // As object tips, center moves outward (away from desk)
-      obj.position.z = startZ + rotationSign * halfHeight * sinAngle;
-      // Y drops from starting position as object tips
-      obj.position.y = baseY - halfHeight * (1 - cosAngle);
+      // Get the starting Y position (for stacked objects this is above desk level)
+      // Fall back to desk surface + half height if not set (for backwards compatibility)
+      const baseY = obj.userData.tipStartY !== undefined ?
+                    obj.userData.tipStartY :
+                    (deskSurfaceY + halfHeight);
+
+      if (edgeDir === 'posX' || edgeDir === 'negX') {
+        // Tipping over X edge - rotate around Z axis
+        // posX means tipping to the right (positive X direction) - top falls AWAY from desk
+        // Negative rotation tips the top away from desk center (toward +X for posX)
+        const rotationSign = edgeDir === 'posX' ? -1 : 1;
+        obj.rotation.z = rotationSign * tipAngle;
+
+        // As object tips, center moves outward (away from desk)
+        // Y position: starts at initial height, goes down as it tips
+        // X position: starts at initial X, moves outward by halfHeight * sin(angle)
+        obj.position.x = startX + (-rotationSign) * halfHeight * sinAngle;
+        // Y drops from starting position as object tips (cosAngle goes from 1 to 0)
+        obj.position.y = baseY - halfHeight * (1 - cosAngle);
+      } else {
+        // Tipping over Z edge - rotate around X axis
+        // posZ means tipping away in positive Z direction - top falls AWAY from desk
+        // Positive rotation tips the top away from desk center (toward +Z for posZ)
+        const rotationSign = edgeDir === 'posZ' ? 1 : -1;
+        obj.rotation.x = rotationSign * tipAngle;
+
+        // As object tips, center moves outward (away from desk)
+        obj.position.z = startZ + rotationSign * halfHeight * sinAngle;
+        // Y drops from starting position as object tips
+        obj.position.y = baseY - halfHeight * (1 - cosAngle);
+      }
     }
 
     // Check collision with other desk objects during tipping to prevent passing through
@@ -7729,6 +7799,13 @@ function updateTippingObjects() {
       if (otherObj.userData.isOnFloor) continue;
       // Skip objects being lifted/dragged (they shouldn't block tipping)
       if (otherObj.userData.isLifted) continue;
+      // Skip objects that are part of the same tipping stack (they tip as a rigid unit)
+      // Either this object is tipping with the other object as its base, or vice versa
+      if (obj.userData.tippingWithBase === otherObj.userData.id) continue;
+      if (otherObj.userData.tippingWithBase === obj.userData.id) continue;
+      // Also skip if both objects are tipping with the same base
+      if (obj.userData.tippingWithBase && otherObj.userData.tippingWithBase &&
+          obj.userData.tippingWithBase === otherObj.userData.tippingWithBase) continue;
 
       let otherRadius = getObjectBounds(otherObj);
       const otherPhysics = getObjectPhysics(otherObj);
