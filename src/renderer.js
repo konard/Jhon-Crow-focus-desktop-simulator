@@ -7380,6 +7380,12 @@ function addObjectToDesk(type, options = {}) {
   const deskHalfDepth = CONFIG.desk.depth / 2 - 0.3;
   object.position.x = options.x !== undefined ? options.x : (Math.random() - 0.5) * deskHalfWidth * 2;
   object.position.z = options.z !== undefined ? options.z : (Math.random() - 0.5) * deskHalfDepth * 2;
+  // Restore Y position if provided (for stacked objects or fallen objects)
+  if (options.y !== undefined) {
+    object.position.y = options.y;
+    object.userData.originalY = options.y;
+    object.userData.targetY = options.y;
+  }
 
   // Apply rotation if specified
   if (options.rotationY !== undefined) {
@@ -7655,6 +7661,44 @@ function updateTippingObjects() {
       obj.position.y = deskSurfaceY + halfHeight * cosAngle;
     }
 
+    // Check collision with other desk objects during tipping to prevent passing through
+    // This fixes the bug where objects tip through each other at table edges
+    const tippingRadius = getObjectBounds(obj);
+    const tippingPhysics = physics;
+
+    for (const otherObj of deskObjects) {
+      if (otherObj === obj) continue;
+      if (otherObj.userData.isExamining || otherObj.userData.isReturning) continue;
+      if (otherObj.userData.isFallen) continue;  // Don't collide with other fallen objects
+
+      const otherRadius = getObjectBounds(otherObj);
+      const otherPhysics = getObjectPhysics(otherObj);
+
+      // Check if objects collide (horizontally overlap and vertically overlap)
+      const dx = obj.position.x - otherObj.position.x;
+      const dz = obj.position.z - otherObj.position.z;
+      const dist = Math.sqrt(dx * dx + dz * dz);
+      const minDist = (tippingRadius + otherRadius) * 0.9;  // Use stacking tolerance
+
+      if (dist < minDist && dist > 0.01) {
+        // Check vertical overlap
+        if (objectsOverlapVertically(obj, tippingPhysics, otherObj, otherPhysics)) {
+          // Collision detected - stop tipping animation and push object back slightly
+          // This prevents objects from tipping through each other
+          const pushBackFactor = 0.05;
+          const normalX = dx / dist;
+          const normalZ = dz / dist;
+
+          // Push the tipping object away from the collision
+          obj.position.x += normalX * pushBackFactor;
+          obj.position.z += normalZ * pushBackFactor;
+
+          // Slow down the tipping significantly to make it more realistic
+          obj.userData.tipAngularVelocity *= 0.7;
+        }
+      }
+    }
+
     // Check if tipped past the critical angle (past ~90 degrees) - start falling
     if (obj.userData.tipAngle > Math.PI / 2) {
       // Transition from tipping to falling
@@ -7750,6 +7794,44 @@ function updateFallingObjects() {
     // Dampen horizontal velocity
     obj.userData.fallVelocityX *= 0.95;
     obj.userData.fallVelocityZ *= 0.95;
+
+    // Check collision with other desk objects during falling to prevent passing through
+    // This fixes the bug where objects pass through each other while falling
+    const fallingRadius = getObjectBounds(obj);
+    const fallingPhysics = getObjectPhysics(obj);
+
+    for (const otherObj of deskObjects) {
+      if (otherObj === obj) continue;
+      if (otherObj.userData.isExamining || otherObj.userData.isReturning) continue;
+      if (otherObj.userData.isFallen) continue;  // Don't collide with other fallen objects
+
+      const otherRadius = getObjectBounds(otherObj);
+      const otherPhysics = getObjectPhysics(otherObj);
+
+      // Check if objects collide (horizontally overlap and vertically overlap)
+      const dx = obj.position.x - otherObj.position.x;
+      const dz = obj.position.z - otherObj.position.z;
+      const dist = Math.sqrt(dx * dx + dz * dz);
+      const minDist = (fallingRadius + otherRadius) * 0.8;  // Slightly looser tolerance for falling
+
+      if (dist < minDist && dist > 0.01) {
+        // Check vertical overlap
+        if (objectsOverlapVertically(obj, fallingPhysics, otherObj, otherPhysics)) {
+          // Collision detected - deflect the falling object away
+          const normalX = dx / dist;
+          const normalZ = dz / dist;
+
+          // Add deflection velocity away from the collision
+          obj.userData.fallVelocityX += normalX * 0.02;
+          obj.userData.fallVelocityZ += normalZ * 0.02;
+
+          // Separate objects to prevent overlap
+          const separation = (minDist - dist) * 0.5;
+          obj.position.x += normalX * separation;
+          obj.position.z += normalZ * separation;
+        }
+      }
+    }
 
     // Add tumbling rotation while falling
     obj.rotation.x += (obj.userData.fallVelocityX || 0) * 0.5;
@@ -22140,6 +22222,7 @@ async function saveStateImmediate() {
       const data = {
         type: obj.userData.type,
         x: obj.position.x,
+        y: obj.position.y,  // Save Y position for all objects (stacked objects need this)
         z: obj.position.z,
         rotationY: obj.userData.rotationY || obj.rotation.y,
         scale: obj.userData.scale || obj.scale.x,
@@ -22155,10 +22238,9 @@ async function saveStateImmediate() {
         data.objectCollisionHeightMultiplier = obj.userData.objectCollisionHeightMultiplier;
       }
 
-      // Save floor/fallen state
+      // Save floor/fallen state (Y position is already saved above for all objects)
       if (obj.userData.isOnFloor) {
         data.isOnFloor = true;
-        data.y = obj.position.y;  // Save Y position when on floor
         data.rotationX = obj.rotation.x;
         data.rotationZ = obj.rotation.z;
       }
@@ -22552,6 +22634,7 @@ async function loadState() {
         result.state.objects.forEach(objData => {
           const obj = addObjectToDesk(objData.type, {
             x: objData.x,
+            y: objData.y,  // Restore Y position for stacked objects
             z: objData.z,
             rotationY: objData.rotationY,
             scale: objData.scale,
@@ -22996,11 +23079,10 @@ async function loadState() {
               obj.userData.objectCollisionHeightMultiplier = objData.objectCollisionHeightMultiplier;
             }
 
-            // Restore floor state for fallen objects
+            // Restore floor state for fallen objects (Y position already restored in addObjectToDesk)
             if (objData.isOnFloor) {
               obj.userData.isOnFloor = true;
               obj.userData.isFallen = true;
-              if (objData.y !== undefined) obj.position.y = objData.y;
               if (objData.rotationX !== undefined) obj.rotation.x = objData.rotationX;
               if (objData.rotationZ !== undefined) obj.rotation.z = objData.rotationZ;
               // Add to fallen objects list
