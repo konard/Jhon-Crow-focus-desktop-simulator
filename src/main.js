@@ -1636,8 +1636,58 @@ internal interface ISimpleAudioVolume {
 }
 
 public class AudioManager {
+    // Get all PIDs in the process tree starting from the given PID
+    private static System.Collections.Generic.HashSet<int> GetProcessTreePIDs(int rootPID) {
+        var pids = new System.Collections.Generic.HashSet<int>();
+        pids.Add(rootPID);
+
+        try {
+            var allProcesses = System.Diagnostics.Process.GetProcesses();
+            bool foundNew = true;
+
+            // Keep searching until no new child processes are found
+            while (foundNew) {
+                foundNew = false;
+                foreach (var proc in allProcesses) {
+                    try {
+                        // Check if this process's parent is in our set
+                        var parentId = GetParentProcessId(proc.Id);
+                        if (parentId > 0 && pids.Contains(parentId) && !pids.Contains(proc.Id)) {
+                            pids.Add(proc.Id);
+                            foundNew = true;
+                        }
+                    } catch {
+                        // Ignore processes we can't query
+                    }
+                }
+            }
+        } catch (Exception ex) {
+            Console.WriteLine("Warning: Could not enumerate all child processes: " + ex.Message);
+        }
+
+        return pids;
+    }
+
+    // Get parent process ID using WMI
+    private static int GetParentProcessId(int processId) {
+        try {
+            var searcher = new System.Management.ManagementObjectSearcher(
+                "SELECT ParentProcessId FROM Win32_Process WHERE ProcessId = " + processId);
+            foreach (System.Management.ManagementObject obj in searcher.Get()) {
+                return Convert.ToInt32(obj["ParentProcessId"]);
+            }
+        } catch {
+            // WMI query failed
+        }
+        return 0;
+    }
+
     public static void MuteOtherApps(int excludePID) {
         try {
+            // Get all PIDs in the Electron process tree (main, renderer, GPU, etc.)
+            var electronPIDs = GetProcessTreePIDs(excludePID);
+            Console.WriteLine("Electron process tree PIDs: " + string.Join(", ", electronPIDs));
+
             // Use proper CoClass instantiation - create instance of CoClass and cast to interface
             IMMDeviceEnumerator enumerator = (IMMDeviceEnumerator)(new MMDeviceEnumeratorCoClass());
 
@@ -1684,7 +1734,8 @@ public class AudioManager {
                         continue;
                     }
 
-                    if (pid == excludePID || pid == 0) {
+                    // Skip if this is the Electron app (main or any child process) or system (PID 0)
+                    if (electronPIDs.Contains(pid) || pid == 0) {
                         Console.WriteLine("Skipping PID: " + pid + " (our app or system)");
                         continue;
                     }
@@ -1763,7 +1814,7 @@ public class AudioManager {
         }
     }
 }
-"@
+"@ -ReferencedAssemblies System.Management
 `;
 }
 
