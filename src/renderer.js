@@ -7657,6 +7657,8 @@ function updateTippingObjects() {
 
     // Update tip angle with angular velocity (accelerating due to gravity)
     obj.userData.tipAngularVelocity += gravity;
+    // Cap angular velocity to prevent objects from moving too fast and passing through each other
+    obj.userData.tipAngularVelocity = Math.min(obj.userData.tipAngularVelocity, 0.12);
     obj.userData.tipAngle += obj.userData.tipAngularVelocity;
 
     const physics = getObjectPhysics(obj);
@@ -7742,7 +7744,8 @@ function updateTippingObjects() {
       const dx = obj.position.x - otherObj.position.x;
       const dz = obj.position.z - otherObj.position.z;
       const dist = Math.sqrt(dx * dx + dz * dz);
-      const minDist = (tippingRadius + otherRadius) * 0.9;  // Slightly tighter for better collision
+      // Use full radius for collision detection to prevent pass-through
+      const minDist = tippingRadius + otherRadius;
 
       if (dist < minDist && dist > 0.01) {
         // Check vertical overlap using actual Y positions
@@ -7774,14 +7777,15 @@ function updateTippingObjects() {
           const normalX = dx / dist;
           const normalZ = dz / dist;
 
-          // Push the tipping object away by the full overlap amount to prevent passing through
-          const pushBackFactor = Math.max(0.15, overlap * 0.8);
+          // Push the tipping object away by the full overlap amount plus margin
+          // Use a larger factor to prevent objects from passing through even at high speeds
+          const pushBackFactor = Math.max(0.2, overlap * 1.2);
           obj.position.x += normalX * pushBackFactor;
           obj.position.z += normalZ * pushBackFactor;
 
           // Also update the start position so the object doesn't snap back
-          obj.userData.tipStartX += normalX * pushBackFactor * 0.5;
-          obj.userData.tipStartZ += normalZ * pushBackFactor * 0.5;
+          obj.userData.tipStartX += normalX * pushBackFactor * 0.6;
+          obj.userData.tipStartZ += normalZ * pushBackFactor * 0.6;
 
           // The amount of slowdown depends on the other object's weight
           // Heavier objects provide more resistance
@@ -7789,18 +7793,18 @@ function updateTippingObjects() {
           const otherWeight = otherPhysics.weight || 0.5;
           const weightRatio = otherWeight / (myWeight + otherWeight);
 
-          // Slow down tipping based on weight ratio
-          // If other object is much heavier, slow down significantly (almost stop)
-          const slowFactor = 0.5 - (weightRatio * 0.45); // Range: 0.05 to 0.5
-          obj.userData.tipAngularVelocity *= Math.max(0.05, slowFactor);
+          // Slow down tipping significantly when collision detected
+          // This prevents "bouncing" through objects at high speeds
+          const slowFactor = 0.3 - (weightRatio * 0.25); // Range: 0.05 to 0.3
+          obj.userData.tipAngularVelocity *= Math.max(0.02, slowFactor);
 
           // If the other object is also tipping, push it too (equal and opposite reaction)
           if (otherObj.userData.isTippingAtEdge) {
-            otherObj.position.x -= normalX * pushBackFactor * 0.7;
-            otherObj.position.z -= normalZ * pushBackFactor * 0.7;
-            otherObj.userData.tipStartX -= normalX * pushBackFactor * 0.35;
-            otherObj.userData.tipStartZ -= normalZ * pushBackFactor * 0.35;
-            otherObj.userData.tipAngularVelocity *= Math.max(0.05, 1 - weightRatio * 0.45);
+            otherObj.position.x -= normalX * pushBackFactor * 0.8;
+            otherObj.position.z -= normalZ * pushBackFactor * 0.8;
+            otherObj.userData.tipStartX -= normalX * pushBackFactor * 0.4;
+            otherObj.userData.tipStartZ -= normalZ * pushBackFactor * 0.4;
+            otherObj.userData.tipAngularVelocity *= Math.max(0.02, 1 - weightRatio * 0.5);
           } else if (!otherObj.userData.isTippingAtEdge && !otherObj.userData.isLifted) {
             // The other object is stationary on the table
             // If the tipping object is blocked by it, the tipping should push the stationary object
@@ -7809,8 +7813,8 @@ function updateTippingObjects() {
             const otherVel = physicsState.velocities.get(otherObj.userData.id);
             if (otherVel && weightRatio < 0.7) {
               // Tipping object can push the stationary object slightly
-              otherVel.x -= normalX * 0.02 * (1 - weightRatio);
-              otherVel.z -= normalZ * 0.02 * (1 - weightRatio);
+              otherVel.x -= normalX * 0.03 * (1 - weightRatio);
+              otherVel.z -= normalZ * 0.03 * (1 - weightRatio);
             }
           }
         }
@@ -10365,11 +10369,16 @@ function updatePhysics() {
 
       // Move objects stacked on top using friction physics
       // When an object moves due to being pushed, objects on top should also move
-      const actualDeltaX = obj.position.x - oldX;
-      const actualDeltaZ = obj.position.z - oldZ;
-      const speed = Math.sqrt(vel.x * vel.x + vel.z * vel.z);
-      if (Math.abs(actualDeltaX) > 0.0001 || Math.abs(actualDeltaZ) > 0.0001) {
-        moveStackedObjects(obj, actualDeltaX, actualDeltaZ, speed);
+      // Skip this if we're currently pulling an object out from under a stack
+      // to prevent cascade effects that could move unrelated objects
+      const isPullingOperation = selectedObject && selectedObject.userData.isPullingOut;
+      if (!isPullingOperation) {
+        const actualDeltaX = obj.position.x - oldX;
+        const actualDeltaZ = obj.position.z - oldZ;
+        const speed = Math.sqrt(vel.x * vel.x + vel.z * vel.z);
+        if (Math.abs(actualDeltaX) > 0.0001 || Math.abs(actualDeltaZ) > 0.0001) {
+          moveStackedObjects(obj, actualDeltaX, actualDeltaZ, speed);
+        }
       }
     }
 
@@ -11866,12 +11875,17 @@ function setupPointerLock(container) {
       instructions.classList.add('loading');
       instructions.classList.add('visible');
 
-      container.requestPointerLock = container.requestPointerLock ||
-                                     container.mozRequestPointerLock ||
-                                     container.webkitRequestPointerLock;
-      if (container.requestPointerLock) {
-        container.requestPointerLock();
-      }
+      // Add a small delay before requesting pointer lock
+      // This ensures the loading spinner is visible for at least a brief moment
+      // giving the user visual feedback that their click was registered
+      setTimeout(() => {
+        container.requestPointerLock = container.requestPointerLock ||
+                                       container.mozRequestPointerLock ||
+                                       container.webkitRequestPointerLock;
+        if (container.requestPointerLock) {
+          container.requestPointerLock();
+        }
+      }, 100); // 100ms minimum loading display time
     }
   });
 
@@ -12228,6 +12242,18 @@ function onMouseDown(event) {
         object.userData.isLifted = false;
         object.userData.isPullingOut = true; // Mark as pulling out from under a stack
         // Keep the current Y position, don't lift
+
+        // Clear velocities for ALL objects to prevent any residual movement
+        // This ensures objects on the table don't move unexpectedly when pulling from stack
+        deskObjects.forEach(obj => {
+          const vel = physicsState.velocities.get(obj.userData.id);
+          if (vel) {
+            vel.x = 0;
+            vel.z = 0;
+          }
+          // Also clear angular velocity
+          physicsState.angularVelocities.set(obj.userData.id, 0);
+        });
       } else {
         // No objects on top - lift normally
         object.userData.isLifted = true;
@@ -12535,6 +12561,18 @@ function onMouseDown(event) {
         object.userData.isLifted = false;
         object.userData.isPullingOut = true; // Mark as pulling out from under a stack
         // Keep the current Y position, don't lift
+
+        // Clear velocities for ALL objects to prevent any residual movement
+        // This ensures objects on the table don't move unexpectedly when pulling from stack
+        deskObjects.forEach(obj => {
+          const vel = physicsState.velocities.get(obj.userData.id);
+          if (vel) {
+            vel.x = 0;
+            vel.z = 0;
+          }
+          // Also clear angular velocity
+          physicsState.angularVelocities.set(obj.userData.id, 0);
+        });
 
         // Log object pickup (pulling from stack)
         activityLog.add('OBJECT', 'Object picked up (pulling from stack)', {
