@@ -7899,6 +7899,15 @@ function updateObjectColor(object, colorType, colorValue) {
     selectedObject = newObject;
   }
 
+  // Log color change
+  activityLog.add('OBJECT', `Object ${colorType === 'mainColor' ? 'main color' : 'accent color'} changed`, {
+    type: object.userData.type,
+    id: object.userData.id,
+    colorType: colorType,
+    oldColor: colorType === 'mainColor' ? oldMainColor : oldAccentColor,
+    newColor: colorValue
+  });
+
   saveState();
 }
 
@@ -9994,9 +10003,20 @@ function setupEventListeners() {
   if (objectCollisionRadiusSlider && objectCollisionRadiusValue) {
     objectCollisionRadiusSlider.addEventListener('input', (e) => {
       if (!selectedObject) return;
+      const oldValue = selectedObject.userData.objectCollisionRadiusMultiplier || 1.0;
       const percentage = parseInt(e.target.value);
-      selectedObject.userData.objectCollisionRadiusMultiplier = percentage / 100;
+      const newValue = percentage / 100;
+      selectedObject.userData.objectCollisionRadiusMultiplier = newValue;
       objectCollisionRadiusValue.textContent = percentage + '%';
+
+      // Log collision width change
+      activityLog.add('OBJECT', 'Object collision width changed (edit mode)', {
+        type: selectedObject.userData.type,
+        id: selectedObject.userData.id,
+        oldValue: (oldValue * 100).toFixed(0) + '%',
+        newValue: percentage + '%'
+      });
+
       saveState();
       // Update collision debug visualization if enabled
       if (debugState.showCollisionRadii) {
@@ -10006,8 +10026,19 @@ function setupEventListeners() {
     // Add scroll-based adjustment
     addScrollToSlider(objectCollisionRadiusSlider, (value) => {
       if (!selectedObject) return;
-      selectedObject.userData.objectCollisionRadiusMultiplier = value / 100;
+      const oldValue = selectedObject.userData.objectCollisionRadiusMultiplier || 1.0;
+      const newValue = value / 100;
+      selectedObject.userData.objectCollisionRadiusMultiplier = newValue;
       objectCollisionRadiusValue.textContent = value + '%';
+
+      // Log collision width change
+      activityLog.add('OBJECT', 'Object collision width changed (edit mode)', {
+        type: selectedObject.userData.type,
+        id: selectedObject.userData.id,
+        oldValue: (oldValue * 100).toFixed(0) + '%',
+        newValue: value + '%'
+      });
+
       saveState();
       if (debugState.showCollisionRadii) {
         updateCollisionDebugHelpers();
@@ -10021,9 +10052,20 @@ function setupEventListeners() {
   if (objectCollisionHeightSlider && objectCollisionHeightValue) {
     objectCollisionHeightSlider.addEventListener('input', (e) => {
       if (!selectedObject) return;
+      const oldValue = selectedObject.userData.objectCollisionHeightMultiplier || 1.0;
       const percentage = parseInt(e.target.value);
-      selectedObject.userData.objectCollisionHeightMultiplier = percentage / 100;
+      const newValue = percentage / 100;
+      selectedObject.userData.objectCollisionHeightMultiplier = newValue;
       objectCollisionHeightValue.textContent = percentage + '%';
+
+      // Log collision height change
+      activityLog.add('OBJECT', 'Object collision height changed (edit mode)', {
+        type: selectedObject.userData.type,
+        id: selectedObject.userData.id,
+        oldValue: (oldValue * 100).toFixed(0) + '%',
+        newValue: percentage + '%'
+      });
+
       saveState();
       // Update collision debug visualization if enabled
       if (debugState.showCollisionRadii) {
@@ -10033,8 +10075,19 @@ function setupEventListeners() {
     // Add scroll-based adjustment
     addScrollToSlider(objectCollisionHeightSlider, (value) => {
       if (!selectedObject) return;
-      selectedObject.userData.objectCollisionHeightMultiplier = value / 100;
+      const oldValue = selectedObject.userData.objectCollisionHeightMultiplier || 1.0;
+      const newValue = value / 100;
+      selectedObject.userData.objectCollisionHeightMultiplier = newValue;
       objectCollisionHeightValue.textContent = value + '%';
+
+      // Log collision height change
+      activityLog.add('OBJECT', 'Object collision height changed (edit mode)', {
+        type: selectedObject.userData.type,
+        id: selectedObject.userData.id,
+        oldValue: (oldValue * 100).toFixed(0) + '%',
+        newValue: value + '%'
+      });
+
       saveState();
       if (debugState.showCollisionRadii) {
         updateCollisionDebugHelpers();
@@ -10055,6 +10108,13 @@ function setupEventListeners() {
       if (objectCollisionRadiusValue) objectCollisionRadiusValue.textContent = '100%';
       if (objectCollisionHeightSlider) objectCollisionHeightSlider.value = 100;
       if (objectCollisionHeightValue) objectCollisionHeightValue.textContent = '100%';
+
+      // Log collision reset
+      activityLog.add('OBJECT', 'Object collision settings reset to default (edit mode)', {
+        type: selectedObject.userData.type,
+        id: selectedObject.userData.id
+      });
+
       saveState();
       // Update collision debug visualization if enabled
       if (debugState.showCollisionRadii) {
@@ -10479,6 +10539,14 @@ function onMouseDown(event) {
   // This ensures edit mode exits when clicking outside the panel
   const panel = document.getElementById('customization-panel');
   if (panel && panel.classList.contains('open')) {
+    // Log exit edit mode before clearing selectedObject
+    if (selectedObject) {
+      activityLog.add('MODE', 'Exited edit mode (customization panel)', {
+        objectType: selectedObject.userData.type,
+        objectId: selectedObject.userData.id
+      });
+    }
+
     panel.classList.remove('open');
     selectedObject = null;
     // Clear dynamic options
@@ -11689,6 +11757,15 @@ function onMouseWheel(event) {
           // Adjust Y position to keep object on desk surface
           adjustObjectYForScale(object, oldScale, newScale);
           saveState();
+
+          // Log object scaling
+          activityLog.add('OBJECT', 'Object scaled', {
+            type: object.userData.type,
+            id: object.userData.id,
+            oldScale: oldScale.toFixed(2),
+            newScale: newScale.toFixed(2),
+            scaleDelta: scaleDelta.toFixed(2)
+          });
         }
       } else {
         // Rotate object around Y axis (perpendicular to desk)
@@ -11774,6 +11851,13 @@ function handleRightClick(event) {
       // Update customization panel
       document.getElementById('customization-title').textContent = `Customize: ${object.userData.name}`;
       document.getElementById('customization-panel').classList.add('open');
+
+      // Log edit mode opened
+      activityLog.add('MODE', 'Entered edit mode (customization panel)', {
+        objectType: object.userData.type,
+        objectId: object.userData.id,
+        objectName: object.userData.name
+      });
 
       // Highlight current colors
       document.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('selected'));
