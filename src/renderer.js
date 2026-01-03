@@ -6828,6 +6828,10 @@ function startTippingAtEdge(object, edgeDirection) {
   // edgeDirection: 'posX', 'negX', 'posZ', 'negZ'
   object.userData.tipEdgeDirection = edgeDirection;
 
+  // Store the object's CURRENT position (don't reset it)
+  object.userData.tipStartX = object.position.x;
+  object.userData.tipStartZ = object.position.z;
+
   // Store the edge pivot point
   if (edgeDirection === 'posX') {
     object.userData.tipPivotX = deskHalfWidth;
@@ -6884,41 +6888,41 @@ function updateTippingObjects() {
 
     const physics = getObjectPhysics(obj);
     const objectHeight = physics.height * (obj.scale?.y || 1);
-    const objectScale = obj.userData.scale || obj.scale?.x || 1;
-
-    // Calculate the pivot offset (how far the center is from the edge)
-    // This is approximately half the object's footprint radius
-    const pivotRadius = getStackingRadius(obj) * 0.5;
     const halfHeight = objectHeight * 0.5;
 
-    // Rotate object around the pivot point at the edge
-    // The center follows a circular arc around the desk edge
+    // The object tips around its bottom edge that's at the desk edge
+    // As it tips, it rotates and moves AWAY from the desk
     const edgeDir = obj.userData.tipEdgeDirection;
     const tipAngle = obj.userData.tipAngle;
     const cosAngle = Math.cos(tipAngle);
     const sinAngle = Math.sin(tipAngle);
 
+    // Calculate how far the center has moved from the starting position
+    // At angle 0: center is at starting position, upright
+    // At angle 90°: center is horizontal, moved outward by halfHeight
+    const startX = obj.userData.tipStartX;
+    const startZ = obj.userData.tipStartZ;
+
     if (edgeDir === 'posX' || edgeDir === 'negX') {
       // Tipping over X edge - rotate around Z axis
+      // posX means tipping to the right (positive X direction)
       const rotationSign = edgeDir === 'posX' ? 1 : -1;
       obj.rotation.z = rotationSign * tipAngle;
 
-      // Update position to pivot around the edge
-      // The center traces an arc as the object tips
-      // At angle 0: center is at (pivotX + pivotRadius, deskY + halfHeight)
-      // At angle π/2: center is at (pivotX + halfHeight, deskY - pivotRadius)
-      const pivotX = obj.userData.tipPivotX;
-      obj.position.x = pivotX + rotationSign * (pivotRadius * cosAngle + halfHeight * sinAngle);
-      obj.position.y = deskSurfaceY + halfHeight * cosAngle - pivotRadius * sinAngle;
+      // As object tips, center moves outward (away from desk)
+      // Y position: starts at desk height, goes down as it tips
+      // X position: starts at initial X, moves outward by halfHeight * sin(angle)
+      obj.position.x = startX + rotationSign * halfHeight * sinAngle;
+      obj.position.y = deskSurfaceY + halfHeight * cosAngle;
     } else {
       // Tipping over Z edge - rotate around X axis
+      // posZ means tipping away in positive Z direction
       const rotationSign = edgeDir === 'posZ' ? -1 : 1;
       obj.rotation.x = rotationSign * tipAngle;
 
-      // Update position to pivot around the edge
-      const pivotZ = obj.userData.tipPivotZ;
-      obj.position.z = pivotZ + (-rotationSign) * (pivotRadius * cosAngle + halfHeight * sinAngle);
-      obj.position.y = deskSurfaceY + halfHeight * cosAngle - pivotRadius * sinAngle;
+      // As object tips, center moves outward (away from desk)
+      obj.position.z = startZ + (-rotationSign) * halfHeight * sinAngle;
+      obj.position.y = deskSurfaceY + halfHeight * cosAngle;
     }
 
     // Check if tipped past the critical angle (past ~90 degrees) - start falling
@@ -11638,7 +11642,7 @@ function onMouseUp(event) {
                            selectedObject.position.z < -deskHalfDepth;
 
     if (isOverDeskEdge && CONFIG.falling.enabled) {
-      // Object dropped beyond desk edge - start tipping from edge then falling
+      // Object dropped beyond desk edge - check if close enough to edge for tipping
       // Store the drag velocity for continued horizontal movement during fall
       const vel = physicsState.velocities.get(selectedObject.userData.id);
       if (vel) {
@@ -11646,18 +11650,32 @@ function onMouseUp(event) {
         vel.z = physicsState.dragVelocity.z * 0.02;
       }
 
-      // Determine which edge the object is over
+      // Determine which edge the object is over and distance from edge
       let edgeDirection = null;
-      if (selectedObject.position.x > deskHalfWidth) edgeDirection = 'posX';
-      else if (selectedObject.position.x < -deskHalfWidth) edgeDirection = 'negX';
-      else if (selectedObject.position.z > deskHalfDepth) edgeDirection = 'posZ';
-      else if (selectedObject.position.z < -deskHalfDepth) edgeDirection = 'negZ';
+      let distanceFromEdge = 0;
 
-      // Start the tipping animation (object tips over edge before falling)
-      if (edgeDirection) {
+      if (selectedObject.position.x > deskHalfWidth) {
+        edgeDirection = 'posX';
+        distanceFromEdge = selectedObject.position.x - deskHalfWidth;
+      } else if (selectedObject.position.x < -deskHalfWidth) {
+        edgeDirection = 'negX';
+        distanceFromEdge = -deskHalfWidth - selectedObject.position.x;
+      } else if (selectedObject.position.z > deskHalfDepth) {
+        edgeDirection = 'posZ';
+        distanceFromEdge = selectedObject.position.z - deskHalfDepth;
+      } else if (selectedObject.position.z < -deskHalfDepth) {
+        edgeDirection = 'negZ';
+        distanceFromEdge = -deskHalfDepth - selectedObject.position.z;
+      }
+
+      // Only use tipping animation if object is close to the edge (within 0.3 units)
+      // If dragged far from desk, just fall straight down
+      const closeToEdge = distanceFromEdge < 0.3;
+
+      if (edgeDirection && closeToEdge) {
         startTippingAtEdge(selectedObject, edgeDirection);
       } else {
-        // Fallback: if no clear edge direction, just fall
+        // Object is too far from edge or no clear direction - fall straight down
         startFallingOffTable(selectedObject);
       }
 
