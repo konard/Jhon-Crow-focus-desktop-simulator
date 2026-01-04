@@ -1407,6 +1407,7 @@ let bookReadingState = {
   originalCameraPitch: null,
   middleMouseDownTime: 0,
   holdTimeout: null,
+  exitHoldTimeout: null, // Timeout for exiting reading mode via MMB hold
   // Zoom and pan controls for reading mode
   zoomDistance: 0.85, // Distance from book (Y offset)
   panOffsetX: 0,      // Pan offset parallel to book
@@ -3063,7 +3064,7 @@ const PALETTE_CATEGORIES = {
     variants: [
       { id: 'books', name: 'Book', icon: '📕' },
       { id: 'magazine', name: 'Magazine', icon: '📰' },
-      { id: 'document', name: 'Document', icon: '📄' }
+      { id: 'document', name: 'Document', icon: '📂' }
     ],
     activeIndex: 0
   },
@@ -12433,8 +12434,14 @@ function onMouseDown(event) {
       return;
     }
 
-    // In reading mode, MMB does nothing (use LMB click to exit reading mode)
+    // In reading mode, MMB hold for 300ms exits reading mode
     if (bookReadingState.active) {
+      bookReadingState.middleMouseDownTime = Date.now();
+      bookReadingState.exitHoldTimeout = setTimeout(() => {
+        // Hold for 300ms - exit reading mode
+        exitBookReadingMode();
+        bookReadingState.exitHoldTimeout = null; // Mark as already handled
+      }, 300);
       return;
     }
 
@@ -13420,8 +13427,13 @@ function onMouseUp(event) {
       return;
     }
 
-    // If in reading mode, don't exit on release - stay in mode until user clicks elsewhere
+    // If in reading mode, check if we need to clear the exit timeout
     if (bookReadingState.active) {
+      // If user releases before the hold timeout fired (300ms), cancel the exit
+      if (bookReadingState.exitHoldTimeout) {
+        clearTimeout(bookReadingState.exitHoldTimeout);
+        bookReadingState.exitHoldTimeout = null;
+      }
       return;
     }
 
@@ -13937,7 +13949,7 @@ function onMouseWheel(event) {
 
     // Zoom: scroll up = zoom in (closer), scroll down = zoom out (further)
     const zoomDelta = event.deltaY > 0 ? 0.08 : -0.08;
-    inspectionDrawingState.zoomDistance = Math.max(0.15, Math.min(3.5, inspectionDrawingState.zoomDistance + zoomDelta));
+    inspectionDrawingState.zoomDistance = Math.max(0.3, Math.min(2.0, inspectionDrawingState.zoomDistance + zoomDelta));
 
     // Update camera position using cached object position
     const objectWorldPos = inspectionDrawingState.objectWorldPos;
@@ -13956,7 +13968,7 @@ function onMouseWheel(event) {
 
     // Zoom: scroll up = zoom in (closer), scroll down = zoom out (further)
     const zoomDelta = event.deltaY > 0 ? 0.08 : -0.08;
-    bookReadingState.zoomDistance = Math.max(0.15, Math.min(3.5, bookReadingState.zoomDistance + zoomDelta));
+    bookReadingState.zoomDistance = Math.max(0.3, Math.min(2.0, bookReadingState.zoomDistance + zoomDelta));
 
     // Update camera position using cached book position
     const bookWorldPos = bookReadingState.bookWorldPos;
@@ -17384,7 +17396,7 @@ function getInteractionContent(object) {
       return `
         <div class="timer-controls">
           <div class="timer-display">
-            <div class="time" style="font-size: 24px;">📄 Document</div>
+            <div class="time" style="font-size: 24px;">📂 Document</div>
             <div style="color: rgba(255,255,255,0.6); margin-top: 10px;">
               ${object.userData.isOpen ? 'Document is open' : 'Middle-click to open'}
             </div>
@@ -21731,11 +21743,7 @@ function setupDocumentHandlers(object) {
   // Document file upload
   const docInput = document.getElementById('document-doc');
   if (docInput) {
-    // Clone to remove old event listeners
-    const newDocInput = docInput.cloneNode(true);
-    docInput.parentNode.replaceChild(newDocInput, docInput);
-
-    newDocInput.addEventListener('change', (e) => {
+    docInput.addEventListener('change', (e) => {
       const file = e.target.files[0];
       if (file) {
         const fileName = file.name.toLowerCase();
@@ -21750,19 +21758,13 @@ function setupDocumentHandlers(object) {
           console.error('Invalid file type. Only doc, docx, and rtf are supported.');
         }
       }
-      // Reset input value to allow uploading the same file again
-      e.target.value = '';
     });
   }
 
   // Edit mode document upload
   const docEditInput = document.getElementById('document-doc-edit');
   if (docEditInput) {
-    // Clone to remove old event listeners
-    const newDocEditInput = docEditInput.cloneNode(true);
-    docEditInput.parentNode.replaceChild(newDocEditInput, docEditInput);
-
-    newDocEditInput.addEventListener('change', (e) => {
+    docEditInput.addEventListener('change', (e) => {
       const file = e.target.files[0];
       if (file) {
         const fileName = file.name.toLowerCase();
@@ -21776,7 +21778,6 @@ function setupDocumentHandlers(object) {
           console.error('Invalid file type. Only doc, docx, and rtf are supported.');
         }
       }
-      // Reset input value to allow uploading the same file again
       e.target.value = '';
     });
   }
