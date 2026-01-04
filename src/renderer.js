@@ -21299,6 +21299,7 @@ async function loadDocToDocument(docObject, file) {
         // Use Mammoth.js for DOCX files
         if (typeof mammoth === 'undefined') {
           console.warn('Mammoth.js library not loaded. Using placeholder.');
+          alert('[ERROR] Mammoth.js library not loaded! Cannot process DOCX files.');
           docObject.userData.totalPages = 10;
           docObject.userData.currentPage = 0;
           docObject.userData.isLoadingDoc = false;
@@ -21306,9 +21307,11 @@ async function loadDocToDocument(docObject, file) {
           return;
         }
 
+        alert('[DEBUG] Mammoth.js loaded, converting DOCX...');
         const arrayBuffer = reader.result;
         const result = await mammoth.convertToHtml({ arrayBuffer: arrayBuffer });
         htmlContent = result.value;
+        alert('[DEBUG] DOCX converted to HTML, length: ' + htmlContent.length);
 
         // Estimate page count based on content length
         // Roughly 3000 characters per page
@@ -21317,6 +21320,7 @@ async function loadDocToDocument(docObject, file) {
 
       } else if (fileExtension === 'rtf' || fileExtension === 'doc') {
         // For RTF and DOC, try basic text extraction
+        alert('[DEBUG] Processing ' + fileExtension.toUpperCase() + ' file...');
         const text = reader.result;
 
         // Basic RTF parsing - strip RTF control codes
@@ -21331,6 +21335,7 @@ async function loadDocToDocument(docObject, file) {
                      '</div>';
 
         pageCount = Math.max(1, Math.ceil(cleanText.length / 3000));
+        alert('[DEBUG] ' + fileExtension.toUpperCase() + ' processed, pageCount: ' + pageCount);
       }
 
       // Store the processed content
@@ -21355,22 +21360,31 @@ async function loadDocToDocument(docObject, file) {
 
       // Automatically open the document to show the content
       if (!docObject.userData.isOpen) {
+        alert('[DEBUG] Opening document automatically...');
         toggleDocumentOpen(docObject);
+      } else {
+        alert('[DEBUG] Document already open');
       }
 
       // Update the page surfaces with actual document content
+      alert('[DEBUG] Calling updateDocumentPagesWithContent...');
       await updateDocumentPagesWithContent(docObject);
+      alert('[DEBUG] updateDocumentPagesWithContent completed');
 
       // Refresh the modal to show the document content immediately
       const content = document.getElementById('interaction-content');
       if (content && interactionObject === docObject) {
         content.innerHTML = getInteractionContent(docObject);
         setupDocumentHandlers(docObject);
+        alert('[DEBUG] Modal refreshed successfully');
       }
 
+      alert('[DEBUG] Saving state...');
       saveState();
+      alert('[DEBUG] Document load complete!');
     } catch (error) {
       console.error('Error loading document:', error);
+      alert('[ERROR] Exception in reader.onload: ' + error.message);
       docObject.userData.totalPages = 1;
       docObject.userData.currentPage = 0;
       docObject.userData.isLoadingDoc = false;
@@ -21380,6 +21394,7 @@ async function loadDocToDocument(docObject, file) {
 
   reader.onerror = () => {
     console.error('Error reading document file');
+    alert('[ERROR] FileReader error occurred');
     docObject.userData.isLoadingDoc = false;
     updateDocumentPages(docObject);
   };
