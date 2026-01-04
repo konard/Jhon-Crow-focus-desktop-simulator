@@ -21153,6 +21153,668 @@ function setupMagazineCustomizationHandlers(object) {
 }
 
 // ============================================================================
+// DOCUMENT FOLDER (DOC/DOCX/RTF) HANDLING
+// ============================================================================
+
+// Load document file (doc, docx, or rtf) into document folder
+async function loadDocToDocument(document, file) {
+  // Prevent multiple simultaneous loads
+  if (document.userData.isLoadingDoc) {
+    console.log('Document already loading, skipping duplicate load request');
+    return;
+  }
+
+  // Set loading flag immediately
+  document.userData.isLoadingDoc = true;
+
+  const fileName = file.name.toLowerCase();
+  const fileExtension = fileName.split('.').pop();
+
+  // Validate file type
+  if (!['doc', 'docx', 'rtf'].includes(fileExtension)) {
+    console.error('Unsupported file format. Only doc, docx, and rtf are supported.');
+    document.userData.isLoadingDoc = false;
+    return;
+  }
+
+  document.userData.docPath = file.name;
+  document.userData.docFile = file;
+  document.userData.docExtension = fileExtension;
+
+  const reader = new FileReader();
+
+  reader.onload = async () => {
+    try {
+      let htmlContent = '';
+      let pageCount = 1;
+
+      if (fileExtension === 'docx') {
+        // Use Mammoth.js for DOCX files
+        if (typeof mammoth === 'undefined') {
+          console.warn('Mammoth.js library not loaded. Using placeholder.');
+          document.userData.totalPages = 10;
+          document.userData.currentPage = 0;
+          document.userData.isLoadingDoc = false;
+          updateDocumentPages(document);
+          return;
+        }
+
+        const arrayBuffer = reader.result;
+        const result = await mammoth.convertToHtml({ arrayBuffer: arrayBuffer });
+        htmlContent = result.value;
+
+        // Estimate page count based on content length
+        // Roughly 3000 characters per page
+        const textLength = result.value.replace(/<[^>]*>/g, '').length;
+        pageCount = Math.max(1, Math.ceil(textLength / 3000));
+
+      } else if (fileExtension === 'rtf' || fileExtension === 'doc') {
+        // For RTF and DOC, try basic text extraction
+        const text = reader.result;
+
+        // Basic RTF parsing - strip RTF control codes
+        let cleanText = text;
+        if (fileExtension === 'rtf') {
+          cleanText = text.replace(/\\[a-z]+(-?\d+)?[ ]?|\{|\}/g, '');
+        }
+
+        // Convert to simple HTML
+        htmlContent = '<div style="white-space: pre-wrap; font-family: Arial, sans-serif; font-size: 14px; padding: 20px;">' +
+                     cleanText.substring(0, 10000) + // Limit length
+                     '</div>';
+
+        pageCount = Math.max(1, Math.ceil(cleanText.length / 3000));
+      }
+
+      // Store the processed content
+      document.userData.htmlContent = htmlContent;
+      document.userData.totalPages = pageCount;
+      document.userData.currentPage = 0;
+      document.userData.renderedPages = {}; // Cache for rendered page canvases
+      document.userData.pageTextures = {}; // Cache for THREE.Texture objects
+      document.userData.isLoadingDoc = false; // Clear loading flag
+
+      // Update document thickness based on page count
+      updateDocumentThickness(document);
+
+      // Store document as base64 data URL for persistence after reload
+      const base64Reader = new FileReader();
+      base64Reader.onload = () => {
+        document.userData.docDataUrl = base64Reader.result;
+        document.userData.docDataDirty = true; // Mark as dirty so it gets saved
+        saveState();
+      };
+      base64Reader.readAsDataURL(file);
+
+      // Automatically open the document to show the content
+      if (!document.userData.isOpen) {
+        toggleDocumentOpen(document);
+      }
+
+      // Update the page surfaces with actual document content
+      await updateDocumentPagesWithContent(document);
+
+      // Refresh the modal to show the document content immediately
+      const content = document.getElementById('interaction-content');
+      if (content && interactionObject === document) {
+        content.innerHTML = getInteractionContent(document);
+        setupDocumentHandlers(document);
+      }
+
+      saveState();
+    } catch (error) {
+      console.error('Error loading document:', error);
+      document.userData.totalPages = 1;
+      document.userData.currentPage = 0;
+      document.userData.isLoadingDoc = false;
+      updateDocumentPages(document);
+    }
+  };
+
+  reader.onerror = () => {
+    console.error('Error reading document file');
+    document.userData.isLoadingDoc = false;
+    updateDocumentPages(document);
+  };
+
+  if (fileExtension === 'docx') {
+    reader.readAsArrayBuffer(file);
+  } else {
+    reader.readAsText(file);
+  }
+}
+
+// Load document from base64 data URL (for restoring from saved state)
+async function loadDocFromDataUrl(document, dataUrl) {
+  if (!dataUrl) {
+    console.warn('Cannot load document: missing data URL');
+    return;
+  }
+
+  try {
+    document.userData.isLoadingDoc = true;
+
+    // Convert base64 data URL back to file
+    const base64 = dataUrl.split(',')[1];
+    const mimeType = dataUrl.split(',')[0].split(':')[1].split(';')[0];
+    const binaryString = atob(base64);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+
+    // Determine file extension from mime type or userData
+    const extension = document.userData.docExtension || 'docx';
+    const blob = new Blob([bytes], { type: mimeType });
+    const file = new File([blob], `document.${extension}`, { type: mimeType });
+
+    await loadDocToDocument(document, file);
+
+  } catch (error) {
+    console.error('Error loading document from data URL:', error);
+    document.userData.isLoadingDoc = false;
+  }
+}
+
+// Render HTML content to canvas for a specific page
+function renderDocumentPageToCanvas(htmlContent, pageIndex, totalPages, width, height) {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+
+  // White background
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, width, height);
+
+  // Create a temporary div to measure and render HTML
+  const tempDiv = document.createElement('div');
+  tempDiv.style.position = 'absolute';
+  tempDiv.style.left = '-9999px';
+  tempDiv.style.width = `${width - 40}px`; // Padding
+  tempDiv.style.fontFamily = 'Arial, sans-serif';
+  tempDiv.style.fontSize = '14px';
+  tempDiv.style.lineHeight = '1.6';
+  tempDiv.innerHTML = htmlContent;
+  document.body.appendChild(tempDiv);
+
+  // Simple text rendering from HTML
+  const text = tempDiv.textContent || tempDiv.innerText || '';
+  document.body.removeChild(tempDiv);
+
+  // Calculate characters per page
+  const charsPerPage = 3000;
+  const startChar = pageIndex * charsPerPage;
+  const endChar = startChar + charsPerPage;
+  const pageText = text.substring(startChar, endChar);
+
+  // Render text to canvas
+  ctx.fillStyle = '#000000';
+  ctx.font = '14px Arial, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+
+  const padding = 20;
+  const maxWidth = width - padding * 2;
+  const lineHeight = 20;
+  let y = padding;
+
+  // Word wrap
+  const words = pageText.split(' ');
+  let line = '';
+
+  for (const word of words) {
+    const testLine = line + word + ' ';
+    const metrics = ctx.measureText(testLine);
+
+    if (metrics.width > maxWidth && line !== '') {
+      ctx.fillText(line, padding, y);
+      line = word + ' ';
+      y += lineHeight;
+
+      if (y + lineHeight > height - padding) break;
+    } else {
+      line = testLine;
+    }
+  }
+
+  if (y + lineHeight <= height - padding) {
+    ctx.fillText(line, padding, y);
+  }
+
+  // Page number at bottom
+  ctx.fillStyle = '#666666';
+  ctx.font = '12px Arial, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(`Page ${pageIndex + 1} of ${totalPages}`, width / 2, height - 15);
+
+  return canvas;
+}
+
+// Update document pages with content
+async function updateDocumentPagesWithContent(document) {
+  if (!document.userData.htmlContent) {
+    updateDocumentPages(document);
+    return;
+  }
+
+  const openGroup = document.getObjectByName('openDocument');
+  if (!openGroup) return;
+
+  const leftPage = openGroup.getObjectByName('leftPageSurface');
+  const rightPage = openGroup.getObjectByName('rightPageSurface');
+
+  const canvasWidth = document.userData.docResolution || 512;
+  const canvasHeight = Math.round(canvasWidth * 1.36); // A4-ish ratio
+
+  const htmlContent = document.userData.htmlContent;
+  const totalPages = document.userData.totalPages || 1;
+  const currentPage = document.userData.currentPage || 0;
+
+  // Left page (even page number)
+  const leftPageNum = currentPage * 2;
+  if (leftPage && leftPageNum < totalPages) {
+    const canvas = renderDocumentPageToCanvas(htmlContent, leftPageNum, totalPages, canvasWidth, canvasHeight);
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.minFilter = THREE.LinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+
+    if (leftPage.material.map) {
+      leftPage.material.map.dispose();
+    }
+    leftPage.material.map = texture;
+    leftPage.material.needsUpdate = true;
+  }
+
+  // Right page (odd page number)
+  const rightPageNum = currentPage * 2 + 1;
+  if (rightPage && rightPageNum < totalPages) {
+    const canvas = renderDocumentPageToCanvas(htmlContent, rightPageNum, totalPages, canvasWidth, canvasHeight);
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.minFilter = THREE.LinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+
+    if (rightPage.material.map) {
+      rightPage.material.map.dispose();
+    }
+    rightPage.material.map = texture;
+    rightPage.material.needsUpdate = true;
+  }
+}
+
+// Update document thickness based on page count
+function updateDocumentThickness(document) {
+  const totalPages = document.userData.totalPages || 10;
+  // Documents should be similar to magazines in thickness
+  const thicknessPerPage = 0.00008; // Each page adds 0.08mm (same as books)
+  const baseThickness = 0.012;
+  const minThickness = 0.006;
+  const maxThickness = 0.06;
+  const calculatedThickness = Math.max(minThickness, Math.min(maxThickness, baseThickness + (totalPages * thicknessPerPage)));
+
+  const closedGroup = document.getObjectByName('closedDocument');
+  if (!closedGroup) return;
+
+  // Find folder and update its height
+  const folder = closedGroup.children.find(c => c.name === 'folder');
+  if (folder) {
+    const oldGeo = folder.geometry;
+    folder.geometry = new THREE.BoxGeometry(0.24, calculatedThickness + 0.003, 0.32);
+    oldGeo.dispose();
+    folder.position.y = (calculatedThickness + 0.003) / 2;
+  }
+
+  // Find papers block and update
+  const papers = closedGroup.children.find(c => c.name === 'papers');
+  if (papers) {
+    const oldGeo = papers.geometry;
+    papers.geometry = new THREE.BoxGeometry(0.22, calculatedThickness, 0.30);
+    oldGeo.dispose();
+    papers.position.y = calculatedThickness / 2;
+  }
+
+  // Find tab and update
+  const tab = closedGroup.children.find(c => c.geometry && c.geometry.type === 'BoxGeometry' && c.position.x < -0.1);
+  if (tab) {
+    const oldGeo = tab.geometry;
+    const tabThickness = calculatedThickness + 0.002;
+    tab.geometry = new THREE.BoxGeometry(0.008, tabThickness, 0.32);
+    oldGeo.dispose();
+    tab.position.y = calculatedThickness / 2;
+  }
+
+  document.userData.documentThickness = calculatedThickness;
+}
+
+// Update document pages (placeholder when no document loaded)
+function updateDocumentPages(document) {
+  if (document.userData.htmlContent) {
+    updateDocumentPagesWithContent(document);
+    return;
+  }
+
+  const openGroup = document.getObjectByName('openDocument');
+  if (!openGroup) return;
+
+  const leftPage = openGroup.getObjectByName('leftPageSurface');
+  const rightPage = openGroup.getObjectByName('rightPageSurface');
+
+  const canvasWidth = document.userData.docResolution || 512;
+  const canvasHeight = Math.round(canvasWidth * 1.36);
+
+  const isLoading = document.userData.isLoadingDoc;
+
+  // Placeholder for left page
+  if (leftPage && document.userData.totalPages > 0) {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvasWidth;
+    canvas.height = canvasHeight;
+    const ctx = canvas.getContext('2d');
+
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.fillStyle = isLoading ? '#3b82f6' : '#666666';
+    ctx.font = 'bold 24px Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(
+      isLoading ? 'Loading...' : 'No Document',
+      canvas.width / 2,
+      canvas.height / 2
+    );
+
+    const texture = new THREE.CanvasTexture(canvas);
+    if (leftPage.material.map) leftPage.material.map.dispose();
+    leftPage.material.map = texture;
+    leftPage.material.needsUpdate = true;
+  }
+
+  // Placeholder for right page
+  if (rightPage && document.userData.totalPages > 0) {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvasWidth;
+    canvas.height = canvasHeight;
+    const ctx = canvas.getContext('2d');
+
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.fillStyle = '#999999';
+    ctx.font = '16px Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(
+      'Supported formats:',
+      canvas.width / 2,
+      canvas.height / 2 - 20
+    );
+    ctx.fillText(
+      'DOC, DOCX, RTF',
+      canvas.width / 2,
+      canvas.height / 2 + 10
+    );
+
+    const texture = new THREE.CanvasTexture(canvas);
+    if (rightPage.material.map) rightPage.material.map.dispose();
+    rightPage.material.map = texture;
+    rightPage.material.needsUpdate = true;
+  }
+}
+
+// Toggle document open/closed
+function toggleDocumentOpen(object) {
+  const closedGroup = object.getObjectByName('closedDocument');
+  const openGroup = object.getObjectByName('openDocument');
+
+  if (object.userData.isOpen) {
+    // Close document
+    object.userData.isOpen = false;
+    if (openGroup) openGroup.visible = false;
+    if (closedGroup) closedGroup.visible = true;
+  } else {
+    // Open document
+    object.userData.isOpen = true;
+    if (closedGroup) closedGroup.visible = false;
+    if (openGroup) openGroup.visible = true;
+
+    if (object.userData.currentPage === undefined) {
+      object.userData.currentPage = 0;
+    }
+
+    // If document has a saved data URL but not loaded yet, start loading
+    if (object.userData.docDataUrl && !object.userData.htmlContent && !object.userData.isLoadingDoc) {
+      object.userData.isLoadingDoc = true;
+      updateDocumentPages(object);
+      loadDocFromDataUrl(object, object.userData.docDataUrl);
+    } else {
+      updateDocumentPages(object);
+    }
+  }
+}
+
+// Page turning animation for document
+function animateDocumentPageTurn(document, direction) {
+  if (document.userData.isTurningPage) return;
+
+  const currentPage = document.userData.currentPage || 0;
+  const totalPages = document.userData.totalPages || 10;
+  const maxPage = Math.ceil(totalPages / 2) - 1;
+
+  if (direction < 0 && currentPage <= 0) return;
+  if (direction > 0 && currentPage >= maxPage) return;
+
+  document.userData.isTurningPage = true;
+
+  const openGroup = document.getObjectByName('openDocument');
+  if (!openGroup) {
+    document.userData.isTurningPage = false;
+    return;
+  }
+
+  // Create a temporary page for animation
+  const pageGeometry = new THREE.PlaneGeometry(0.22, 0.30);
+  const pageMaterial = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    side: THREE.DoubleSide,
+    roughness: 0.9
+  });
+  const turningPage = new THREE.Mesh(pageGeometry, pageMaterial);
+
+  const pivotGroup = new THREE.Group();
+  pivotGroup.position.set(0, 0.013, 0);
+
+  turningPage.position.set(direction > 0 ? 0.11 : -0.11, 0, 0);
+  turningPage.rotation.x = -Math.PI / 2;
+  pivotGroup.add(turningPage);
+  openGroup.add(pivotGroup);
+
+  const startAngle = 0;
+  const endAngle = direction > 0 ? -Math.PI : Math.PI;
+  const duration = 400;
+  const startTime = Date.now();
+
+  function animate() {
+    const elapsed = Date.now() - startTime;
+    const progress = Math.min(elapsed / duration, 1);
+
+    const easeProgress = progress < 0.5
+      ? 2 * progress * progress
+      : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+
+    pivotGroup.rotation.z = startAngle + (endAngle - startAngle) * easeProgress;
+
+    const liftFactor = Math.sin(progress * Math.PI) * 0.04;
+    pivotGroup.position.y = 0.013 + liftFactor;
+
+    if (progress < 1) {
+      requestAnimationFrame(animate);
+    } else {
+      openGroup.remove(pivotGroup);
+      document.userData.currentPage += direction;
+      document.userData.isTurningPage = false;
+
+      updateDocumentPages(document);
+
+      if (interactionObject === document) {
+        const content = document.getElementById('interaction-content');
+        if (content) {
+          content.innerHTML = getInteractionContent(document);
+          setupDocumentHandlers(document);
+        }
+      }
+
+      saveState();
+    }
+  }
+
+  animate();
+}
+
+// Setup document UI handlers
+function setupDocumentHandlers(object) {
+  // Document file upload
+  const docInput = document.getElementById('document-doc');
+  if (docInput) {
+    docInput.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (file) {
+        const fileName = file.name.toLowerCase();
+        const extension = fileName.split('.').pop();
+
+        // Validate file extension
+        if (['doc', 'docx', 'rtf'].includes(extension)) {
+          object.userData.docPath = file.name;
+          object.userData.docFile = file;
+          loadDocToDocument(object, file);
+        } else {
+          console.error('Invalid file type. Only doc, docx, and rtf are supported.');
+        }
+      }
+    });
+  }
+
+  // Edit mode document upload
+  const docEditInput = document.getElementById('document-doc-edit');
+  if (docEditInput) {
+    docEditInput.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (file) {
+        const fileName = file.name.toLowerCase();
+        const extension = fileName.split('.').pop();
+
+        if (['doc', 'docx', 'rtf'].includes(extension)) {
+          object.userData.docPath = file.name;
+          object.userData.docFile = file;
+          loadDocToDocument(object, file);
+        } else {
+          console.error('Invalid file type. Only doc, docx, and rtf are supported.');
+        }
+      }
+    });
+  }
+
+  // Previous page button
+  const prevBtn = document.getElementById('document-prev-page');
+  if (prevBtn) {
+    prevBtn.addEventListener('click', () => {
+      animateDocumentPageTurn(object, -1);
+    });
+  }
+
+  // Next page button
+  const nextBtn = document.getElementById('document-next-page');
+  if (nextBtn) {
+    nextBtn.addEventListener('click', () => {
+      animateDocumentPageTurn(object, 1);
+    });
+  }
+}
+
+// Setup document customization handlers (for title, colors, etc.)
+function setupDocumentCustomizationHandlers(object) {
+  // Title input
+  const titleInput = document.getElementById('document-title-input');
+  if (titleInput) {
+    titleInput.value = object.userData.documentTitle || '';
+    titleInput.addEventListener('input', (e) => {
+      object.userData.documentTitle = e.target.value;
+
+      // Update title texture
+      const closedGroup = object.getObjectByName('closedDocument');
+      if (closedGroup) {
+        const folderTitle = closedGroup.getObjectByName('folderTitle');
+        if (folderTitle && object.userData.createTitleTexture) {
+          const newTexture = object.userData.createTitleTexture(e.target.value, 280, 124, 40);
+          if (folderTitle.material.map) folderTitle.material.map.dispose();
+          folderTitle.material.map = newTexture;
+          folderTitle.material.needsUpdate = true;
+          folderTitle.visible = e.target.value.trim().length > 0;
+        }
+      }
+
+      saveState();
+    });
+  }
+
+  // Title color picker
+  const titleColorInput = document.getElementById('document-title-color');
+  if (titleColorInput) {
+    titleColorInput.value = object.userData.titleColor || '#333333';
+    titleColorInput.addEventListener('input', (e) => {
+      object.userData.titleColor = e.target.value;
+
+      // Update title texture with new color
+      const closedGroup = object.getObjectByName('closedDocument');
+      if (closedGroup) {
+        const folderTitle = closedGroup.getObjectByName('folderTitle');
+        if (folderTitle && object.userData.createTitleTexture) {
+          const newTexture = object.userData.createTitleTexture(
+            object.userData.documentTitle || '',
+            280,
+            124,
+            40
+          );
+          if (folderTitle.material.map) folderTitle.material.map.dispose();
+          folderTitle.material.map = newTexture;
+          folderTitle.material.needsUpdate = true;
+        }
+      }
+
+      saveState();
+    });
+  }
+
+  // Folder color picker
+  const folderColorInput = document.getElementById('document-folder-color');
+  if (folderColorInput) {
+    folderColorInput.value = object.userData.mainColor || '#f59e0b';
+    folderColorInput.addEventListener('input', (e) => {
+      object.userData.mainColor = e.target.value;
+
+      // Update folder material color
+      const closedGroup = object.getObjectByName('closedDocument');
+      if (closedGroup) {
+        const folder = closedGroup.children.find(c => c.name === 'folder');
+        if (folder && folder.material) {
+          folder.material.color.set(e.target.value);
+        }
+      }
+
+      const openGroup = object.getObjectByName('openDocument');
+      if (openGroup) {
+        const leftFolder = openGroup.getObjectByName('leftFolder');
+        const rightFolder = openGroup.getObjectByName('rightFolder');
+        if (leftFolder && leftFolder.material) leftFolder.material.color.set(e.target.value);
+        if (rightFolder && rightFolder.material) rightFolder.material.color.set(e.target.value);
+      }
+
+      saveState();
+    });
+  }
+}
+
+// ============================================================================
 // LAPTOP POWER TOGGLE AND BOOT ANIMATION
 // ============================================================================
 
