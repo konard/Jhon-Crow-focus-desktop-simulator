@@ -13949,7 +13949,7 @@ function onMouseWheel(event) {
 
     // Zoom: scroll up = zoom in (closer), scroll down = zoom out (further)
     const zoomDelta = event.deltaY > 0 ? 0.08 : -0.08;
-    inspectionDrawingState.zoomDistance = Math.max(0.3, Math.min(2.0, inspectionDrawingState.zoomDistance + zoomDelta));
+    inspectionDrawingState.zoomDistance = Math.max(0.15, Math.min(3.5, inspectionDrawingState.zoomDistance + zoomDelta));
 
     // Update camera position using cached object position
     const objectWorldPos = inspectionDrawingState.objectWorldPos;
@@ -13968,7 +13968,7 @@ function onMouseWheel(event) {
 
     // Zoom: scroll up = zoom in (closer), scroll down = zoom out (further)
     const zoomDelta = event.deltaY > 0 ? 0.08 : -0.08;
-    bookReadingState.zoomDistance = Math.max(0.3, Math.min(2.0, bookReadingState.zoomDistance + zoomDelta));
+    bookReadingState.zoomDistance = Math.max(0.15, Math.min(3.5, bookReadingState.zoomDistance + zoomDelta));
 
     // Update camera position using cached book position
     const bookWorldPos = bookReadingState.bookWorldPos;
@@ -21259,21 +21259,25 @@ function setupMagazineCustomizationHandlers(object) {
 
 // Load document file (doc, docx, or rtf) into document folder
 async function loadDocToDocument(docObject, file) {
+  console.log('[DOC-UPLOAD] loadDocToDocument called, file:', file.name);
 
   // Prevent multiple simultaneous loads
   if (docObject.userData.isLoadingDoc) {
+    console.log('[DOC-UPLOAD] Already loading, skipping');
     return;
   }
 
   // Set loading flag immediately
   docObject.userData.isLoadingDoc = true;
+  console.log('[DOC-UPLOAD] Loading flag set to true');
 
   const fileName = file.name.toLowerCase();
   const fileExtension = fileName.split('.').pop();
+  console.log('[DOC-UPLOAD] File extension:', fileExtension);
 
   // Validate file type
   if (!['doc', 'docx', 'rtf'].includes(fileExtension)) {
-    console.error('Unsupported file format. Only doc, docx, and rtf are supported.');
+    console.error('[DOC-UPLOAD] Unsupported file format:', fileExtension);
     docObject.userData.isLoadingDoc = false;
     return;
   }
@@ -21285,13 +21289,16 @@ async function loadDocToDocument(docObject, file) {
   const reader = new FileReader();
 
   reader.onload = async () => {
+    console.log('[DOC-UPLOAD] FileReader.onload started');
     try {
       let htmlContent = '';
       let pageCount = 1;
 
       if (fileExtension === 'docx') {
+        console.log('[DOC-UPLOAD] Processing DOCX file');
         // Use Mammoth.js for DOCX files
         if (typeof mammoth === 'undefined') {
+          console.error('[DOC-UPLOAD] Mammoth.js not loaded!');
           docObject.userData.totalPages = 10;
           docObject.userData.currentPage = 0;
           docObject.userData.isLoadingDoc = false;
@@ -21299,9 +21306,11 @@ async function loadDocToDocument(docObject, file) {
           return;
         }
 
+        console.log('[DOC-UPLOAD] Converting DOCX to HTML');
         const arrayBuffer = reader.result;
         const result = await mammoth.convertToHtml({ arrayBuffer: arrayBuffer });
         htmlContent = result.value;
+        console.log('[DOC-UPLOAD] DOCX converted, HTML length:', htmlContent.length);
 
         // Estimate page count based on content length
         // Roughly 3000 characters per page
@@ -21309,6 +21318,7 @@ async function loadDocToDocument(docObject, file) {
         pageCount = Math.max(1, Math.ceil(textLength / 3000));
 
       } else if (fileExtension === 'rtf' || fileExtension === 'doc') {
+        console.log('[DOC-UPLOAD] Processing', fileExtension.toUpperCase(), 'file');
         // For RTF and DOC, try basic text extraction
         const text = reader.result;
 
@@ -21324,8 +21334,10 @@ async function loadDocToDocument(docObject, file) {
                      '</div>';
 
         pageCount = Math.max(1, Math.ceil(cleanText.length / 3000));
+        console.log('[DOC-UPLOAD]', fileExtension.toUpperCase(), 'processed, pageCount:', pageCount);
       }
 
+      console.log('[DOC-UPLOAD] Storing content, totalPages:', pageCount);
       // Store the processed content
       docObject.userData.htmlContent = htmlContent;
       docObject.userData.totalPages = pageCount;
@@ -21335,6 +21347,7 @@ async function loadDocToDocument(docObject, file) {
       docObject.userData.isLoadingDoc = false; // Clear loading flag
 
       // Update document thickness based on page count
+      console.log('[DOC-UPLOAD] Updating document thickness');
       updateDocumentThickness(docObject);
 
       // Store document as base64 data URL for persistence after reload
@@ -21348,20 +21361,30 @@ async function loadDocToDocument(docObject, file) {
 
       // Automatically open the document to show the content
       if (!docObject.userData.isOpen) {
+        console.log('[DOC-UPLOAD] Opening document automatically');
         toggleDocumentOpen(docObject);
+      } else {
+        console.log('[DOC-UPLOAD] Document already open');
       }
 
       // Update the page surfaces with actual document content
+      console.log('[DOC-UPLOAD] Updating document pages with content');
       await updateDocumentPagesWithContent(docObject);
+      console.log('[DOC-UPLOAD] Document pages updated');
 
       // Refresh the modal to show the document content immediately
       const content = document.getElementById('interaction-content');
       if (content && interactionObject === docObject) {
+        console.log('[DOC-UPLOAD] Refreshing modal');
         content.innerHTML = getInteractionContent(docObject);
         setupDocumentHandlers(docObject);
+      } else {
+        console.log('[DOC-UPLOAD] Modal not refreshed (content missing or different object)');
       }
 
+      console.log('[DOC-UPLOAD] Saving state');
       saveState();
+      console.log('[DOC-UPLOAD] Document load COMPLETE!');
     } catch (error) {
       console.error('Error loading document:', error);
       docObject.userData.totalPages = 1;
@@ -21780,26 +21803,33 @@ function setupDocumentHandlers(object) {
 
   // Document file upload
   const docInput = document.getElementById('document-doc');
+  console.log('[DOC-UPLOAD] Setting up document-doc handler, element found:', !!docInput);
   if (docInput) {
     docInput.addEventListener('change', (e) => {
+      console.log('[DOC-UPLOAD] Change event fired, files:', e.target.files.length);
       const file = e.target.files[0];
       if (file) {
         const fileName = file.name.toLowerCase();
         const extension = fileName.split('.').pop();
+        console.log('[DOC-UPLOAD] File selected:', fileName, 'extension:', extension);
 
         // Validate file extension
         if (['doc', 'docx', 'rtf'].includes(extension)) {
+          console.log('[DOC-UPLOAD] Valid extension, calling loadDocToDocument');
           object.userData.docPath = file.name;
           object.userData.docFile = file;
           loadDocToDocument(object, file);
         } else {
-          console.error('Invalid file type. Only doc, docx, and rtf are supported.');
+          console.error('[DOC-UPLOAD] Invalid file type:', extension);
           alert('Invalid file type. Only doc, docx, and rtf are supported.');
         }
+      } else {
+        console.log('[DOC-UPLOAD] No file selected');
       }
       e.target.value = ''; // Reset input to allow selecting the same file again
     });
   } else {
+    console.error('[DOC-UPLOAD] document-doc element NOT FOUND');
   }
 
   // Previous page button
@@ -21911,26 +21941,34 @@ function setupDocumentCustomizationHandlers(object) {
 
   // Document file upload (edit mode)
   const docEditInput = document.getElementById('document-doc-edit');
+  console.log('[DOC-UPLOAD-EDIT] Setting up document-doc-edit handler, element found:', !!docEditInput);
   if (docEditInput) {
     docEditInput.addEventListener('change', (e) => {
+      console.log('[DOC-UPLOAD-EDIT] Change event fired, files:', e.target.files.length);
       const file = e.target.files[0];
       if (file) {
         const fileName = file.name.toLowerCase();
         const extension = fileName.split('.').pop();
+        console.log('[DOC-UPLOAD-EDIT] File selected:', fileName, 'extension:', extension);
 
         if (['doc', 'docx', 'rtf'].includes(extension)) {
+          console.log('[DOC-UPLOAD-EDIT] Valid extension, calling loadDocToDocument');
           object.userData.docPath = file.name;
           object.userData.docFile = file;
           loadDocToDocument(object, file);
           // Update customization panel to show new file
           updateCustomizationPanel(object);
         } else {
-          console.error('Invalid file type. Only doc, docx, and rtf are supported.');
+          console.error('[DOC-UPLOAD-EDIT] Invalid file type:', extension);
           alert('Invalid file type. Only doc, docx, and rtf are supported.');
         }
+      } else {
+        console.log('[DOC-UPLOAD-EDIT] No file selected');
       }
       e.target.value = ''; // Reset input to allow selecting the same file again
     });
+  } else {
+    console.error('[DOC-UPLOAD-EDIT] document-doc-edit element NOT FOUND');
   }
 }
 
