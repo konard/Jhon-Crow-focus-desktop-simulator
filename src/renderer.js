@@ -21740,6 +21740,42 @@ function animateDocumentPageTurn(docObject, direction) {
 
 // Setup document UI handlers
 function setupDocumentHandlers(object) {
+  // Toggle button
+  const toggleBtn = document.getElementById('document-toggle');
+  if (toggleBtn) {
+    toggleBtn.addEventListener('click', () => {
+      toggleDocumentOpen(object);
+
+      // Refresh modal
+      const content = document.getElementById('interaction-content');
+      content.innerHTML = getInteractionContent(object);
+      setupDocumentHandlers(object);
+    });
+  }
+
+  // Title input
+  const titleInput = document.getElementById('document-title');
+  if (titleInput) {
+    titleInput.addEventListener('change', (e) => {
+      object.userData.documentTitle = e.target.value;
+
+      // Update title texture
+      const closedGroup = object.getObjectByName('closedDocument');
+      if (closedGroup) {
+        const folderTitle = closedGroup.getObjectByName('folderTitle');
+        if (folderTitle && object.userData.createTitleTexture) {
+          const newTexture = object.userData.createTitleTexture(e.target.value, 280, 124, 40);
+          if (folderTitle.material.map) folderTitle.material.map.dispose();
+          folderTitle.material.map = newTexture;
+          folderTitle.material.needsUpdate = true;
+          folderTitle.visible = e.target.value.trim().length > 0;
+        }
+      }
+
+      saveState();
+    });
+  }
+
   // Document file upload
   const docInput = document.getElementById('document-doc');
   if (docInput) {
@@ -21787,6 +21823,11 @@ function setupDocumentHandlers(object) {
   if (prevBtn) {
     prevBtn.addEventListener('click', () => {
       animateDocumentPageTurn(object, -1);
+
+      // Refresh modal
+      const content = document.getElementById('interaction-content');
+      content.innerHTML = getInteractionContent(object);
+      setupDocumentHandlers(object);
     });
   }
 
@@ -21795,6 +21836,11 @@ function setupDocumentHandlers(object) {
   if (nextBtn) {
     nextBtn.addEventListener('click', () => {
       animateDocumentPageTurn(object, 1);
+
+      // Refresh modal
+      const content = document.getElementById('interaction-content');
+      content.innerHTML = getInteractionContent(object);
+      setupDocumentHandlers(object);
     });
   }
 }
