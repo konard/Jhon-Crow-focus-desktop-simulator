@@ -13937,7 +13937,7 @@ function onMouseWheel(event) {
 
     // Zoom: scroll up = zoom in (closer), scroll down = zoom out (further)
     const zoomDelta = event.deltaY > 0 ? 0.08 : -0.08;
-    inspectionDrawingState.zoomDistance = Math.max(0.3, Math.min(2.0, inspectionDrawingState.zoomDistance + zoomDelta));
+    inspectionDrawingState.zoomDistance = Math.max(0.15, Math.min(3.5, inspectionDrawingState.zoomDistance + zoomDelta));
 
     // Update camera position using cached object position
     const objectWorldPos = inspectionDrawingState.objectWorldPos;
@@ -13956,7 +13956,7 @@ function onMouseWheel(event) {
 
     // Zoom: scroll up = zoom in (closer), scroll down = zoom out (further)
     const zoomDelta = event.deltaY > 0 ? 0.08 : -0.08;
-    bookReadingState.zoomDistance = Math.max(0.3, Math.min(2.0, bookReadingState.zoomDistance + zoomDelta));
+    bookReadingState.zoomDistance = Math.max(0.15, Math.min(3.5, bookReadingState.zoomDistance + zoomDelta));
 
     // Update camera position using cached book position
     const bookWorldPos = bookReadingState.bookWorldPos;
@@ -21731,7 +21731,11 @@ function setupDocumentHandlers(object) {
   // Document file upload
   const docInput = document.getElementById('document-doc');
   if (docInput) {
-    docInput.addEventListener('change', (e) => {
+    // Clone to remove old event listeners
+    const newDocInput = docInput.cloneNode(true);
+    docInput.parentNode.replaceChild(newDocInput, docInput);
+
+    newDocInput.addEventListener('change', (e) => {
       const file = e.target.files[0];
       if (file) {
         const fileName = file.name.toLowerCase();
@@ -21746,13 +21750,19 @@ function setupDocumentHandlers(object) {
           console.error('Invalid file type. Only doc, docx, and rtf are supported.');
         }
       }
+      // Reset input value to allow uploading the same file again
+      e.target.value = '';
     });
   }
 
   // Edit mode document upload
   const docEditInput = document.getElementById('document-doc-edit');
   if (docEditInput) {
-    docEditInput.addEventListener('change', (e) => {
+    // Clone to remove old event listeners
+    const newDocEditInput = docEditInput.cloneNode(true);
+    docEditInput.parentNode.replaceChild(newDocEditInput, docEditInput);
+
+    newDocEditInput.addEventListener('change', (e) => {
       const file = e.target.files[0];
       if (file) {
         const fileName = file.name.toLowerCase();
@@ -21766,6 +21776,8 @@ function setupDocumentHandlers(object) {
           console.error('Invalid file type. Only doc, docx, and rtf are supported.');
         }
       }
+      // Reset input value to allow uploading the same file again
+      e.target.value = '';
     });
   }
 
