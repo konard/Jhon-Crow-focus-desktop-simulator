@@ -3004,6 +3004,7 @@ const PRESET_CREATORS = {
   pen: createPen,
   books: createBooks,
   magazine: createMagazine,
+  document: createDocument,
   'photo-frame': createPhotoFrame,
   globe: createGlobe,
   trophy: createTrophy,
@@ -3061,7 +3062,8 @@ const PALETTE_CATEGORIES = {
     icon: '📚',
     variants: [
       { id: 'books', name: 'Book', icon: '📕' },
-      { id: 'magazine', name: 'Magazine', icon: '📰' }
+      { id: 'magazine', name: 'Magazine', icon: '📰' },
+      { id: 'document', name: 'Document', icon: '📄' }
     ],
     activeIndex: 0
   },
@@ -4319,6 +4321,209 @@ function createMagazine(options = {}) {
   openGroup.add(rightPageSurface);
 
   // No visible spine when open - pages meet flush for spread images
+
+  group.add(openGroup);
+
+  group.position.y = getDeskSurfaceY();
+
+  return group;
+}
+
+function createDocument(options = {}) {
+  const group = new THREE.Group();
+  group.userData = {
+    type: 'document',
+    name: 'Document',
+    interactive: true, // Interactive - can open to view document
+    isOpen: false, // Whether document is open
+    openAngle: 0, // Animation angle
+    documentTitle: options.documentTitle || '',
+    titleColor: options.titleColor || '#333333', // Title text color
+    docPath: null, // Path to document file
+    currentPage: 0, // Current page index
+    totalPages: 0, // Total number of pages
+    docResolution: options.docResolution || 512, // Document rendering resolution (width in pixels)
+    mainColor: options.mainColor || '#f59e0b', // Amber/yellow color for folder
+    accentColor: options.accentColor || '#fbbf24',
+    coverFitMode: options.coverFitMode || 'cover' // Cover image fit mode: 'contain', 'cover', 'stretch'
+  };
+
+  // Document closed group (visible when closed) - appears as a folder
+  const closedGroup = new THREE.Group();
+  closedGroup.name = 'closedDocument';
+
+  // Folder cover - slightly larger than the papers inside
+  const folderMaterial = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(group.userData.mainColor),
+    roughness: 0.3, // Smoother than magazine for plastic/cardboard look
+    metalness: 0.1
+  });
+
+  // Folder dimensions (similar to magazine but with folder appearance)
+  const folderGeometry = new THREE.BoxGeometry(0.24, 0.015, 0.32);
+  const folder = new THREE.Mesh(folderGeometry, folderMaterial);
+  folder.name = 'folder';
+  folder.position.y = 0.0075;
+  folder.castShadow = true;
+  closedGroup.add(folder);
+
+  // Papers (white interior) - visible from the edges, slightly smaller than folder
+  const papersMaterial = new THREE.MeshStandardMaterial({
+    color: 0xffffff, // Pure white for documents
+    roughness: 0.9
+  });
+
+  const papersGeometry = new THREE.BoxGeometry(0.22, 0.012, 0.30);
+  const papers = new THREE.Mesh(papersGeometry, papersMaterial);
+  papers.position.y = 0.0075;
+  papers.name = 'papers';
+  closedGroup.add(papers);
+
+  // Folder tab/edge - thin accent on the side
+  const tabMaterial = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(group.userData.accentColor),
+    roughness: 0.3
+  });
+
+  const tabGeometry = new THREE.BoxGeometry(0.008, 0.016, 0.32);
+  const tab = new THREE.Mesh(tabGeometry, tabMaterial);
+  tab.position.set(-0.116, 0.0075, 0);
+  tab.castShadow = true;
+  closedGroup.add(tab);
+
+  // Title on folder - smaller than magazine
+  const createTitleTexture = (title, width, height, fontSize) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+
+    // Background matches main color
+    const mainHex = group.userData.mainColor;
+    ctx.fillStyle = mainHex;
+    ctx.fillRect(0, 0, width, height);
+
+    // Text styling - use configurable title color
+    ctx.fillStyle = group.userData.titleColor || '#333333';
+    ctx.font = `bold ${fontSize}px Arial, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    // Word wrap for long titles with padding
+    const paddingX = 20;
+    const paddingY = 20;
+    const maxWidth = width - paddingX * 2;
+    const maxHeight = height - paddingY * 2;
+
+    const paragraphs = title.split('\n');
+    const lines = [];
+
+    for (const paragraph of paragraphs) {
+      const words = paragraph.split(' ');
+      let currentLine = '';
+
+      for (const word of words) {
+        const testLine = currentLine ? currentLine + ' ' + word : word;
+        const metrics = ctx.measureText(testLine);
+        if (metrics.width > maxWidth && currentLine) {
+          lines.push(currentLine);
+          currentLine = word;
+        } else {
+          currentLine = testLine;
+        }
+      }
+      if (currentLine) lines.push(currentLine);
+    }
+
+    // Draw multiline title (centered vertically within padded area)
+    const lineHeight = fontSize * 1.2;
+    const totalHeight = lines.length * lineHeight;
+    const availableHeight = maxHeight;
+    const startY = paddingY + (availableHeight - totalHeight) / 2 + lineHeight / 2;
+
+    lines.forEach((line, i) => {
+      ctx.fillText(line, width / 2, startY + i * lineHeight);
+    });
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.needsUpdate = true;
+    return texture;
+  };
+
+  // Folder title - positioned at top
+  const folderTitleGeometry = new THREE.PlaneGeometry(0.20, 0.08);
+  const folderTitleTexture = createTitleTexture(group.userData.documentTitle, 280, 124, 40);
+  const folderTitleMaterial = new THREE.MeshStandardMaterial({
+    map: folderTitleTexture,
+    roughness: 0.3
+  });
+  const folderTitle = new THREE.Mesh(folderTitleGeometry, folderTitleMaterial);
+  folderTitle.rotation.x = -Math.PI / 2;
+  folderTitle.position.set(0, 0.016, -0.08);
+  folderTitle.name = 'folderTitle';
+  // Hide title background if title is empty or whitespace only
+  const titleText = group.userData.documentTitle || '';
+  folderTitle.visible = titleText.trim().length > 0;
+  closedGroup.add(folderTitle);
+
+  // Store the createTitleTexture function for later updates
+  group.userData.createTitleTexture = createTitleTexture;
+
+  group.add(closedGroup);
+
+  // Document open group (visible when open)
+  const openGroup = new THREE.Group();
+  openGroup.name = 'openDocument';
+  openGroup.visible = false;
+
+  // Left folder (back)
+  const leftFolderGeometry = new THREE.BoxGeometry(0.24, 0.003, 0.32);
+  const leftFolder = new THREE.Mesh(leftFolderGeometry, folderMaterial);
+  leftFolder.position.set(-0.12, 0.0015, 0);
+  leftFolder.name = 'leftFolder';
+  openGroup.add(leftFolder);
+
+  // Right folder (front flipped)
+  const rightFolder = new THREE.Mesh(leftFolderGeometry, folderMaterial);
+  rightFolder.position.set(0.12, 0.0015, 0);
+  rightFolder.name = 'rightFolder';
+  openGroup.add(rightFolder);
+
+  // Page block on left
+  const leftPapersGeometry = new THREE.BoxGeometry(0.22, 0.008, 0.30);
+  const leftPapers = new THREE.Mesh(leftPapersGeometry, papersMaterial);
+  leftPapers.position.set(-0.11, 0.007, 0);
+  openGroup.add(leftPapers);
+
+  // Page block on right
+  const rightPapers = new THREE.Mesh(leftPapersGeometry, papersMaterial);
+  rightPapers.position.set(0.11, 0.007, 0);
+  openGroup.add(rightPapers);
+
+  // Left page surface (for displaying content)
+  const pageSurfaceGeometry = new THREE.PlaneGeometry(0.22, 0.30);
+  const leftPageSurfaceMaterial = new THREE.MeshStandardMaterial({
+    color: 0xffffff, // Pure white for documents
+    roughness: 0.9,
+    side: THREE.DoubleSide
+  });
+  const leftPageSurface = new THREE.Mesh(pageSurfaceGeometry, leftPageSurfaceMaterial);
+  leftPageSurface.rotation.x = -Math.PI / 2;
+  leftPageSurface.position.set(-0.11, 0.012, 0);
+  leftPageSurface.name = 'leftPageSurface';
+  openGroup.add(leftPageSurface);
+
+  // Right page surface
+  const rightPageSurfaceMaterial = new THREE.MeshStandardMaterial({
+    color: 0xffffff, // Pure white for documents
+    roughness: 0.9,
+    side: THREE.DoubleSide
+  });
+  const rightPageSurface = new THREE.Mesh(pageSurfaceGeometry, rightPageSurfaceMaterial);
+  rightPageSurface.rotation.x = -Math.PI / 2;
+  rightPageSurface.position.set(0.11, 0.012, 0);
+  rightPageSurface.name = 'rightPageSurface';
+  openGroup.add(rightPageSurface);
 
   group.add(openGroup);
 
