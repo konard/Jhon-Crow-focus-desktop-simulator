@@ -11405,9 +11405,53 @@ function setupEventListeners() {
         if (wasdKey === 'KeyA') bookReadingState.panOffsetX -= panSpeed;
         if (wasdKey === 'KeyD') bookReadingState.panOffsetX += panSpeed;
 
-        // Clamp pan offsets to reasonable limits
-        bookReadingState.panOffsetX = Math.max(-1.5, Math.min(1.5, bookReadingState.panOffsetX));
-        bookReadingState.panOffsetZ = Math.max(-1.5, Math.min(1.5, bookReadingState.panOffsetZ));
+        // Calculate dynamic constraints based on book dimensions and current viewport size
+        // This ensures camera stays within book boundaries
+        const bookType = bookReadingState.book.userData.type;
+        let bookHalfWidth, bookHalfDepth;
+
+        if (bookType === 'magazine') {
+          bookHalfWidth = 0.22; // Half of open magazine width
+          bookHalfDepth = 0.15; // Half of magazine depth
+        } else {
+          bookHalfWidth = 0.28; // Half of open book width
+          bookHalfDepth = 0.19; // Half of book depth
+        }
+
+        // Calculate visible area at current zoom level
+        const bookY = bookWorldPos.y;
+        const bookPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -bookY);
+        const raycaster = new THREE.Raycaster();
+
+        // Get viewport corner intersections to calculate visible area
+        const corners = [
+          new THREE.Vector2(-1, -1), // top-left
+          new THREE.Vector2(1, -1),  // top-right
+          new THREE.Vector2(-1, 1),  // bottom-left
+          new THREE.Vector2(1, 1)    // bottom-right
+        ];
+
+        const intersections = corners.map(corner => {
+          raycaster.setFromCamera(corner, camera);
+          const intersectPoint = new THREE.Vector3();
+          raycaster.ray.intersectPlane(bookPlane, intersectPoint);
+          return intersectPoint;
+        });
+
+        const minX = Math.min(intersections[0].x, intersections[2].x);
+        const maxX = Math.max(intersections[1].x, intersections[3].x);
+        const minZ = Math.min(intersections[2].z, intersections[3].z);
+        const maxZ = Math.max(intersections[0].z, intersections[1].z);
+
+        const visibleWidth = maxX - minX;
+        const visibleHeight = maxZ - minZ;
+
+        // Apply dynamic constraints to keep book within viewport
+        const maxPanX = bookHalfWidth + (visibleWidth / 2);
+        const maxPanZ = bookHalfDepth + (visibleHeight / 2);
+
+        bookReadingState.panOffsetX = Math.max(-maxPanX, Math.min(maxPanX, bookReadingState.panOffsetX));
+        bookReadingState.panOffsetZ = Math.max(-maxPanZ, Math.min(maxPanZ, bookReadingState.panOffsetZ));
 
         // Update camera position
         camera.position.set(
@@ -11637,7 +11681,37 @@ function setupEventListeners() {
           bookReadingState.panOffsetZ = shiftZ;
         }
 
-        // Update camera position (no clamping - allow full corner navigation)
+        // Apply constraints to keep camera within book boundaries
+        // Calculate maximum allowed pan offsets based on book dimensions and viewport size
+        // The viewport size (visibleWidth/visibleHeight) depends on zoom level
+        // At closer zoom, viewport is smaller, so constraints are tighter
+        //
+        // Maximum pan right: book's right edge - viewport's left edge = bookHalfWidth
+        // Maximum pan left: -(book's left edge - viewport's right edge) = bookHalfWidth
+        // But we need to account for viewport width: when panning right, we can go until
+        // the book's left edge reaches the viewport's right edge
+        //
+        // For X-axis (horizontal):
+        // - When panOffsetX is positive (camera moves right), book appears to shift left
+        // - Max positive panOffsetX: book's right edge at viewport's left edge
+        // - Max negative panOffsetX: book's left edge at viewport's right edge
+        //
+        // For Z-axis (vertical/depth):
+        // - When panOffsetZ is positive (camera moves forward/+Z), book appears to shift backward
+        // - Max positive panOffsetZ: book's bottom edge at viewport's top edge
+        // - Max negative panOffsetZ: book's top edge at viewport's bottom edge
+        //
+        // The constraint: ensure at least some part of the book is always visible
+        // This means: allow panning until a book edge reaches the opposite viewport edge
+
+        const maxPanX = bookHalfWidth + (visibleWidth / 2);
+        const maxPanZ = bookHalfDepth + (visibleHeight / 2);
+
+        // Clamp pan offsets to keep book within viewport bounds
+        bookReadingState.panOffsetX = Math.max(-maxPanX, Math.min(maxPanX, bookReadingState.panOffsetX));
+        bookReadingState.panOffsetZ = Math.max(-maxPanZ, Math.min(maxPanZ, bookReadingState.panOffsetZ));
+
+        // Update camera position with clamped offsets
         camera.position.set(
           bookWorldPos.x + bookReadingState.panOffsetX,
           bookWorldPos.y + bookReadingState.zoomDistance,
