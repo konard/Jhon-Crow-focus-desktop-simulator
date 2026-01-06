@@ -1,0 +1,203 @@
+Focus Desktop Simulator - Activity Log
+Generated: 2026-01-06T13:44:43.773Z
+Session Duration: 15.45s
+
+================================================================================
+
+
+[2026-01-06T13:44:46.274Z] [+17.95s] [SYSTEM] Log recording started
+  Details: {
+    "filePath": "I:\\Загрузки\\focuse-desktop-sim\\activity-log-2026-01-06T13-44-43-773Z.txt"
+  }
+
+[2026-01-06T13:44:47.813Z] [+19.49s] [MODE] Pointer lock activated (FPS camera mode)
+  Details: {
+    "cameraPosition": {
+      "x": "0.54",
+      "y": "3.25",
+      "z": "4.49"
+    }
+  }
+
+[2026-01-06T13:44:49.860Z] [+21.54s] [LAPTOP] Lid drag started
+  Details: {
+    "objectId": 6,
+    "currentRotation": "-30.0°",
+    "currentRotationRadians": "-0.5236"
+  }
+
+[2026-01-06T13:44:51.037Z] [+22.71s] [LAPTOP] Lid drag ended
+  Details: {
+    "objectId": 6,
+    "finalRotation": "-30.0°",
+    "finalRotationRadians": "-0.5236",
+    "isOpen": true
+  }
+
+[2026-01-06T13:44:53.012Z] [+24.69s] [LAPTOP] Lid drag started
+  Details: {
+    "objectId": 6,
+    "currentRotation": "-30.0°",
+    "currentRotationRadians": "-0.5236"
+  }
+
+[2026-01-06T13:44:53.453Z] [+25.13s] [LAPTOP] Lid drag ended
+  Details: {
+    "objectId": 6,
+    "finalRotation": "-30.0°",
+    "finalRotationRadians": "-0.5236",
+    "isOpen": true
+  }
+
+[2026-01-06T13:44:53.837Z] [+25.51s] [OBJECT] Object picked up (lifting)
+  Details: {
+    "type": "laptop",
+    "id": 6,
+    "position": {
+      "x": "4.47",
+      "z": "3.07",
+      "y": "0.10"
+    }
+  }
+
+[2026-01-06T13:44:55.397Z] [+27.07s] [OBJECT] Object dropped
+  Details: {
+    "type": "laptop",
+    "id": 6,
+    "position": {
+      "x": "0.65",
+      "z": "2.69",
+      "y": "0.83"
+    },
+    "rotation": "-0.90",
+    "scale": "1.28"
+  }
+
+[2026-01-06T13:44:57.671Z] [+29.35s] [LAPTOP] Lid drag started
+  Details: {
+    "objectId": 6,
+    "currentRotation": "-30.0°",
+    "currentRotationRadians": "-0.5236"
+  }
+
+[2026-01-06T13:44:58.580Z] [+30.26s] [LAPTOP] Lid drag ended
+  Details: {
+    "objectId": 6,
+    "finalRotation": "-30.0°",
+    "finalRotationRadians": "-0.5236",
+    "isOpen": true
+  }
+
+[2026-01-06T13:45:00.071Z] [+31.75s] [LAPTOP] Lid drag started
+  Details: {
+    "objectId": 6,
+    "currentRotation": "-30.0°",
+    "currentRotationRadians": "-0.5236"
+  }
+
+[2026-01-06T13:45:00.740Z] [+32.42s] [LAPTOP] Lid drag ended
+  Details: {
+    "objectId": 6,
+    "finalRotation": "-30.0°",
+    "finalRotationRadians": "-0.5236",
+    "isOpen": true
+  }
+
+[2026-01-06T13:45:01.838Z] [+33.52s] [LAPTOP] Lid drag started
+  Details: {
+    "objectId": 6,
+    "currentRotation": "-30.0°",
+    "currentRotationRadians": "-0.5236"
+  }
+
+[2026-01-06T13:45:02.716Z] [+34.39s] [LAPTOP] Lid drag ended
+  Details: {
+    "objectId": 6,
+    "finalRotation": "-30.0°",
+    "finalRotationRadians": "-0.5236",
+    "isOpen": true
+  }
+
+[2026-01-06T13:45:03.956Z] [+35.63s] [LAPTOP] Lid drag started
+  Details: {
+    "objectId": 6,
+    "currentRotation": "-30.0°",
+    "currentRotationRadians": "-0.5236"
+  }
+
+[2026-01-06T13:45:04.532Z] [+36.21s] [LAPTOP] Lid drag ended
+  Details: {
+    "objectId": 6,
+    "finalRotation": "-30.0°",
+    "finalRotationRadians": "-0.5236",
+    "isOpen": true
+  }
+
+[2026-01-06T13:45:05.271Z] [+36.95s] [LAPTOP] Lid drag started
+  Details: {
+    "objectId": 6,
+    "currentRotation": "-30.0°",
+    "currentRotationRadians": "-0.5236"
+  }
+
+[2026-01-06T13:45:05.732Z] [+37.41s] [LAPTOP] Lid drag ended
+  Details: {
+    "objectId": 6,
+    "finalRotation": "-30.0°",
+    "finalRotationRadians": "-0.5236",
+    "isOpen": true
+  }
+
+[2026-01-06T13:45:06.164Z] [+37.84s] [LAPTOP] Lid drag started
+  Details: {
+    "objectId": 6,
+    "currentRotation": "-30.0°",
+    "currentRotationRadians": "-0.5236"
+  }
+
+[2026-01-06T13:45:06.764Z] [+38.44s] [LAPTOP] Lid drag ended
+  Details: {
+    "objectId": 6,
+    "finalRotation": "-30.0°",
+    "finalRotationRadians": "-0.5236",
+    "isOpen": true
+  }
+
+[2026-01-06T13:45:07.596Z] [+39.27s] [LAPTOP] Lid drag started
+  Details: {
+    "objectId": 6,
+    "currentRotation": "-30.0°",
+    "currentRotationRadians": "-0.5236"
+  }
+
+[2026-01-06T13:45:08.092Z] [+39.77s] [LAPTOP] Lid drag ended
+  Details: {
+    "objectId": 6,
+    "finalRotation": "-30.0°",
+    "finalRotationRadians": "-0.5236",
+    "isOpen": true
+  }
+
+[2026-01-06T13:45:11.828Z] [+43.51s] [LAPTOP] Lid drag started
+  Details: {
+    "objectId": 6,
+    "currentRotation": "-30.0°",
+    "currentRotationRadians": "-0.5236"
+  }
+
+[2026-01-06T13:45:13.180Z] [+44.86s] [LAPTOP] Lid drag ended
+  Details: {
+    "objectId": 6,
+    "finalRotation": "-30.0°",
+    "finalRotationRadians": "-0.5236",
+    "isOpen": true
+  }
+
+[2026-01-06T13:45:15.076Z] [+46.75s] [MODE] Pointer lock deactivated
+
+[2026-01-06T13:45:16.316Z] [+47.99s] [USER_ACTION] Stop log recording button clicked
+
+
+================================================================================
+
+Session ended: 2026-01-06T13:45:16.317Z
