@@ -12924,28 +12924,93 @@ function onMouseDown(event) {
           checkMesh = checkMesh.parent;
         }
 
-        // If clicking on the lid, start lid dragging instead of object dragging
+        // If clicking on the lid, determine whether to drag lid or whole laptop
         if (isClickingLid) {
-          isLidDragging = true;
-          lidDragState.laptop = object;
-          lidDragState.startLidRotation = object.userData.lidRotation;
-          lidDragState.accumulatedDeltaY = 0; // Reset accumulated delta
+          // Check if lid is nearly closed (rotation close to 0)
+          const isLidNearlyClosed = Math.abs(object.userData.lidRotation) < 0.15; // ~8.5 degrees threshold
 
-          // Log lid drag start
-          const rotationDegrees = (object.userData.lidRotation * 180 / Math.PI).toFixed(1);
-          activityLog.add('LAPTOP', 'Lid drag started', {
-            objectId: object.userData.id,
-            currentRotation: `${rotationDegrees}°`,
-            currentRotationRadians: object.userData.lidRotation.toFixed(4)
-          });
-          console.log('[LAPTOP] Lid drag started:', {
-            objectId: object.userData.id,
-            currentRotation: `${rotationDegrees}°`,
-            currentRotationRadians: object.userData.lidRotation.toFixed(4)
-          });
+          if (isLidNearlyClosed) {
+            // When lid is nearly closed, check where user clicked on the screen
+            // Far part (bottom when open, near hinge) → move whole laptop
+            // Near part (top when open, far from hinge) → open lid
 
-          document.getElementById('customization-panel').classList.remove('open');
-          return; // Don't start normal object dragging
+            // Get intersection point in world coordinates
+            const intersectionPoint = intersects[0].point.clone();
+
+            // Convert to local coordinates of the screenGroup
+            const screenGroupWorldMatrix = new THREE.Matrix4();
+            screenGroup.updateMatrixWorld(true);
+            screenGroupWorldMatrix.copy(screenGroup.matrixWorld).invert();
+            const localPoint = intersectionPoint.applyMatrix4(screenGroupWorldMatrix);
+
+            // Screen geometry is 0.78 x 0.5, centered at origin in local space
+            // localPoint.y: -0.25 = bottom (near hinge), +0.25 = top (far from hinge)
+            // Split at y = 0 (middle of screen)
+            const clickedOnTopPart = localPoint.y > 0;
+
+            console.log('[LAPTOP] Closed lid click:', {
+              objectId: object.userData.id,
+              localY: localPoint.y.toFixed(3),
+              clickedOnTopPart: clickedOnTopPart,
+              action: clickedOnTopPart ? 'open lid' : 'move laptop'
+            });
+
+            if (clickedOnTopPart) {
+              // Clicking on top part (far from hinge) → open the lid
+              isLidDragging = true;
+              lidDragState.laptop = object;
+              lidDragState.startLidRotation = object.userData.lidRotation;
+              lidDragState.accumulatedDeltaY = 0;
+
+              const rotationDegrees = (object.userData.lidRotation * 180 / Math.PI).toFixed(1);
+              activityLog.add('LAPTOP', 'Lid drag started (from closed)', {
+                objectId: object.userData.id,
+                currentRotation: `${rotationDegrees}°`,
+                clickPosition: 'top part (to open)'
+              });
+              console.log('[LAPTOP] Lid drag started (from closed):', {
+                objectId: object.userData.id,
+                currentRotation: `${rotationDegrees}°`,
+                clickPosition: 'top part (to open)'
+              });
+
+              document.getElementById('customization-panel').classList.remove('open');
+              return; // Don't start normal object dragging
+            } else {
+              // Clicking on bottom part (near hinge) → allow normal object dragging
+              // Don't return here, let it fall through to normal dragging logic
+              activityLog.add('LAPTOP', 'Moving closed laptop', {
+                objectId: object.userData.id,
+                clickPosition: 'bottom part (near hinge)'
+              });
+              console.log('[LAPTOP] Moving closed laptop:', {
+                objectId: object.userData.id,
+                clickPosition: 'bottom part (near hinge)'
+              });
+            }
+          } else {
+            // Lid is open - always start lid dragging when clicking on lid
+            isLidDragging = true;
+            lidDragState.laptop = object;
+            lidDragState.startLidRotation = object.userData.lidRotation;
+            lidDragState.accumulatedDeltaY = 0; // Reset accumulated delta
+
+            // Log lid drag start
+            const rotationDegrees = (object.userData.lidRotation * 180 / Math.PI).toFixed(1);
+            activityLog.add('LAPTOP', 'Lid drag started', {
+              objectId: object.userData.id,
+              currentRotation: `${rotationDegrees}°`,
+              currentRotationRadians: object.userData.lidRotation.toFixed(4)
+            });
+            console.log('[LAPTOP] Lid drag started:', {
+              objectId: object.userData.id,
+              currentRotation: `${rotationDegrees}°`,
+              currentRotationRadians: object.userData.lidRotation.toFixed(4)
+            });
+
+            document.getElementById('customization-panel').classList.remove('open');
+            return; // Don't start normal object dragging
+          }
         }
       }
 
@@ -13219,7 +13284,9 @@ function onMouseMove(event) {
     const rotationSensitivity = 0.003; // Radians per pixel (adjusted for smooth control)
 
     // Calculate target rotation: start rotation + accumulated movement
-    let newRotation = lidDragState.startLidRotation - (lidDragState.accumulatedDeltaY * rotationSensitivity);
+    // Positive deltaY (drag forward/down) = close lid (toward 0)
+    // Negative deltaY (drag backward/up) = open lid (more negative rotation)
+    let newRotation = lidDragState.startLidRotation + (lidDragState.accumulatedDeltaY * rotationSensitivity);
 
     // Clamp rotation between 0 (closed) and -π/2.2 (fully open, ~130 degrees)
     // This allows more realistic laptop lid movement like a real laptop
