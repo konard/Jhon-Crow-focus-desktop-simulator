@@ -3646,9 +3646,9 @@ function createLaptop(options = {}) {
     powerButtonGlow: options.powerButtonGlow !== undefined ? options.powerButtonGlow : true, // Whether button glows
     powerButtonBrightness: options.powerButtonBrightness !== undefined ? options.powerButtonBrightness : 50, // Glow brightness 0-100
     powerLedColor: options.powerLedColor || '#00ff00', // Power LED on color
-    isLidOpen: true, // Whether laptop lid is open (starts at normal position)
-    lidRotation: -Math.PI / 2, // Current lid rotation (-90° = normal laptop at 90° physical angle, can move ±90° from here)
-    targetLidRotation: -Math.PI / 2 // Target lid rotation for smooth animation (starts at normal position)
+    isLidOpen: false, // Whether laptop lid is open (starts closed)
+    lidRotation: 0, // Current lid rotation (0° = fully closed, can open to -85°)
+    targetLidRotation: 0 // Target lid rotation for smooth animation (starts closed)
   };
 
   // Base/keyboard part
@@ -13313,23 +13313,21 @@ function onMouseMove(event) {
     const screenFacesCamera = normalizedRotationY < Math.PI / 2 || normalizedRotationY > 3 * Math.PI / 2;
 
     // Calculate direction multiplier based on orientation
-    // Laptop starts at -90° (normal position), can close to 0° or open to -180° (fully open)
+    // Laptop starts at 0° (fully closed), can open to -85° (normal working position)
     // When screen faces camera: pulling down (positive deltaY) = opening lid = more negative rotation
     // When screen faces away: pulling down (positive deltaY) = closing lid = toward 0 (less negative)
     const directionMultiplier = screenFacesCamera ? -1 : 1;
 
     // Calculate target rotation with orientation-aware direction
-    // Positive deltaY (pull down/toward you) with screen facing camera = open lid (more negative)
-    // Positive deltaY (pull down/toward you) with screen facing away = close lid (toward 0)
+    // Positive deltaY (pull down/toward you) with screen facing camera = open lid (more negative, toward -85°)
+    // Positive deltaY (pull down/toward you) with screen facing away = close lid (toward 0°)
     let newRotation = lidDragState.startLidRotation - (lidDragState.accumulatedDeltaY * rotationSensitivity * directionMultiplier);
 
-    // Clamp rotation to allow ±90° from starting position
-    // Starting position: -90° (normal laptop at 90° physical angle)
-    // Can close: -90° to 0° = 90° range (toward closed position)
-    // Can open: -90° to -180° = 90° range (toward fully open convertible)
-    // Total range: 180° (-180° to 0°)
-    const minRotation = -Math.PI; // Fully open convertible (-180° = 90° more open from start)
-    const maxRotation = 0; // Fully closed (0° = 90° more closed from start)
+    // Clamp rotation range: 0° (closed) to -85° (open)
+    // Starting position: 0° (fully closed)
+    // Can open: 0° to -85° range (normal laptop opening angle, stops just before -90°)
+    const minRotation = -85 * Math.PI / 180; // Open to -85° (close to vertical, normal laptop angle)
+    const maxRotation = 0; // Fully closed (0°)
     newRotation = Math.max(minRotation, Math.min(maxRotation, newRotation));
 
     // Only update and log if rotation actually changed
@@ -13337,7 +13335,7 @@ function onMouseMove(event) {
     if (rotationChanged) {
       // Set target rotation for smooth animation
       laptop.userData.targetLidRotation = newRotation;
-      laptop.userData.isLidOpen = (newRotation < -0.1); // Consider open if rotated more than ~6 degrees from closed (starts true at -90°)
+      laptop.userData.isLidOpen = (newRotation < -0.1); // Consider open if rotated more than ~6 degrees from closed
 
       // Log lid movement with orientation info
       const rotationDegrees = (newRotation * 180 / Math.PI).toFixed(1);
