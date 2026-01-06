@@ -11752,6 +11752,25 @@ function setupEventListeners() {
     });
   }
 
+  // Interface Settings - Show Control Hints
+  const showControlHintsCheckbox = document.getElementById('show-control-hints-checkbox');
+  const instructionsElement = document.getElementById('instructions');
+  if (showControlHintsCheckbox && instructionsElement) {
+    showControlHintsCheckbox.addEventListener('change', (e) => {
+      const enabled = e.target.checked;
+      activityLog.add('USER_ACTION', 'Show control hints toggled', { enabled });
+
+      if (enabled) {
+        instructionsElement.classList.add('visible');
+      } else {
+        instructionsElement.classList.remove('visible');
+      }
+
+      // Save state to persist setting across restarts
+      saveState();
+    });
+  }
+
   // Debug collision visualization toggle
   const toggleCollisionBtn = document.getElementById('toggle-collision-debug-btn');
   if (toggleCollisionBtn) {
@@ -23330,7 +23349,8 @@ async function saveStateImmediate() {
     windowSettings: {
       fullscreenBorderless: document.getElementById('fullscreen-borderless-checkbox')?.checked || false,
       ignoreShortcuts: document.getElementById('ignore-shortcuts-checkbox')?.checked || false,
-      muteOtherApps: document.getElementById('mute-other-apps-checkbox')?.checked || false
+      muteOtherApps: document.getElementById('mute-other-apps-checkbox')?.checked || false,
+      showControlHints: document.getElementById('show-control-hints-checkbox')?.checked || false
     }
   };
 
@@ -23419,6 +23439,19 @@ async function loadState() {
             window.electronAPI.setMuteOtherApps(true).catch(err => {
               console.error('Failed to restore mute other apps:', err);
             });
+          }
+        }
+
+        // Restore show control hints checkbox state and apply setting
+        const showControlHintsCheckbox = document.getElementById('show-control-hints-checkbox');
+        const instructionsElement = document.getElementById('instructions');
+        if (showControlHintsCheckbox && instructionsElement && savedSettings.showControlHints !== undefined) {
+          showControlHintsCheckbox.checked = savedSettings.showControlHints;
+          // Apply the setting
+          if (savedSettings.showControlHints) {
+            instructionsElement.classList.add('visible');
+          } else {
+            instructionsElement.classList.remove('visible');
           }
         }
       }
