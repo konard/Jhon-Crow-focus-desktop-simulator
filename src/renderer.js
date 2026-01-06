@@ -3670,6 +3670,8 @@ function createLaptop(options = {}) {
   const screenBackGeometry = new THREE.BoxGeometry(0.78, 0.5, 0.02);
   const screenBack = new THREE.Mesh(screenBackGeometry, baseMaterial);
   screenBack.castShadow = true;
+  // Move screen back up by half its height so rotation happens at bottom edge (hinge)
+  screenBack.position.y = 0.25;
   screenGroup.add(screenBack);
 
   // Screen display (starts black/off)
@@ -3682,10 +3684,14 @@ function createLaptop(options = {}) {
   });
   const display = new THREE.Mesh(displayGeometry, displayMaterial);
   display.position.z = 0.011;
+  // Move display up by half screen height to match screenBack positioning
+  display.position.y = 0.25;
   display.name = 'screen';
   screenGroup.add(display);
 
-  screenGroup.position.set(0, 0.28, -0.23);
+  // Position screenGroup at the hinge point (bottom edge of screen)
+  // Original position was y=0.28, but now we offset children by 0.25, so adjust group position down
+  screenGroup.position.set(0, 0.03, -0.23);
   screenGroup.rotation.x = -Math.PI / 6;
   group.add(screenGroup);
 
@@ -12964,15 +12970,22 @@ function onMouseDown(event) {
               lidDragState.accumulatedDeltaY = 0;
 
               const rotationDegrees = (object.userData.lidRotation * 180 / Math.PI).toFixed(1);
+              const normalizedRotationY = ((object.rotation.y % (2 * Math.PI)) + (2 * Math.PI)) % (2 * Math.PI);
+              const laptopRotationYDegrees = (normalizedRotationY * 180 / Math.PI).toFixed(1);
+              const screenFacesCamera = normalizedRotationY < Math.PI / 2 || normalizedRotationY > 3 * Math.PI / 2;
               activityLog.add('LAPTOP', 'Lid drag started (from closed)', {
                 objectId: object.userData.id,
                 currentRotation: `${rotationDegrees}°`,
-                clickPosition: 'top part (to open)'
+                clickPosition: 'top part (to open)',
+                laptopOrientation: `${laptopRotationYDegrees}°`,
+                screenFacesCamera: screenFacesCamera
               });
               console.log('[LAPTOP] Lid drag started (from closed):', {
                 objectId: object.userData.id,
                 currentRotation: `${rotationDegrees}°`,
-                clickPosition: 'top part (to open)'
+                clickPosition: 'top part (to open)',
+                laptopOrientation: `${laptopRotationYDegrees}°`,
+                screenFacesCamera: screenFacesCamera
               });
 
               document.getElementById('customization-panel').classList.remove('open');
@@ -12996,17 +13009,24 @@ function onMouseDown(event) {
             lidDragState.startLidRotation = object.userData.lidRotation;
             lidDragState.accumulatedDeltaY = 0; // Reset accumulated delta
 
-            // Log lid drag start
+            // Log lid drag start with orientation info
             const rotationDegrees = (object.userData.lidRotation * 180 / Math.PI).toFixed(1);
+            const normalizedRotationY = ((object.rotation.y % (2 * Math.PI)) + (2 * Math.PI)) % (2 * Math.PI);
+            const laptopRotationYDegrees = (normalizedRotationY * 180 / Math.PI).toFixed(1);
+            const screenFacesCamera = normalizedRotationY < Math.PI / 2 || normalizedRotationY > 3 * Math.PI / 2;
             activityLog.add('LAPTOP', 'Lid drag started', {
               objectId: object.userData.id,
               currentRotation: `${rotationDegrees}°`,
-              currentRotationRadians: object.userData.lidRotation.toFixed(4)
+              currentRotationRadians: object.userData.lidRotation.toFixed(4),
+              laptopOrientation: `${laptopRotationYDegrees}°`,
+              screenFacesCamera: screenFacesCamera
             });
             console.log('[LAPTOP] Lid drag started:', {
               objectId: object.userData.id,
               currentRotation: `${rotationDegrees}°`,
-              currentRotationRadians: object.userData.lidRotation.toFixed(4)
+              currentRotationRadians: object.userData.lidRotation.toFixed(4),
+              laptopOrientation: `${laptopRotationYDegrees}°`,
+              screenFacesCamera: screenFacesCamera
             });
 
             document.getElementById('customization-panel').classList.remove('open');
@@ -13276,18 +13296,31 @@ function onMouseMove(event) {
     const laptop = lidDragState.laptop;
 
     // Accumulate mouse Y movement (deltaY is already calculated at the top of this function)
-    // Moving mouse up (negative delta, dragging forward/pushing screen) = closing lid (toward 0)
-    // Moving mouse down (positive delta, dragging backward/pulling screen) = opening lid (more negative rotation)
     lidDragState.accumulatedDeltaY += deltaY;
 
     // Convert accumulated pixel movement to rotation
     // Sensitivity controls how much rotation per pixel movement
     const rotationSensitivity = 0.003; // Radians per pixel (adjusted for smooth control)
 
-    // Calculate target rotation: start rotation - accumulated movement
-    // Negative deltaY (mouse up, push forward) = close lid (toward 0)
-    // Positive deltaY (mouse down, pull backward) = open lid (more negative rotation)
-    let newRotation = lidDragState.startLidRotation - (lidDragState.accumulatedDeltaY * rotationSensitivity);
+    // Determine laptop orientation to adjust drag direction
+    // Normalize the laptop's Y rotation to [0, 2π]
+    const normalizedRotationY = ((laptop.rotation.y % (2 * Math.PI)) + (2 * Math.PI)) % (2 * Math.PI);
+
+    // Determine if screen faces camera (toward negative Z) or away from camera
+    // When rotation.y is near 0 or 2π, screen faces forward (toward camera)
+    // When rotation.y is near π, screen faces backward (away from camera)
+    // We consider "facing camera" if rotation is in range [-π/2, π/2] (or [0, π/2] and [3π/2, 2π])
+    const screenFacesCamera = normalizedRotationY < Math.PI / 2 || normalizedRotationY > 3 * Math.PI / 2;
+
+    // Calculate direction multiplier based on orientation
+    // When screen faces camera: pulling down (positive deltaY) = opening lid = more negative rotation
+    // When screen faces away: pulling down (positive deltaY) = closing lid = toward 0 (less negative)
+    const directionMultiplier = screenFacesCamera ? -1 : 1;
+
+    // Calculate target rotation with orientation-aware direction
+    // Positive deltaY (pull down/toward you) with screen facing camera = open lid (more negative)
+    // Positive deltaY (pull down/toward you) with screen facing away = close lid (toward 0)
+    let newRotation = lidDragState.startLidRotation - (lidDragState.accumulatedDeltaY * rotationSensitivity * directionMultiplier);
 
     // Clamp rotation between 0 (closed) and -π/2.2 (fully open, ~130 degrees)
     // This allows more realistic laptop lid movement like a real laptop
@@ -13302,19 +13335,26 @@ function onMouseMove(event) {
       laptop.userData.targetLidRotation = newRotation;
       laptop.userData.isLidOpen = (newRotation < -0.1); // Consider open if > ~6 degrees
 
-      // Log lid movement
+      // Log lid movement with orientation info
       const rotationDegrees = (newRotation * 180 / Math.PI).toFixed(1);
+      const laptopRotationYDegrees = (normalizedRotationY * 180 / Math.PI).toFixed(1);
       activityLog.add('LAPTOP', 'Lid position changed', {
         objectId: laptop.userData.id,
         newRotation: `${rotationDegrees}°`,
         newRotationRadians: newRotation.toFixed(4),
-        isOpen: laptop.userData.isLidOpen
+        isOpen: laptop.userData.isLidOpen,
+        laptopOrientation: `${laptopRotationYDegrees}°`,
+        screenFacesCamera: screenFacesCamera,
+        directionMultiplier: directionMultiplier
       });
       console.log('[LAPTOP] Lid position changed:', {
         objectId: laptop.userData.id,
         newRotation: `${rotationDegrees}°`,
         newRotationRadians: newRotation.toFixed(4),
-        isOpen: laptop.userData.isLidOpen
+        isOpen: laptop.userData.isLidOpen,
+        laptopOrientation: `${laptopRotationYDegrees}°`,
+        screenFacesCamera: screenFacesCamera,
+        directionMultiplier: directionMultiplier
       });
     }
   }
