@@ -12930,9 +12930,10 @@ function onMouseDown(event) {
           const isLidNearlyClosed = Math.abs(object.userData.lidRotation) < 0.15; // ~8.5 degrees threshold
 
           if (isLidNearlyClosed) {
-            // When lid is nearly closed, check where user clicked on the screen
-            // Far part (bottom when open, near hinge) → move whole laptop
-            // Near part (top when open, far from hinge) → open lid
+            // When lid is nearly closed, check where user clicked on the closed screen
+            // When closed, screen lies flat on keyboard, so:
+            // - "Far part" (back edge of closed laptop, near hinge, was bottom when open) → move whole laptop
+            // - "Near part" (front edge of closed laptop, far from hinge, was top when open) → open lid
 
             // Get intersection point in world coordinates
             const intersectionPoint = intersects[0].point.clone();
@@ -13275,18 +13276,18 @@ function onMouseMove(event) {
     const laptop = lidDragState.laptop;
 
     // Accumulate mouse Y movement (deltaY is already calculated at the top of this function)
-    // Moving mouse up (negative delta) = opening lid (more negative rotation)
-    // Moving mouse down (positive delta) = closing lid (toward 0)
+    // Moving mouse up (negative delta, dragging forward/pushing screen) = closing lid (toward 0)
+    // Moving mouse down (positive delta, dragging backward/pulling screen) = opening lid (more negative rotation)
     lidDragState.accumulatedDeltaY += deltaY;
 
     // Convert accumulated pixel movement to rotation
     // Sensitivity controls how much rotation per pixel movement
     const rotationSensitivity = 0.003; // Radians per pixel (adjusted for smooth control)
 
-    // Calculate target rotation: start rotation + accumulated movement
-    // Positive deltaY (drag forward/down) = close lid (toward 0)
-    // Negative deltaY (drag backward/up) = open lid (more negative rotation)
-    let newRotation = lidDragState.startLidRotation + (lidDragState.accumulatedDeltaY * rotationSensitivity);
+    // Calculate target rotation: start rotation - accumulated movement
+    // Negative deltaY (mouse up, push forward) = close lid (toward 0)
+    // Positive deltaY (mouse down, pull backward) = open lid (more negative rotation)
+    let newRotation = lidDragState.startLidRotation - (lidDragState.accumulatedDeltaY * rotationSensitivity);
 
     // Clamp rotation between 0 (closed) and -π/2.2 (fully open, ~130 degrees)
     // This allows more realistic laptop lid movement like a real laptop
