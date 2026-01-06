@@ -11650,6 +11650,36 @@ function setupEventListeners() {
     }
   });
 
+  // Exit Application button
+  document.getElementById('exit-app-btn').addEventListener('click', async () => {
+    if (confirm('Are you sure you want to exit the application? The current state will be saved and sound settings will be restored.')) {
+      activityLog.add('USER_ACTION', 'Exit application confirmed');
+
+      try {
+        // First, unmute other applications if they are muted
+        const muteOtherAppsCheckbox = document.getElementById('mute-other-apps-checkbox');
+        if (muteOtherAppsCheckbox && muteOtherAppsCheckbox.checked) {
+          console.log('Unchecking mute other apps before exit');
+          muteOtherAppsCheckbox.checked = false;
+          // Trigger the change event to actually unmute
+          await window.electronAPI.setMuteOtherApps(false);
+        }
+
+        // Save the current state before exiting (now with muteOtherApps: false)
+        await saveStateImmediate();
+        console.log('State saved before exit');
+
+        // Quit the application
+        await window.electronAPI.quitApplication();
+      } catch (error) {
+        console.error('Error during application exit:', error);
+        alert('Failed to properly exit the application. Please try again or close the window manually.');
+      }
+    } else {
+      activityLog.add('USER_ACTION', 'Exit application canceled');
+    }
+  });
+
   // Window Settings - Fullscreen Borderless Mode
   const fullscreenBorderlessCheckbox = document.getElementById('fullscreen-borderless-checkbox');
   if (fullscreenBorderlessCheckbox) {
