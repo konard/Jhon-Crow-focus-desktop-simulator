@@ -78,9 +78,9 @@ let selectedObject = null;
 let isDragging = false;
 let isLidDragging = false; // Separate flag for laptop lid dragging
 let lidDragState = {
-  laptop: null,           // Laptop being dragged
-  startMouseY: 0,         // Initial mouse Y position when lid drag started
-  startLidRotation: 0     // Initial lid rotation when drag started
+  laptop: null,              // Laptop being dragged
+  startLidRotation: 0,       // Initial lid rotation when drag started
+  accumulatedDeltaY: 0       // Accumulated mouse Y movement during drag
 };
 let dragPlane;
 let raycaster;
@@ -12928,8 +12928,8 @@ function onMouseDown(event) {
         if (isClickingLid) {
           isLidDragging = true;
           lidDragState.laptop = object;
-          lidDragState.startMouseY = mouse.y;
           lidDragState.startLidRotation = object.userData.lidRotation;
+          lidDragState.accumulatedDeltaY = 0; // Reset accumulated delta
 
           // Log lid drag start
           const rotationDegrees = (object.userData.lidRotation * 180 / Math.PI).toFixed(1);
@@ -13209,14 +13209,17 @@ function onMouseMove(event) {
   if (isLidDragging && lidDragState.laptop) {
     const laptop = lidDragState.laptop;
 
-    // Calculate rotation based on mouse Y movement
+    // Accumulate mouse Y movement (deltaY is already calculated at the top of this function)
     // Moving mouse up (negative delta) = opening lid (more negative rotation)
     // Moving mouse down (positive delta) = closing lid (toward 0)
-    const mouseDeltaY = mouse.y - lidDragState.startMouseY;
-    const rotationSensitivity = 1.5; // Adjust sensitivity as needed
+    lidDragState.accumulatedDeltaY += deltaY;
 
-    // Calculate target rotation: start rotation + mouse delta
-    let newRotation = lidDragState.startLidRotation - (mouseDeltaY * rotationSensitivity);
+    // Convert accumulated pixel movement to rotation
+    // Sensitivity controls how much rotation per pixel movement
+    const rotationSensitivity = 0.003; // Radians per pixel (adjusted for smooth control)
+
+    // Calculate target rotation: start rotation + accumulated movement
+    let newRotation = lidDragState.startLidRotation - (lidDragState.accumulatedDeltaY * rotationSensitivity);
 
     // Clamp rotation between 0 (closed) and -π/2.2 (fully open, ~130 degrees)
     // This allows more realistic laptop lid movement like a real laptop
