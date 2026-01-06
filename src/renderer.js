@@ -11659,7 +11659,22 @@ function setupEventListeners() {
             x: bookReadingState.panOffsetX.toFixed(3),
             z: bookReadingState.panOffsetZ.toFixed(3)
           },
-          zoomDistance: bookReadingState.zoomDistance.toFixed(3)
+          zoomDistance: bookReadingState.zoomDistance.toFixed(3),
+          bookWorldPos: {
+            x: bookWorldPos.x.toFixed(3),
+            y: bookWorldPos.y.toFixed(3),
+            z: bookWorldPos.z.toFixed(3)
+          },
+          bookDimensions: {
+            halfWidth: bookHalfWidth.toFixed(3),
+            halfDepth: bookHalfDepth.toFixed(3)
+          },
+          viewportIntersections: {
+            topLeft: `(${intersections[0].x.toFixed(3)}, ${intersections[0].z.toFixed(3)})`,
+            topRight: `(${intersections[1].x.toFixed(3)}, ${intersections[1].z.toFixed(3)})`,
+            bottomLeft: `(${intersections[2].x.toFixed(3)}, ${intersections[2].z.toFixed(3)})`,
+            bottomRight: `(${intersections[3].x.toFixed(3)}, ${intersections[3].z.toFixed(3)})`
+          }
         });
 
         return;
