@@ -57,10 +57,30 @@ This case study documents the implementation and debugging process for adding qu
 - Bottom-left: `(-1, +1)` not `(-1, -1)`
 - Bottom-right: `(+1, +1)` not `(+1, -1)`
 
-### Problem 4: Bottom Positions Too Far (Under Investigation)
-**Symptom:** When navigating to bottom corners, camera position is too far from book
-**Possible Cause:** Camera look-at point offset (bookWorldPos.y + 0.03) not accounted for
-**Status:** May be resolved by NDC fix; enhanced logging added for diagnosis
+### Problem 4: Left-Right Swap (Critical Bug - Sessions 5 & 6)
+**Symptom:** Right keys (E, C) moved camera to left corners, left keys (Q, Z) moved camera to right corners
+
+**Cause:** Camera movement direction is inverse to viewport appearance. When camera moves in +X direction (right), the scene appears to move LEFT in the viewport (and vice versa). The shift calculation `shiftX = bookCornerX - intersectionX` was correct for positioning but incorrect for camera movement direction.
+
+**Root Cause Analysis:**
+- WASD controls show: KeyA (left) uses `panOffsetX -= speed`, KeyD (right) uses `panOffsetX += speed`
+- When `panOffsetX` increases (camera moves right in +X), the book appears to shift LEFT in viewport
+- When `panOffsetX` decreases (camera moves left in -X), the book appears to shift RIGHT in viewport
+- **This is an inverse relationship!**
+
+**Solution:** Invert X-axis shift calculation:
+```js
+// Before (WRONG):
+const shiftX = bookCornerX - intersectionX;
+
+// After (CORRECT):
+const shiftX = intersectionX - bookCornerX;  // Inverted X for camera movement
+```
+
+**Attempts:**
+1. First fix (commit 6562cce): Attempted to swap left/right book corner calculations - FAILED
+2. Second fix (commit 868aabb): Reverted to original corner calculations - STILL FAILED
+3. Third fix (current): Identified true root cause - inverted camera movement direction
 
 ## Technical Approach
 
@@ -92,6 +112,8 @@ Uses Three.js raycasting to unproject viewport corners onto book plane:
 3. **Session 2 Positive:** "Top positions practically ideal (top-left slightly low)"
 4. **Session 3 Request:** "Create case study with timeline, root cause analysis, and data compilation"
 5. **Session 4 Feedback:** "Keys completely mixed up - Q→bottom-right, E→bottom-left, Z→top-right, C→top-left" + "Bottom positions too far"
+6. **Session 5 Feedback (after commit 6562cce):** "Nothing changed, right keys move left, left keys move right"
+7. **Session 6 Feedback (after commit 868aabb):** "Nothing changed, right keys move left, left keys move right" (same issue persisted)
 
 ## Metrics
 
@@ -107,28 +129,30 @@ Uses Three.js raycasting to unproject viewport corners onto book plane:
 - **Key commits:** 3 (initial implementation, raycasting fix, Z-axis inversion fix)
 
 ### Iterations
-- **Implementation attempts:** 4
-- **User tests:** 3 documented (2 activity logs from previous sessions, 1 in Session 4)
-- **Critical bugs found:** 3 (fixed offsets, Z-axis inversion, NDC coordinate mapping)
+- **Implementation attempts:** 6
+- **User tests:** 5+ documented
+- **Critical bugs found:** 4 (fixed offsets, Z-axis inversion, NDC coordinate mapping, X-axis camera movement inversion)
 
 ## Resolution Status
 
 - ✅ Fixed: Navigation shortcuts functional
-- ✅ Fixed: Z-axis inversion corrected
+- ✅ Fixed: Z-axis inversion corrected (Session 3)
 - ✅ Fixed: NDC coordinate mapping (Session 4)
+- ✅ Fixed: X-axis camera movement direction inversion (Session 6)
 - ✅ Implemented: Enhanced camera jump logging with viewport intersection data
 - ✅ Documented: Comprehensive case study
-- ⏳ Pending: Verify "bottom positions too far" is resolved by NDC fix
-- ⏳ Pending: Minor top-left corner alignment fine-tuning (if needed after testing)
+- ⏳ Pending: Final user testing to verify all corners align correctly
 
 ## Lessons for Future Development
 
 1. **Coordinate systems require explicit documentation** - Camera orientation and perspective must be clearly stated
 2. **NDC coordinates vary by framework** - Three.js uses Y: -1 (top) to +1 (bottom), opposite of screen coordinates
-3. **Test early, test often** - NDC bug would have been caught immediately with basic corner navigation test
-2. **Activity logging is invaluable** - Detailed logs enabled quick identification of Z-axis inversion
-3. **User testing reveals real issues** - Mathematical correctness ≠ correct user experience
-4. **Case studies pay dividends** - Systematic analysis prevents similar bugs in the future
+3. **Camera movement is inverse to viewport appearance** - Moving camera right makes scene appear left (critical insight)
+4. **Test early, test often** - All bugs would have been caught immediately with basic corner navigation test
+5. **Activity logging is invaluable** - Detailed logs enabled quick identification of Z-axis inversion
+6. **User testing reveals real issues** - Mathematical correctness ≠ correct user experience
+7. **Case studies pay dividends** - Systematic analysis prevents similar bugs in the future
+8. **First principles analysis beats trial-and-error** - Understanding WASD controls revealed the true camera movement direction
 
 ## Related Links
 

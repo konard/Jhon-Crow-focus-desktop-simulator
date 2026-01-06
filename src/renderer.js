@@ -11609,25 +11609,29 @@ function setupEventListeners() {
 
         if (quickNavKey === 'KeyQ') {
           // Q - align book's top-left with viewport's top-left
-          const shiftX = bookTopLeftX - intersections[0].x;
+          // Note: X-axis is inverted because moving camera right makes content appear left
+          const shiftX = intersections[0].x - bookTopLeftX;  // Inverted X
           const shiftZ = bookTopLeftZ - intersections[0].z;
           bookReadingState.panOffsetX += shiftX;
           bookReadingState.panOffsetZ += shiftZ;
         } else if (quickNavKey === 'KeyE') {
           // E - align book's top-right with viewport's top-right
-          const shiftX = bookTopRightX - intersections[1].x;
+          // Note: X-axis is inverted because moving camera right makes content appear left
+          const shiftX = intersections[1].x - bookTopRightX;  // Inverted X
           const shiftZ = bookTopRightZ - intersections[1].z;
           bookReadingState.panOffsetX += shiftX;
           bookReadingState.panOffsetZ += shiftZ;
         } else if (quickNavKey === 'KeyZ') {
           // Z - align book's bottom-left with viewport's bottom-left
-          const shiftX = bookBottomLeftX - intersections[2].x;
+          // Note: X-axis is inverted because moving camera right makes content appear left
+          const shiftX = intersections[2].x - bookBottomLeftX;  // Inverted X
           const shiftZ = bookBottomLeftZ - intersections[2].z;
           bookReadingState.panOffsetX += shiftX;
           bookReadingState.panOffsetZ += shiftZ;
         } else if (quickNavKey === 'KeyC') {
           // C - align book's bottom-right with viewport's bottom-right
-          const shiftX = bookBottomRightX - intersections[3].x;
+          // Note: X-axis is inverted because moving camera right makes content appear left
+          const shiftX = intersections[3].x - bookBottomRightX;  // Inverted X
           const shiftZ = bookBottomRightZ - intersections[3].z;
           bookReadingState.panOffsetX += shiftX;
           bookReadingState.panOffsetZ += shiftZ;
