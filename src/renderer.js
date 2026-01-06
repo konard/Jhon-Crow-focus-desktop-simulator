@@ -18587,7 +18587,7 @@ function openMarkdownEditor(laptop) {
   });
 
   // Function to save and close the editor (exitLaptopMode: also exit laptop zoom mode)
-  async function saveAndClose(exitLaptopMode = false) {
+  function saveAndClose(exitLaptopMode = false) {
     laptop.userData.editorContent = sourceTextarea.value;
     laptop.userData.editorFileName = filenameInput.value || 'notes.md';
 
@@ -18614,37 +18614,6 @@ function openMarkdownEditor(laptop) {
     saveState();
     document.removeEventListener('keydown', handleEditorKeys);
     document.removeEventListener('mousedown', handleEditorMiddleClick);
-
-    // Save to file if content is not empty
-    if (sourceTextarea.value.trim().length > 0) {
-      try {
-        // Use configured folder or default app folder
-        let folderPath = laptop.userData.notesFolderPath;
-        if (!folderPath) {
-          const defaultResult = await window.electronAPI.getDefaultNotesFolder();
-          if (defaultResult.success) {
-            folderPath = defaultResult.folderPath;
-          }
-        }
-
-        if (folderPath) {
-          // Add timestamp to filename when saving
-          const timestampedFilename = getTimestampedFilename(laptop.userData.editorFileName);
-          const result = await window.electronAPI.saveMarkdownFile(
-            folderPath,
-            timestampedFilename,
-            sourceTextarea.value
-          );
-          if (result.success) {
-            console.log('Note saved to:', result.filePath);
-          } else {
-            console.error('Failed to save note:', result.error);
-          }
-        }
-      } catch (error) {
-        console.error('Error saving note to file:', error);
-      }
-    }
 
     // Exit laptop zoom mode if requested
     if (exitLaptopMode) {
