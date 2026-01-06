@@ -13313,13 +13313,13 @@ function onMouseMove(event) {
     const screenFacesCamera = normalizedRotationY < Math.PI / 2 || normalizedRotationY > 3 * Math.PI / 2;
 
     // Calculate direction multiplier based on orientation
-    // When screen faces camera: pulling down (positive deltaY) = opening lid = more negative rotation
-    // When screen faces away: pulling down (positive deltaY) = closing lid = toward 0 (less negative)
-    const directionMultiplier = screenFacesCamera ? -1 : 1;
+    // When screen faces camera: pulling down (positive deltaY) = closing lid = toward 0 (less negative)
+    // When screen faces away: pulling down (positive deltaY) = opening lid = more negative rotation
+    const directionMultiplier = screenFacesCamera ? 1 : -1;
 
     // Calculate target rotation with orientation-aware direction
-    // Positive deltaY (pull down/toward you) with screen facing camera = open lid (more negative)
-    // Positive deltaY (pull down/toward you) with screen facing away = close lid (toward 0)
+    // Positive deltaY (pull down/toward you) with screen facing camera = close lid (toward 0)
+    // Positive deltaY (pull down/toward you) with screen facing away = open lid (more negative)
     let newRotation = lidDragState.startLidRotation - (lidDragState.accumulatedDeltaY * rotationSensitivity * directionMultiplier);
 
     // Clamp rotation between 0 (closed) and -π/2.2 (fully open, ~130 degrees)
