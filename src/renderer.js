@@ -11580,25 +11580,25 @@ function setupEventListeners() {
         // From camera's perspective:
         // - Top corners have larger Z (closer to camera, towards +Z)
         // - Bottom corners have smaller Z (farther from camera, towards -Z)
-        // - Left corners have larger X (towards +X)
-        // - Right corners have smaller X (towards -X)
+        // - Left corners have negative X (towards -X)
+        // - Right corners have positive X (towards +X)
         //
-        // - Top-left: (bookX + bookHalfWidth, bookY, bookZ + bookHalfDepth)
-        // - Top-right: (bookX - bookHalfWidth, bookY, bookZ + bookHalfDepth)
-        // - Bottom-left: (bookX + bookHalfWidth, bookY, bookZ - bookHalfDepth)
-        // - Bottom-right: (bookX - bookHalfWidth, bookY, bookZ - bookHalfDepth)
+        // - Top-left: (bookX - bookHalfWidth, bookY, bookZ + bookHalfDepth)
+        // - Top-right: (bookX + bookHalfWidth, bookY, bookZ + bookHalfDepth)
+        // - Bottom-left: (bookX - bookHalfWidth, bookY, bookZ - bookHalfDepth)
+        // - Bottom-right: (bookX + bookHalfWidth, bookY, bookZ - bookHalfDepth)
         //
         // To align book's top-left with viewport's top-left, we need to shift camera by:
-        // deltaX = (bookX + bookHalfWidth) - intersections[0].x
+        // deltaX = (bookX - bookHalfWidth) - intersections[0].x
         // deltaZ = (bookZ + bookHalfDepth) - intersections[0].z
 
-        const bookTopLeftX = bookWorldPos.x + bookHalfWidth;  // Left side (positive X)
+        const bookTopLeftX = bookWorldPos.x - bookHalfWidth;  // Left side (negative X)
         const bookTopLeftZ = bookWorldPos.z + bookHalfDepth;  // Top = larger Z (closer to camera)
-        const bookTopRightX = bookWorldPos.x - bookHalfWidth;  // Right side (negative X)
+        const bookTopRightX = bookWorldPos.x + bookHalfWidth;  // Right side (positive X)
         const bookTopRightZ = bookWorldPos.z + bookHalfDepth;  // Top = larger Z (closer to camera)
-        const bookBottomLeftX = bookWorldPos.x + bookHalfWidth;  // Left side (positive X)
+        const bookBottomLeftX = bookWorldPos.x - bookHalfWidth;  // Left side (negative X)
         const bookBottomLeftZ = bookWorldPos.z - bookHalfDepth;  // Bottom = smaller Z (farther from camera)
-        const bookBottomRightX = bookWorldPos.x - bookHalfWidth;  // Right side (negative X)
+        const bookBottomRightX = bookWorldPos.x + bookHalfWidth;  // Right side (positive X)
         const bookBottomRightZ = bookWorldPos.z - bookHalfDepth;  // Bottom = smaller Z (farther from camera)
 
         // Calculate shifts for each corner alignment
