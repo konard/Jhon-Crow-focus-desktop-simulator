@@ -751,6 +751,11 @@
       font-size: 13px;
       pointer-events: none;
       transition: opacity 0.3s ease;
+      display: none; /* Hidden by default */
+    }
+
+    #instructions.visible {
+      display: block;
     }
 
     /* Clock display */
@@ -1372,6 +1377,19 @@
             <strong>MMB on floor:</strong> Quick click returns last fallen object to table. Hold 300ms to delete with red flash.
           </p>
         </div>
+      </div>
+    </div>
+
+    <div class="menu-section">
+      <h3>Interface</h3>
+      <div style="margin-bottom: 15px;">
+        <label style="display: flex; align-items: center; color: rgba(255, 255, 255, 0.8); font-size: 13px; cursor: pointer;">
+          <input type="checkbox" id="show-control-hints-checkbox" style="margin-right: 10px; width: 18px; height: 18px; accent-color: #4f46e5; cursor: pointer;">
+          <span>Show Control Hints</span>
+        </label>
+        <p style="font-size: 11px; color: rgba(255, 255, 255, 0.5); margin-top: 4px; margin-left: 28px; line-height: 1.4;">
+          Display control hints at the bottom of the screen
+        </p>
       </div>
     </div>
   </div>
