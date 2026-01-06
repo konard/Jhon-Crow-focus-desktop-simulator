@@ -8610,7 +8610,13 @@ function findDrawableObjectUnderPen() {
   return null;
 }
 
-// Convert world position to local drawing coordinates on a drawable object
+// Convert world position to canvas coordinates with rotation compensation
+//
+// FIX for issue #105: User requirement is that when paper rotates, the drawing
+// should NOT rotate from the viewer's perspective. To achieve this:
+// 1. We draw in world-space coordinates (NOT paper-local)
+// 2. Canvas content is counter-rotated to compensate for paper rotation
+// 3. Result: Drawing appears stable from viewer's perspective
 function worldToDrawingCoords(worldPos, drawableObject) {
   if (!drawableObject) return null;
 
@@ -8618,18 +8624,9 @@ function worldToDrawingCoords(worldPos, drawableObject) {
   const objPos = new THREE.Vector3();
   drawableObject.getWorldPosition(objPos);
 
-  // Calculate local offset from object center
+  // Calculate offset from object center in WORLD space
   const localX = worldPos.x - objPos.x;
   const localZ = worldPos.z - objPos.z;
-
-  // FIX for issue #105: Transform world coordinates to paper-local coordinates
-  // by applying inverse rotation. This ensures drawing happens at the correct
-  // position on the paper, regardless of how the paper is rotated in 3D space.
-  const rotation = drawableObject.rotation.y;
-  const cos = Math.cos(-rotation); // Negative for inverse rotation
-  const sin = Math.sin(-rotation);
-  const rotatedX = localX * cos - localZ * sin;
-  const rotatedZ = localX * sin + localZ * cos;
 
   // Get object dimensions with scale applied
   const baseWidth = drawableObject.userData.type === 'notebook' ? 0.4 : 0.28;
@@ -8638,14 +8635,12 @@ function worldToDrawingCoords(worldPos, drawableObject) {
   const width = baseWidth * scale;
   const depth = baseDepth * scale;
 
-  // Convert to normalized coordinates (0-1)
-  // IMPORTANT: Invert the Z-to-Y mapping because:
-  // - Camera is at +Z looking toward -Z
-  // - Mouse moving DOWN on screen goes toward -Z (away from camera)
-  // - But canvas Y should INCREASE when moving down (canvas Y=0 is at top)
-  // - So we flip: larger Z values (toward camera) map to smaller canvas Y (top)
-  const normalizedX = (rotatedX / width) + 0.5;
-  const normalizedY = 1.0 - ((rotatedZ / depth) + 0.5);
+  // Convert to normalized coordinates (0-1) in WORLD space
+  // Camera is at (0, 4.5, 5.5) looking at (0, 0, -1.5)
+  // - X maps to canvas X (left-right is consistent)
+  // - Z maps to canvas Y, inverted (toward camera = top of canvas)
+  const normalizedX = (localX / width) + 0.5;
+  const normalizedY = 1.0 - ((localZ / depth) + 0.5);
 
   // Convert to canvas coordinates (512x512 for drawing)
   const canvasSize = 512;
@@ -8691,11 +8686,57 @@ function getDrawingCanvas(drawableObject) {
   return canvas;
 }
 
+// Rotate canvas content to compensate for paper rotation
+// This ensures the drawing appears stable from viewer's perspective
+function rotateCanvasContent(canvas, rotationDelta) {
+  if (!canvas || Math.abs(rotationDelta) < 0.001) return;
+
+  const ctx = canvas.getContext('2d');
+  const width = canvas.width;
+  const height = canvas.height;
+
+  // Create temporary canvas to hold current content
+  const tempCanvas = document.createElement('canvas');
+  tempCanvas.width = width;
+  tempCanvas.height = height;
+  const tempCtx = tempCanvas.getContext('2d');
+
+  // Copy current content
+  tempCtx.drawImage(canvas, 0, 0);
+
+  // Clear original canvas
+  ctx.clearRect(0, 0, width, height);
+
+  // Redraw with rotation compensation (counter-rotate)
+  ctx.save();
+  ctx.translate(width / 2, height / 2);
+  ctx.rotate(-rotationDelta); // Negative to counter-rotate
+  ctx.translate(-width / 2, -height / 2);
+  ctx.drawImage(tempCanvas, 0, 0);
+  ctx.restore();
+}
+
 // Update the 3D texture from the drawing canvas
 function updateDrawingTexture(drawableObject) {
   if (!drawableObject || !drawableObject.userData.drawingCanvas) return;
 
   const canvas = drawableObject.userData.drawingCanvas;
+  const currentRotation = drawableObject.rotation.y;
+
+  // Initialize lastRotation if not set
+  if (drawableObject.userData.lastRotation === undefined) {
+    drawableObject.userData.lastRotation = currentRotation;
+  }
+
+  // Check if rotation has changed
+  const lastRotation = drawableObject.userData.lastRotation;
+  const rotationDelta = currentRotation - lastRotation;
+
+  // If rotation changed, compensate by counter-rotating canvas content
+  if (Math.abs(rotationDelta) > 0.001) {
+    rotateCanvasContent(canvas, rotationDelta);
+    drawableObject.userData.lastRotation = currentRotation;
+  }
 
   // Create or update texture
   if (!drawableObject.userData.drawingTexture) {

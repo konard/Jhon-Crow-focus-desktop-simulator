@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Both Rotation Approaches</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background: #f0f0f0;
+        }
+        .container {
+            display: flex;
+            gap: 30px;
+            margin-bottom: 30px;
+        }
+        .demo {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        canvas {
+            border: 2px solid #333;
+            cursor: crosshair;
+            display: block;
+            margin-top: 10px;
+        }
+        .controls {
+            margin-top: 15px;
+        }
+        h2 {
+            margin-top: 0;
+            color: #333;
+        }
+        button {
+            padding: 8px 16px;
+            margin-right: 10px;
+            cursor: pointer;
+        }
+        .info {
+            margin-top: 15px;
+            padding: 10px;
+            background: #f9f9f9;
+            border-left: 4px solid #4CAF50;
+            font-size: 12px;
+        }
+        .rotation-display {
+            font-weight: bold;
+            color: #2196F3;
+        }
+        .explanation {
+            background: #e3f2fd;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>🧪 Testing Two Rotation Approaches</h1>
+
+    <div class="explanation">
+        <h3>User's Requirement:</h3>
+        <p><strong>Russian:</strong> "поворот изображения нарисованного на холсте должен компенсировать поворот холста"</p>
+        <p><strong>English:</strong> "the rotation of the drawn image should compensate for the canvas rotation"</p>
+        <p><strong>Latest issue:</strong> "после поворота на 90 deg, когда провожу линию сверху вниз - проводится линия снизу вверх"</p>
+        <p><strong>Translation:</strong> "after rotating 90 degrees, when I draw a line from top to bottom - a line is drawn from bottom to top"</p>
+    </div>
+
+    <div class="container">
+        <!-- APPROACH 1: Paper-local coordinates (current implementation) -->
+        <div class="demo">
+            <h2>Approach 1: Paper-Local Coordinates</h2>
+            <p>Drawing in paper's local space (current implementation)</p>
+            <canvas id="canvas1" width="400" height="400"></canvas>
+            <div class="controls">
+                <button onclick="rotateCanvas1(-45)">Rotate -45°</button>
+                <button onclick="rotateCanvas1(45)">Rotate +45°</button>
+                <button onclick="clearCanvas1()">Clear</button>
+            </div>
+            <div class="info">
+                <div>Paper Rotation: <span class="rotation-display" id="rotation1">0°</span></div>
+                <div>Canvas Rotation: None (fixed to paper)</div>
+                <div>Coordinate Transform: Inverse rotation</div>
+            </div>
+        </div>
+
+        <!-- APPROACH 2: Canvas compensation (what user requested) -->
+        <div class="demo">
+            <h2>Approach 2: Canvas Compensation</h2>
+            <p>Counter-rotating canvas content (what user requested)</p>
+            <canvas id="canvas2" width="400" height="400"></canvas>
+            <div class="controls">
+                <button onclick="rotateCanvas2(-45)">Rotate -45°</button>
+                <button onclick="rotateCanvas2(45)">Rotate +45°</button>
+                <button onclick="clearCanvas2()">Clear</button>
+            </div>
+            <div class="info">
+                <div>Paper Rotation: <span class="rotation-display" id="rotation2">0°</span></div>
+                <div>Canvas Rotation: <span class="rotation-display" id="canvasRot2">0°</span></div>
+                <div>Coordinate Transform: None (world space)</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="explanation">
+        <h3>How to Test:</h3>
+        <ol>
+            <li>Draw a vertical line or letter in each canvas</li>
+            <li>Click "Rotate +45°" or "Rotate +90°" (click twice)</li>
+            <li>Observe:
+                <ul>
+                    <li><strong>Approach 1:</strong> Drawing rotates with the paper</li>
+                    <li><strong>Approach 2:</strong> Drawing stays upright (compensated)</li>
+                </ul>
+            </li>
+            <li>Continue drawing after rotation</li>
+            <li>Check if new strokes appear in the correct direction</li>
+        </ol>
+    </div>
+
+    <script>
+        // ===== APPROACH 1: Paper-Local Coordinates =====
+        const canvas1 = document.getElementById('canvas1');
+        const ctx1 = canvas1.getContext('2d');
+        let rotation1 = 0;
+        let isDrawing1 = false;
+        let lastPoint1 = null;
+
+        function updateRotation1Display() {
+            document.getElementById('rotation1').textContent = Math.round(rotation1 * 180 / Math.PI) + '°';
+        }
+
+        function rotateCanvas1(degrees) {
+            rotation1 += degrees * Math.PI / 180;
+            updateRotation1Display();
+        }
+
+        function clearCanvas1() {
+            ctx1.clearRect(0, 0, canvas1.width, canvas1.height);
+            rotation1 = 0;
+            updateRotation1Display();
+        }
+
+        // Transform screen position to paper-local coordinates
+        function screenToPaperLocal(screenX, screenY, rotation) {
+            // Center coordinates
+            const centerX = canvas1.width / 2;
+            const centerY = canvas1.height / 2;
+
+            // Offset from center
+            const localX = screenX - centerX;
+            const localY = screenY - centerY;
+
+            // Apply inverse rotation
+            const cos = Math.cos(-rotation);
+            const sin = Math.sin(-rotation);
+            const rotatedX = localX * cos - localY * sin;
+            const rotatedY = localX * sin + localY * cos;
+
+            return {
+                x: rotatedX + centerX,
+                y: rotatedY + centerY
+            };
+        }
+
+        canvas1.addEventListener('mousedown', (e) => {
+            isDrawing1 = true;
+            const rect = canvas1.getBoundingClientRect();
+            const screenX = e.clientX - rect.left;
+            const screenY = e.clientY - rect.top;
+            lastPoint1 = screenToPaperLocal(screenX, screenY, rotation1);
+        });
+
+        canvas1.addEventListener('mousemove', (e) => {
+            if (!isDrawing1) return;
+
+            const rect = canvas1.getBoundingClientRect();
+            const screenX = e.clientX - rect.left;
+            const screenY = e.clientY - rect.top;
+            const currentPoint = screenToPaperLocal(screenX, screenY, rotation1);
+
+            ctx1.beginPath();
+            ctx1.strokeStyle = '#2196F3';
+            ctx1.lineWidth = 3;
+            ctx1.lineCap = 'round';
+            ctx1.moveTo(lastPoint1.x, lastPoint1.y);
+            ctx1.lineTo(currentPoint.x, currentPoint.y);
+            ctx1.stroke();
+
+            lastPoint1 = currentPoint;
+        });
+
+        canvas1.addEventListener('mouseup', () => {
+            isDrawing1 = false;
+        });
+
+        canvas1.addEventListener('mouseleave', () => {
+            isDrawing1 = false;
+        });
+
+        updateRotation1Display();
+
+        // ===== APPROACH 2: Canvas Compensation =====
+        const canvas2 = document.getElementById('canvas2');
+        const ctx2 = canvas2.getContext('2d');
+        const drawingCanvas = document.createElement('canvas');
+        drawingCanvas.width = canvas2.width;
+        drawingCanvas.height = canvas2.height;
+        const drawingCtx = drawingCanvas.getContext('2d');
+        let rotation2 = 0;
+        let lastRotation2 = 0;
+        let isDrawing2 = false;
+        let lastPoint2 = null;
+
+        function updateRotation2Display() {
+            document.getElementById('rotation2').textContent = Math.round(rotation2 * 180 / Math.PI) + '°';
+            document.getElementById('canvasRot2').textContent = Math.round(-rotation2 * 180 / Math.PI) + '°';
+        }
+
+        function rotateCanvas2(degrees) {
+            const newRotation = rotation2 + degrees * Math.PI / 180;
+            const rotationDelta = newRotation - rotation2;
+
+            // Rotate canvas content to compensate
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = drawingCanvas.width;
+            tempCanvas.height = drawingCanvas.height;
+            const tempCtx = tempCanvas.getContext('2d');
+
+            // Copy current content
+            tempCtx.drawImage(drawingCanvas, 0, 0);
+
+            // Clear and rotate
+            drawingCtx.clearRect(0, 0, drawingCanvas.width, drawingCanvas.height);
+            drawingCtx.save();
+            drawingCtx.translate(drawingCanvas.width / 2, drawingCanvas.height / 2);
+            drawingCtx.rotate(-rotationDelta); // Counter-rotate
+            drawingCtx.translate(-drawingCanvas.width / 2, -drawingCanvas.height / 2);
+            drawingCtx.drawImage(tempCanvas, 0, 0);
+            drawingCtx.restore();
+
+            rotation2 = newRotation;
+            lastRotation2 = rotation2;
+            updateRotation2Display();
+            redrawCanvas2();
+        }
+
+        function clearCanvas2() {
+            drawingCtx.clearRect(0, 0, drawingCanvas.width, drawingCanvas.height);
+            ctx2.clearRect(0, 0, canvas2.width, canvas2.height);
+            rotation2 = 0;
+            lastRotation2 = 0;
+            updateRotation2Display();
+        }
+
+        function redrawCanvas2() {
+            ctx2.clearRect(0, 0, canvas2.width, canvas2.height);
+            ctx2.save();
+            ctx2.translate(canvas2.width / 2, canvas2.height / 2);
+            ctx2.rotate(rotation2); // Paper rotation
+            ctx2.translate(-canvas2.width / 2, -canvas2.height / 2);
+            ctx2.drawImage(drawingCanvas, 0, 0);
+            ctx2.restore();
+        }
+
+        canvas2.addEventListener('mousedown', (e) => {
+            isDrawing2 = true;
+            const rect = canvas2.getBoundingClientRect();
+            const screenX = e.clientX - rect.left;
+            const screenY = e.clientY - rect.top;
+            lastPoint2 = screenToPaperLocal(screenX, screenY, rotation2);
+        });
+
+        canvas2.addEventListener('mousemove', (e) => {
+            if (!isDrawing2) return;
+
+            const rect = canvas2.getBoundingClientRect();
+            const screenX = e.clientX - rect.left;
+            const screenY = e.clientY - rect.top;
+            const currentPoint = screenToPaperLocal(screenX, screenY, rotation2);
+
+            // Draw on the internal canvas (which is counter-rotated)
+            drawingCtx.beginPath();
+            drawingCtx.strokeStyle = '#4CAF50';
+            drawingCtx.lineWidth = 3;
+            drawingCtx.lineCap = 'round';
+            drawingCtx.moveTo(lastPoint2.x, lastPoint2.y);
+            drawingCtx.lineTo(currentPoint.x, currentPoint.y);
+            drawingCtx.stroke();
+
+            lastPoint2 = currentPoint;
+
+            // Redraw display canvas with rotation
+            redrawCanvas2();
+        });
+
+        canvas2.addEventListener('mouseup', () => {
+            isDrawing2 = false;
+        });
+
+        canvas2.addEventListener('mouseleave', () => {
+            isDrawing2 = false;
+        });
+
+        updateRotation2Display();
+        redrawCanvas2();
+
+        // Draw grid on both canvases for reference
+        function drawGrid(ctx, color = '#ddd') {
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 1;
+            for (let i = 0; i <= 400; i += 40) {
+                ctx.beginPath();
+                ctx.moveTo(i, 0);
+                ctx.lineTo(i, 400);
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.moveTo(0, i);
+                ctx.lineTo(400, i);
+                ctx.stroke();
+            }
+        }
+
+        drawGrid(ctx1);
+        drawGrid(drawingCtx);
+        redrawCanvas2();
+    </script>
+</body>
+</html>
