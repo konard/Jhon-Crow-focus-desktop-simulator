@@ -3647,8 +3647,8 @@ function createLaptop(options = {}) {
     powerButtonBrightness: options.powerButtonBrightness !== undefined ? options.powerButtonBrightness : 50, // Glow brightness 0-100
     powerLedColor: options.powerLedColor || '#00ff00', // Power LED on color
     isLidOpen: true, // Whether laptop lid is open
-    lidRotation: -Math.PI / 6, // Current lid rotation (-π/6 = 30° open, 0 = closed, -π/2.2 = ~130° fully open)
-    targetLidRotation: -Math.PI / 6 // Target lid rotation for smooth animation
+    lidRotation: -Math.PI / 2, // Current lid rotation (-π/2 = 90° open, 0 = closed, -π = 180° fully open)
+    targetLidRotation: -Math.PI / 2 // Target lid rotation for smooth animation
   };
 
   // Base/keyboard part
@@ -3692,7 +3692,7 @@ function createLaptop(options = {}) {
   // Position screenGroup at the hinge point (bottom edge of screen)
   // Original position was y=0.28, but now we offset children by 0.25, so adjust group position down
   screenGroup.position.set(0, 0.03, -0.23);
-  screenGroup.rotation.x = -Math.PI / 6;
+  screenGroup.rotation.x = -Math.PI / 2;
   group.add(screenGroup);
 
   // Keyboard area
