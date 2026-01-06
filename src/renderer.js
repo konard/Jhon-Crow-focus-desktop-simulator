@@ -11650,6 +11650,27 @@ function setupEventListeners() {
     }
   });
 
+  // Exit Application button
+  document.getElementById('exit-app-btn').addEventListener('click', async () => {
+    if (confirm('Are you sure you want to exit the application? The current state will be saved and sound settings will be restored.')) {
+      activityLog.add('USER_ACTION', 'Exit application confirmed');
+
+      try {
+        // Save the current state before exiting
+        await saveStateImmediate();
+        console.log('State saved before exit');
+
+        // Quit the application (this will also restore sound in main.js)
+        await window.electronAPI.quitApplication();
+      } catch (error) {
+        console.error('Error during application exit:', error);
+        alert('Failed to properly exit the application. Please try again or close the window manually.');
+      }
+    } else {
+      activityLog.add('USER_ACTION', 'Exit application canceled');
+    }
+  });
+
   // Window Settings - Fullscreen Borderless Mode
   const fullscreenBorderlessCheckbox = document.getElementById('fullscreen-borderless-checkbox');
   if (fullscreenBorderlessCheckbox) {
