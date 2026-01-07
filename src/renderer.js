@@ -8610,23 +8610,35 @@ function findDrawableObjectUnderPen() {
   return null;
 }
 
-// Convert world position to canvas coordinates with rotation compensation
+// Convert world position to canvas coordinates for drawing
 //
-// FIX for issue #105: User requirement is that when paper rotates, the drawing
-// should NOT rotate from the viewer's perspective. To achieve this:
-// 1. We draw in world-space coordinates (NOT paper-local)
-// 2. Canvas content is counter-rotated to compensate for paper rotation
-// 3. Result: Drawing appears stable from viewer's perspective
+// FIX for issue #105: Drawing must occur under the pen tip regardless of paper rotation.
+// The key insight is:
+// 1. The pen tip position is in WORLD coordinates
+// 2. The canvas is attached to the paper in PAPER-LOCAL coordinates
+// 3. We must transform world coords → paper-local coords using inverse rotation
+// 4. Canvas rotation compensation is handled separately in updateDrawingTexture()
 function worldToDrawingCoords(worldPos, drawableObject) {
   if (!drawableObject) return null;
 
-  // Get object's world position
+  // Get object's world position (paper center)
   const objPos = new THREE.Vector3();
   drawableObject.getWorldPosition(objPos);
 
   // Calculate offset from object center in WORLD space
-  const localX = worldPos.x - objPos.x;
-  const localZ = worldPos.z - objPos.z;
+  const worldOffsetX = worldPos.x - objPos.x;
+  const worldOffsetZ = worldPos.z - objPos.z;
+
+  // Get paper rotation around Y axis
+  const rotation = drawableObject.rotation.y;
+
+  // Apply INVERSE rotation to transform world offset to paper-local offset
+  // If paper is rotated by +θ (counterclockwise when viewed from above),
+  // world coords need to be rotated by -θ to get paper-local coords
+  const cos = Math.cos(-rotation);
+  const sin = Math.sin(-rotation);
+  const localX = worldOffsetX * cos - worldOffsetZ * sin;
+  const localZ = worldOffsetX * sin + worldOffsetZ * cos;
 
   // Get object dimensions with scale applied
   const baseWidth = drawableObject.userData.type === 'notebook' ? 0.4 : 0.28;
@@ -8635,10 +8647,9 @@ function worldToDrawingCoords(worldPos, drawableObject) {
   const width = baseWidth * scale;
   const depth = baseDepth * scale;
 
-  // Convert to normalized coordinates (0-1) in WORLD space
-  // Camera is at (0, 4.5, 5.5) looking at (0, 0, -1.5)
-  // - X maps to canvas X (left-right is consistent)
-  // - Z maps to canvas Y, inverted (toward camera = top of canvas)
+  // Convert to normalized coordinates (0-1) in PAPER-LOCAL space
+  // - localX maps to canvas X (left-right on the paper)
+  // - localZ maps to canvas Y, inverted (front of paper = top of canvas)
   const normalizedX = (localX / width) + 0.5;
   const normalizedY = 1.0 - ((localZ / depth) + 0.5);
 
