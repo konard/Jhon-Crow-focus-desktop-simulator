@@ -11561,6 +11561,19 @@ function setupEventListeners() {
         // Create a horizontal plane at the book's Y level
         const bookPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -bookY);
 
+        // IMPORTANT: Save current camera position and temporarily move camera to centered position
+        // This ensures consistent intersection calculations regardless of current pan offsets
+        // Without this, repeated presses of the same key cause "jumpy" behavior because
+        // intersections depend on current camera position
+        const savedCameraPos = camera.position.clone();
+        const centeredCameraPos = new THREE.Vector3(
+          bookWorldPos.x,  // No pan offset X
+          bookWorldPos.y + bookReadingState.zoomDistance,
+          bookWorldPos.z + 0.65  // No pan offset Z
+        );
+        camera.position.copy(centeredCameraPos);
+        camera.updateMatrixWorld();
+
         // Unproject the four corners of the viewport to find where they hit the book plane
         // Viewport corners in NDC (Normalized Device Coordinates):
         // In Three.js NDC: X: -1 (left) to +1 (right), Y: -1 (top) to +1 (bottom)
@@ -11578,6 +11591,9 @@ function setupEventListeners() {
           raycaster.ray.intersectPlane(bookPlane, intersectPoint);
           return intersectPoint;
         });
+
+        // Restore camera position (will be updated with new pan offsets below)
+        camera.position.copy(savedCameraPos);
 
         // Calculate the bounds of the visible area on the book plane
         // intersections[0] = top-left, intersections[1] = top-right
@@ -11646,10 +11662,11 @@ function setupEventListeners() {
         const bookBottomRightZ = bookWorldPos.z - bookHalfDepth;  // Bottom = smaller Z (farther from camera)
 
         // Calculate shifts for each corner alignment
-        // Note: intersections are in absolute world coordinates, and we need offsets relative to bookWorldPos
-        // Current camera is at (bookWorldPos.x + panOffsetX, ..., bookWorldPos.z + 0.65 + panOffsetZ)
-        // Intersections are calculated based on current camera position
-        // We want to find new panOffsetX and panOffsetZ such that book corner = viewport corner
+        // Note: intersections are calculated from CENTERED camera position (panOffset = 0, 0)
+        // This ensures consistent results regardless of current camera position
+        // intersections[N] represents where viewport corner N hits the book plane when camera is centered
+        // To align book corner with viewport corner: panOffset = viewportCorner - bookCorner
+        // (with X inverted because camera movement is opposite to scene appearance)
 
         if (quickNavKey === 'KeyQ') {
           // Q - align book's top-left with viewport's top-left
