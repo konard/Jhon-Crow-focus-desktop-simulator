@@ -82,7 +82,21 @@ const shiftX = intersectionX - bookCornerX;  // Inverted X for camera movement
 2. Second fix (commit 868aabb): Reverted to original corner calculations - STILL FAILED
 3. Third fix (commit e91c397): Identified true root cause - inverted camera movement direction ✅
 
-### Problem 5: Exponential Camera Drift (Critical Bug - Session 7)
+### Problem 5: Jumpy Camera on Repeated Presses (Critical Bug - Session 9)
+**Symptom:** After Bug #4 was fixed, pressing the same corner shortcut repeatedly caused the camera to jump back and forth between different positions instead of staying at the target corner.
+
+**Root Cause:** The intersection calculations depended on the **current camera position**. When the camera moved after the first press, subsequent presses calculated intersections from a different viewpoint, giving different shift values.
+
+**Solution:** Temporarily reset camera to centered position (panOffset = 0, 0) **before** calculating intersections, then restore the camera position. This ensures intersections are always calculated from the same reference point.
+
+### Problem 6: WASD Navigation Hitting Invisible Wall (Critical Bug - Session 10)
+**Symptom:** Users couldn't reach the beginning of text using WASD controls. The dynamic camera boundary constraints added in Session 8 were too restrictive.
+
+**Root Cause:** The dynamic constraint formula `maxPanX = bookHalfWidth + (visibleWidth / 2)` calculated constraints based on book dimensions and viewport size, but this created overly restrictive limits that prevented users from panning to areas they needed to read.
+
+**Solution:** Removed dynamic constraints from WASD controls, reverted to the original fixed ±1.5 limits that allow full navigation. Also removed constraints from corner shortcuts since those calculate exact positions that shouldn't be clamped.
+
+### Problem 7: Exponential Camera Drift (Critical Bug - Session 7)
 **Symptom:** When pressing any corner shortcut repeatedly, camera exponentially drifted away from book instead of staying at the corner. Example: pressing E 20 times caused panOffset.x to reach -649,159 (should be ~-0.7).
 
 **Root Cause:** Code used `+=` to accumulate shift offsets:
@@ -167,7 +181,7 @@ Uses Three.js raycasting to unproject viewport corners onto book plane:
 ### Iterations
 - **Implementation attempts:** 7
 - **User tests:** 6+ documented
-- **Critical bugs found:** 5 (fixed offsets, Z-axis inversion, NDC coordinate mapping, X-axis camera movement inversion, exponential camera drift)
+- **Critical bugs found:** 7 (fixed offsets, Z-axis inversion, NDC coordinate mapping, X-axis camera movement inversion, exponential camera drift, jumpy camera, overly restrictive WASD constraints)
 
 ## Resolution Status
 
@@ -176,9 +190,11 @@ Uses Three.js raycasting to unproject viewport corners onto book plane:
 - ✅ Fixed: NDC coordinate mapping (Session 4)
 - ✅ Fixed: X-axis camera movement direction inversion (Session 6)
 - ✅ Fixed: Exponential camera drift on repeated presses (Session 7)
+- ✅ Fixed: Jumpy camera on repeated presses (Session 9)
+- ✅ Fixed: WASD navigation hitting invisible wall (Session 10)
 - ✅ Implemented: Enhanced camera jump logging with viewport intersection data
 - ✅ Documented: Comprehensive case study
-- ⏳ Pending: Final user testing to verify all corners align correctly and repeat presses are stable
+- ⏳ Pending: Final user testing to verify all functionality works as expected
 
 ## Lessons for Future Development
 
