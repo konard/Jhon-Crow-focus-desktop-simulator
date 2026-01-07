@@ -8697,57 +8697,29 @@ function getDrawingCanvas(drawableObject) {
   return canvas;
 }
 
-// Rotate canvas content to compensate for paper rotation
-// This ensures the drawing appears stable from viewer's perspective
-function rotateCanvasContent(canvas, rotationDelta) {
-  if (!canvas || Math.abs(rotationDelta) < 0.001) return;
-
-  const ctx = canvas.getContext('2d');
-  const width = canvas.width;
-  const height = canvas.height;
-
-  // Create temporary canvas to hold current content
-  const tempCanvas = document.createElement('canvas');
-  tempCanvas.width = width;
-  tempCanvas.height = height;
-  const tempCtx = tempCanvas.getContext('2d');
-
-  // Copy current content
-  tempCtx.drawImage(canvas, 0, 0);
-
-  // Clear original canvas
-  ctx.clearRect(0, 0, width, height);
-
-  // Redraw with rotation compensation (counter-rotate)
-  ctx.save();
-  ctx.translate(width / 2, height / 2);
-  ctx.rotate(-rotationDelta); // Negative to counter-rotate
-  ctx.translate(-width / 2, -height / 2);
-  ctx.drawImage(tempCanvas, 0, 0);
-  ctx.restore();
-}
+// NOTE: rotateCanvasContent() function has been REMOVED.
+// Canvas rotation compensation was causing coordinate misalignment.
+// See updateDrawingTexture() for explanation.
 
 // Update the 3D texture from the drawing canvas
 function updateDrawingTexture(drawableObject) {
   if (!drawableObject || !drawableObject.userData.drawingCanvas) return;
 
   const canvas = drawableObject.userData.drawingCanvas;
-  const currentRotation = drawableObject.rotation.y;
 
-  // Initialize lastRotation if not set
-  if (drawableObject.userData.lastRotation === undefined) {
-    drawableObject.userData.lastRotation = currentRotation;
-  }
-
-  // Check if rotation has changed
-  const lastRotation = drawableObject.userData.lastRotation;
-  const rotationDelta = currentRotation - lastRotation;
-
-  // If rotation changed, compensate by counter-rotating canvas content
-  if (Math.abs(rotationDelta) > 0.001) {
-    rotateCanvasContent(canvas, rotationDelta);
-    drawableObject.userData.lastRotation = currentRotation;
-  }
+  // NOTE: Canvas rotation compensation has been REMOVED.
+  //
+  // The previous approach tried to counter-rotate canvas content when paper rotated,
+  // to keep existing drawings visually stable from the observer's perspective.
+  // However, this caused a coordinate mismatch: the worldToDrawingCoords() function
+  // calculates coordinates in paper-local space, but the canvas was being rotated
+  // independently, causing new drawings to appear offset from the pen tip.
+  //
+  // The fix is to NOT rotate the canvas content. Drawing coordinates are calculated
+  // in paper-local space and the canvas is in paper-local space, so everything matches.
+  // When the paper rotates, the drawing rotates with it naturally (attached to the paper).
+  //
+  // This ensures: Drawing ALWAYS appears directly under the pen tip.
 
   // Create or update texture
   if (!drawableObject.userData.drawingTexture) {
