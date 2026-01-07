@@ -3646,11 +3646,11 @@ function createLaptop(options = {}) {
     powerButtonGlow: options.powerButtonGlow !== undefined ? options.powerButtonGlow : true, // Whether button glows
     powerButtonBrightness: options.powerButtonBrightness !== undefined ? options.powerButtonBrightness : 50, // Glow brightness 0-100
     powerLedColor: options.powerLedColor || '#00ff00', // Power LED on color
-    isLidOpen: true, // Whether laptop lid is open (starts open at -90°)
-    lidRotation: -Math.PI / 2, // Current lid rotation (starts at -90° open position)
-    targetLidRotation: -Math.PI / 2, // Target lid rotation for smooth animation (starts at -90° open position)
-    lidMinRotation: -Math.PI, // Minimum lid rotation (-180° = beyond closed, allows full range)
-    lidMaxRotation: -Math.PI * 130 / 180 // Maximum lid rotation (-130° = fully open, about -2.27 radians)
+    isLidOpen: true, // Whether laptop lid is open (starts open at 0°)
+    lidRotation: 0, // Current lid rotation (starts at 0° = open perpendicular position)
+    targetLidRotation: 0, // Target lid rotation for smooth animation (starts at 0° = open perpendicular)
+    lidMinRotation: -Math.PI / 2, // Minimum lid rotation (-90° = fully open, leaning back)
+    lidMaxRotation: Math.PI / 2 // Maximum lid rotation (90° = closed, flat on keyboard)
   };
 
   // Base/keyboard part
@@ -12936,8 +12936,8 @@ function onMouseDown(event) {
 
         // If clicking on the lid, determine whether to drag lid or whole laptop
         if (isClickingLid) {
-          // Check if lid is nearly closed (rotation close to 0)
-          const isLidNearlyClosed = Math.abs(object.userData.lidRotation) < 0.15; // ~8.5 degrees threshold
+          // Check if lid is nearly closed (rotation close to 90° = π/2)
+          const isLidNearlyClosed = Math.abs(object.userData.lidRotation - Math.PI / 2) < 0.15; // ~8.5 degrees threshold from closed
 
           if (isLidNearlyClosed) {
             // When lid is nearly closed, check where user clicked on the closed screen
@@ -13357,23 +13357,22 @@ function onMouseMove(event) {
     const screenFacesCamera = normalizedRotationY < Math.PI / 2 || normalizedRotationY > 3 * Math.PI / 2;
 
     // Calculate direction multiplier based on orientation
-    // Laptop starts at -90° (normal open position), can ONLY close to 0° (fully closed)
-    // Cannot open beyond -90° (prevents 200%+ opening)
-    // When screen faces camera: pulling down (positive deltaY) = closing lid = toward 0° (increase)
-    // When screen faces away: pushing up (negative deltaY) = closing lid = toward 0° (increase)
+    // New angle system: 0° = open perpendicular, 90° = closed (flat), -90° = fully open (leaning back)
+    // Laptop starts at 0° (perpendicular), can close to 90° (flat) or open more to -90° (leaning back)
+    // When screen faces camera: pulling down (positive deltaY) = closing lid = toward 90° (increase)
+    // When screen faces away: pushing up (negative deltaY) = closing lid = toward 90° (increase)
     // Formula: newRotation = start - (deltaY * sensitivity * multiplier)
-    // Screen faces camera, pull down (+deltaY): -90 - (+ * sensitivity * -1) = -90 + value = increase (close) ✓
-    // Screen faces away, push up (-deltaY): -90 - (- * sensitivity * +1) = -90 + value = increase (close) ✓
     const directionMultiplier = screenFacesCamera ? -1 : 1;
 
     // Calculate target rotation with orientation-aware direction
     let newRotation = lidDragState.startLidRotation - (lidDragState.accumulatedDeltaY * rotationSensitivity * directionMultiplier);
 
     // Apply rotation limits based on user-configurable min/max
-    // lidMinRotation = "closed" limit (default -180°, numerically larger values = less open)
-    // lidMaxRotation = "open" limit (default -130°, numerically smaller values = more open)
-    const closedLimit = laptop.userData.lidMinRotation !== undefined ? laptop.userData.lidMinRotation : -Math.PI;
-    const openLimit = laptop.userData.lidMaxRotation !== undefined ? laptop.userData.lidMaxRotation : -Math.PI * 130 / 180;
+    // New angle system: 0° = open perpendicular, 90° = closed (flat), -90° = fully open (leaning back)
+    // lidMinRotation = "fully open" limit (default -90° = leaning back)
+    // lidMaxRotation = "closed" limit (default 90° = flat on keyboard)
+    const openLimit = laptop.userData.lidMinRotation !== undefined ? laptop.userData.lidMinRotation : -Math.PI / 2;
+    const closedLimit = laptop.userData.lidMaxRotation !== undefined ? laptop.userData.lidMaxRotation : Math.PI / 2;
     // Clamp between the two limits, using min/max of the actual values for robustness
     const lowerBound = Math.min(closedLimit, openLimit);
     const upperBound = Math.max(closedLimit, openLimit);
@@ -13384,7 +13383,7 @@ function onMouseMove(event) {
     if (rotationChanged) {
       // Set target rotation for smooth animation
       laptop.userData.targetLidRotation = newRotation;
-      laptop.userData.isLidOpen = (newRotation < -0.1); // Consider open if rotated more than ~6 degrees from closed
+      laptop.userData.isLidOpen = (newRotation < Math.PI / 2 - 0.15); // Consider open if not nearly at 90° (closed)
 
       // Log lid movement with orientation info
       const rotationDegrees = (newRotation * 180 / Math.PI).toFixed(1);
@@ -14994,16 +14993,16 @@ function updateCustomizationPanel(object) {
           <label>Lid Rotation Limits</label>
           <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 8px;">
             <div style="display: flex; align-items: center; gap: 10px;">
-              <label style="color: rgba(255,255,255,0.7); font-size: 12px; min-width: 70px;">Min (closed):</label>
-              <input type="range" id="laptop-lid-min-angle" min="-180" max="0" value="${Math.round((object.userData.lidMinRotation !== undefined ? object.userData.lidMinRotation : -Math.PI) * 180 / Math.PI)}"
+              <label style="color: rgba(255,255,255,0.7); font-size: 12px; min-width: 70px;">Min (open):</label>
+              <input type="range" id="laptop-lid-min-angle" min="-90" max="180" value="${Math.round((object.userData.lidMinRotation !== undefined ? object.userData.lidMinRotation : -Math.PI / 2) * 180 / Math.PI)}"
                      style="flex: 1; cursor: pointer;">
-              <span id="laptop-lid-min-angle-val" style="color: rgba(255,255,255,0.7); font-size: 12px; min-width: 45px;">${Math.round((object.userData.lidMinRotation !== undefined ? object.userData.lidMinRotation : -Math.PI) * 180 / Math.PI)}°</span>
+              <span id="laptop-lid-min-angle-val" style="color: rgba(255,255,255,0.7); font-size: 12px; min-width: 45px;">${Math.round((object.userData.lidMinRotation !== undefined ? object.userData.lidMinRotation : -Math.PI / 2) * 180 / Math.PI)}°</span>
             </div>
             <div style="display: flex; align-items: center; gap: 10px;">
-              <label style="color: rgba(255,255,255,0.7); font-size: 12px; min-width: 70px;">Max (open):</label>
-              <input type="range" id="laptop-lid-max-angle" min="-180" max="0" value="${Math.round((object.userData.lidMaxRotation !== undefined ? object.userData.lidMaxRotation : -Math.PI * 130 / 180) * 180 / Math.PI)}"
+              <label style="color: rgba(255,255,255,0.7); font-size: 12px; min-width: 70px;">Max (closed):</label>
+              <input type="range" id="laptop-lid-max-angle" min="-90" max="180" value="${Math.round((object.userData.lidMaxRotation !== undefined ? object.userData.lidMaxRotation : Math.PI / 2) * 180 / Math.PI)}"
                      style="flex: 1; cursor: pointer;">
-              <span id="laptop-lid-max-angle-val" style="color: rgba(255,255,255,0.7); font-size: 12px; min-width: 45px;">${Math.round((object.userData.lidMaxRotation !== undefined ? object.userData.lidMaxRotation : -Math.PI * 130 / 180) * 180 / Math.PI)}°</span>
+              <span id="laptop-lid-max-angle-val" style="color: rgba(255,255,255,0.7); font-size: 12px; min-width: 45px;">${Math.round((object.userData.lidMaxRotation !== undefined ? object.userData.lidMaxRotation : Math.PI / 2) * 180 / Math.PI)}°</span>
             </div>
           </div>
         </div>
@@ -24008,7 +24007,7 @@ async function loadState() {
                 if (objData.lidRotation !== undefined) {
                   obj.userData.lidRotation = objData.lidRotation;
                   obj.userData.targetLidRotation = objData.lidRotation;
-                  obj.userData.isLidOpen = (objData.lidRotation < -0.1);
+                  obj.userData.isLidOpen = (objData.lidRotation < Math.PI / 2 - 0.15); // Open if not nearly at 90° (closed)
                   // Update the screen group rotation
                   const screenGroup = obj.getObjectByName('screenGroup');
                   if (screenGroup) {
