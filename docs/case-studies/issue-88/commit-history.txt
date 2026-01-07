@@ -1,0 +1,17 @@
+3e24dcb fix: increase zoom range and add debugging for document upload
+5fdbb4c fix: resolve document file upload from edit modal
+0c69d69 debug: replace alert() with console.log() for document debugging
+1322800 debug: add alerts for edit mode document upload
+227f17d debug: add comprehensive alert debugging throughout document loading
+7555773 debug: add alert() debugging for document upload investigation
+2e28224 debug: add comprehensive logging for document upload investigation
+88b53ef fix: add missing document handlers for title and toggle
+fe945e7 fix: resolve document file upload by fixing parameter shadowing
+6ef6569 fix: address document feedback - zoom, MMB exit, file upload, icon
+d4910e4 fix: resolve document file upload and increase zoom range
+897596c fix: convert document to single-page view and add reading mode
+c11d576 Revert "Initial commit with task details"
+b09ce9d feat: integrate document UI and state management
+69e1b73 feat: implement document file loading and rendering
+6e758e6 feat: add document 3D model with folder appearance
+188689b Initial commit with task details

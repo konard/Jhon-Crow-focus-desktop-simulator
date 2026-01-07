@@ -1,0 +1,49 @@
+Focus Desktop Simulator - Activity Log
+Generated: 2026-01-04T14:34:51.702Z
+Session Duration: 6.98s
+
+================================================================================
+
+
+[2026-01-04T14:34:56.357Z] [+11.63s] [SYSTEM] Log recording started
+  Details: {
+    "filePath": "I:\\Загрузки\\focuse-desktop-sim\\activity-log-2026-01-04T14-34-51-702Z.txt"
+  }
+
+[2026-01-04T14:34:56.990Z] [+12.27s] [MODE] Exited edit mode (customization panel)
+  Details: {
+    "objectType": "document",
+    "objectId": 14
+  }
+
+[2026-01-04T14:34:57.184Z] [+12.46s] [MODE] Pointer lock activated (FPS camera mode)
+  Details: {
+    "cameraPosition": {
+      "x": "0.80",
+      "y": "2.76",
+      "z": "4.43"
+    }
+  }
+
+[2026-01-04T14:35:05.211Z] [+20.49s] [MODE] Entered book reading mode
+  Details: {
+    "bookType": "document",
+    "bookId": 14
+  }
+
+[2026-01-04T14:35:09.382Z] [+24.66s] [MODE] Exited book reading mode
+  Details: {
+    "bookType": "document",
+    "bookId": 14
+  }
+
+[2026-01-04T14:35:12.049Z] [+27.32s] [MODE] Pointer lock deactivated
+
+[2026-01-04T14:35:13.421Z] [+28.70s] [UI] Menu opened
+
+[2026-01-04T14:35:15.333Z] [+30.61s] [USER_ACTION] Stop log recording button clicked
+
+
+================================================================================
+
+Session ended: 2026-01-04T14:35:15.334Z
