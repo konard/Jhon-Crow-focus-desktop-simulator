@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Card Flip Test - Realistic Camera</title>
+    <style>
+        body { margin: 0; background: #1a1a2e; }
+        canvas { display: block; }
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-family: monospace;
+            background: rgba(0,0,0,0.7);
+            padding: 10px;
+            z-index: 100;
+        }
+        button { margin: 5px; padding: 10px; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <div id="info">
+        <div>Testing card flip with realistic desk camera angle</div>
+        <div id="state">State: isFlipped = false (back showing)</div>
+        <div id="rotation">Rotation.x: π (3.14159)</div>
+        <div id="camera">Camera: (0, 4.5, 5.5) looking at (0, 0, -1.5)</div>
+        <button id="flipBtn">Flip Card</button>
+        <button id="readingModeBtn">Enter Reading Mode</button>
+    </div>
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.module.js"
+        }
+    }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+
+        let scene, camera, renderer, cardGroup;
+        let isFlipped = false;
+        let isAnimating = false;
+        let inReadingMode = false;
+
+        // These match the actual app CONFIG
+        const CONFIG = {
+            camera: {
+                position: { x: 0, y: 4.5, z: 5.5 },
+                lookAt: { x: 0, y: 0, z: -1.5 }
+            },
+            desk: {
+                surfaceY: 0.05  // Half of desk height 0.1
+            }
+        };
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x1a1a2e);
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(CONFIG.camera.position.x, CONFIG.camera.position.y, CONFIG.camera.position.z);
+            camera.lookAt(CONFIG.camera.lookAt.x, CONFIG.camera.lookAt.y, CONFIG.camera.lookAt.z);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            // Lights
+            const ambientLight = new THREE.AmbientLight(0x404060, 0.5);
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+            directionalLight.position.set(1, 3, 2);
+            scene.add(directionalLight);
+
+            // Create desk surface
+            const deskGeometry = new THREE.BoxGeometry(10, 0.1, 7);
+            const deskMaterial = new THREE.MeshStandardMaterial({ color: 0x8b6914 });
+            const desk = new THREE.Mesh(deskGeometry, deskMaterial);
+            desk.position.y = 0;
+            scene.add(desk);
+
+            // Create card on desk
+            createCard();
+
+            // Add button handlers
+            document.getElementById('flipBtn').addEventListener('click', flipCard);
+            document.getElementById('readingModeBtn').addEventListener('click', toggleReadingMode);
+
+            animate();
+        }
+
+        function createCard() {
+            cardGroup = new THREE.Group();
+
+            const cardWidth = 0.08;
+            const cardHeight = 0.112;
+            const cardThickness = 0.002;
+
+            // Card body
+            const cardGeometry = new THREE.BoxGeometry(cardWidth, cardThickness, cardHeight);
+            const cardEdgeMaterial = new THREE.MeshStandardMaterial({
+                color: 0xf5f5f5,
+                roughness: 0.5
+            });
+            const cardBody = new THREE.Mesh(cardGeometry, cardEdgeMaterial);
+            cardGroup.add(cardBody);
+
+            // Front face (should be visible when isFlipped = true, rotation.x = 0)
+            const faceGeometry = new THREE.PlaneGeometry(cardWidth - 0.004, cardHeight - 0.004);
+
+            // Create front canvas - WHITE with "FRONT" text and title
+            const frontCanvas = document.createElement('canvas');
+            frontCanvas.width = 128;
+            frontCanvas.height = 180;
+            const frontCtx = frontCanvas.getContext('2d');
+            frontCtx.fillStyle = '#ffffff';
+            frontCtx.fillRect(0, 0, 128, 180);
+            frontCtx.fillStyle = '#1a1a1a';
+            frontCtx.font = 'bold 12px Arial';
+            frontCtx.textAlign = 'center';
+            frontCtx.fillText('Card Title', 64, 20);
+            frontCtx.font = '20px Arial';
+            frontCtx.fillText('FRONT', 64, 90);
+            frontCtx.font = '10px Arial';
+            frontCtx.fillText('Description text here', 64, 150);
+            frontCtx.strokeStyle = 'rgba(0,0,0,0.2)';
+            frontCtx.lineWidth = 2;
+            frontCtx.strokeRect(4, 4, 120, 172);
+
+            const frontTexture = new THREE.CanvasTexture(frontCanvas);
+            const frontMaterial = new THREE.MeshStandardMaterial({
+                map: frontTexture,
+                roughness: 0.3
+            });
+            const frontFace = new THREE.Mesh(faceGeometry, frontMaterial);
+            frontFace.rotation.x = -Math.PI / 2;
+            frontFace.position.y = cardThickness / 2 + 0.0001;
+            frontFace.name = 'frontFace';
+            cardGroup.add(frontFace);
+
+            // Back face (should be visible when isFlipped = false, rotation.x = Math.PI)
+            const backCanvas = document.createElement('canvas');
+            backCanvas.width = 128;
+            backCanvas.height = 180;
+            const backCtx = backCanvas.getContext('2d');
+            backCtx.fillStyle = '#c41e3a'; // Red
+            backCtx.fillRect(0, 0, 128, 180);
+            backCtx.fillStyle = '#ffffff';
+            backCtx.font = 'bold 20px Arial';
+            backCtx.textAlign = 'center';
+            backCtx.fillText('BACK', 64, 90);
+            // Diamond pattern (like actual app)
+            backCtx.strokeStyle = 'rgba(255,255,255,0.3)';
+            backCtx.lineWidth = 2;
+            for (let i = 0; i < 5; i++) {
+                for (let j = 0; j < 7; j++) {
+                    const cx = 12 + i * 26;
+                    const cy = 12 + j * 26;
+                    backCtx.beginPath();
+                    backCtx.moveTo(cx, cy - 10);
+                    backCtx.lineTo(cx + 10, cy);
+                    backCtx.lineTo(cx, cy + 10);
+                    backCtx.lineTo(cx - 10, cy);
+                    backCtx.closePath();
+                    backCtx.stroke();
+                }
+            }
+            backCtx.strokeStyle = 'rgba(255,255,255,0.5)';
+            backCtx.lineWidth = 4;
+            backCtx.strokeRect(4, 4, 120, 172);
+
+            const backTexture = new THREE.CanvasTexture(backCanvas);
+            const backMaterial = new THREE.MeshStandardMaterial({
+                map: backTexture,
+                roughness: 0.3
+            });
+            const backFace = new THREE.Mesh(faceGeometry, backMaterial);
+            backFace.rotation.x = Math.PI / 2;
+            backFace.position.y = -cardThickness / 2 - 0.0001;
+            backFace.name = 'backFace';
+            cardGroup.add(backFace);
+
+            // Initial state: isFlipped = false, so rotate to show back
+            // THIS IS THE KEY PART - matches actual app behavior
+            cardGroup.rotation.x = Math.PI;
+
+            // Position card on desk surface
+            cardGroup.position.y = CONFIG.desk.surfaceY + cardThickness / 2;
+            cardGroup.position.z = 0;
+
+            scene.add(cardGroup);
+
+            console.log('Card created:');
+            console.log('  cardGroup.rotation.x:', cardGroup.rotation.x);
+            console.log('  frontFace.rotation.x:', frontFace.rotation.x);
+            console.log('  backFace.rotation.x:', backFace.rotation.x);
+        }
+
+        function flipCard() {
+            if (isAnimating) return;
+            isAnimating = true;
+
+            isFlipped = !isFlipped;
+            const targetRotation = isFlipped ? 0 : Math.PI;
+            const startRotation = cardGroup.rotation.x;
+            const startTime = Date.now();
+            const duration = 300;
+
+            console.log('Flipping card:');
+            console.log('  isFlipped (new):', isFlipped);
+            console.log('  startRotation:', startRotation);
+            console.log('  targetRotation:', targetRotation);
+
+            function animateFlip() {
+                const elapsed = Date.now() - startTime;
+                const progress = Math.min(elapsed / duration, 1);
+                const eased = progress < 0.5
+                    ? 2 * progress * progress
+                    : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+
+                cardGroup.rotation.x = startRotation + (targetRotation - startRotation) * eased;
+
+                if (progress < 1) {
+                    requestAnimationFrame(animateFlip);
+                } else {
+                    cardGroup.rotation.x = targetRotation;
+                    isAnimating = false;
+                    console.log('Flip complete, rotation.x:', cardGroup.rotation.x);
+                }
+
+                updateInfo();
+            }
+
+            animateFlip();
+        }
+
+        function toggleReadingMode() {
+            if (inReadingMode) {
+                // Exit reading mode
+                camera.position.set(CONFIG.camera.position.x, CONFIG.camera.position.y, CONFIG.camera.position.z);
+                camera.lookAt(CONFIG.camera.lookAt.x, CONFIG.camera.lookAt.y, CONFIG.camera.lookAt.z);
+                inReadingMode = false;
+                document.getElementById('readingModeBtn').textContent = 'Enter Reading Mode';
+            } else {
+                // Enter reading mode - position camera above card
+                const cardWorldPos = new THREE.Vector3();
+                cardGroup.getWorldPosition(cardWorldPos);
+                camera.position.set(cardWorldPos.x, cardWorldPos.y + 0.4, cardWorldPos.z + 0.3);
+                camera.lookAt(cardWorldPos.x, cardWorldPos.y, cardWorldPos.z);
+                inReadingMode = true;
+                document.getElementById('readingModeBtn').textContent = 'Exit Reading Mode';
+            }
+            updateInfo();
+        }
+
+        function updateInfo() {
+            const stateText = isFlipped
+                ? 'isFlipped = true (front showing)'
+                : 'isFlipped = false (back showing)';
+            document.getElementById('state').textContent = 'State: ' + stateText;
+            document.getElementById('rotation').textContent =
+                'Rotation.x: ' + cardGroup.rotation.x.toFixed(5) + ' (' + (cardGroup.rotation.x / Math.PI).toFixed(2) + 'π)';
+            document.getElementById('camera').textContent =
+                'Camera: (' + camera.position.x.toFixed(1) + ', ' +
+                camera.position.y.toFixed(1) + ', ' +
+                camera.position.z.toFixed(1) + ') ' +
+                (inReadingMode ? '[READING MODE]' : '[NORMAL]');
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        init();
+    </script>
+</body>
+</html>

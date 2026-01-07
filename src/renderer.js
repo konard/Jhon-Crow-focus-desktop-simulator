@@ -7137,6 +7137,8 @@ function createCard(options = {}) {
     // Colors
     mainColor: options.mainColor || '#ffffff', // Card front background
     accentColor: options.accentColor || '#1a1a1a', // Text color
+    // Image fit settings: 'contain' (fit within area), 'cover' (fill area), 'fill' (full card)
+    frontImageFit: options.frontImageFit || 'contain',
     // State
     isFlipped: options.isFlipped !== undefined ? options.isFlipped : false, // false = back showing, true = front showing
     sourcedeckId: options.sourceDeckId || null
@@ -7364,10 +7366,32 @@ function flipCard(cardObject) {
   // Animate the flip around the X axis (flips the card over like turning a page)
   // isFlipped = true means front showing → rotation.x = 0 (front face on top)
   // isFlipped = false means back showing → rotation.x = Math.PI (back face on top)
-  const startRotation = cardObject.rotation.x;
+
+  // Normalize current rotation to [0, 2π) range to handle edge cases
+  let startRotation = cardObject.rotation.x % (2 * Math.PI);
+  if (startRotation < 0) startRotation += 2 * Math.PI;
+
+  // Target rotation based on flip state
   const targetRotation = cardObject.userData.isFlipped ? 0 : Math.PI;
+
+  // Calculate the shortest rotation path (always should be ~180 degrees for a flip)
+  // If we're going from ~0 to PI, delta should be PI (flip forward)
+  // If we're going from ~PI to 0 (or 2PI), delta should be PI (flip backward)
+  let delta = targetRotation - startRotation;
+
+  // Ensure we always rotate 180 degrees (PI radians) in the correct direction
+  // This handles cases where rotation might have drifted due to floating point or other issues
+  if (cardObject.userData.isFlipped) {
+    // Flipping to front (target = 0): rotate by -PI from current position
+    delta = -Math.PI;
+  } else {
+    // Flipping to back (target = PI): rotate by +PI from current position
+    delta = Math.PI;
+  }
+
   const duration = 300;
   const startTime = Date.now();
+  const actualStartRotation = cardObject.rotation.x; // Use actual value for smooth animation
 
   function animateFlip() {
     const elapsed = Date.now() - startTime;
@@ -7378,11 +7402,12 @@ function flipCard(cardObject) {
       ? 2 * progress * progress
       : 1 - Math.pow(-2 * progress + 2, 2) / 2;
 
-    cardObject.rotation.x = startRotation + (targetRotation - startRotation) * eased;
+    cardObject.rotation.x = actualStartRotation + delta * eased;
 
     if (progress < 1) {
       requestAnimationFrame(animateFlip);
     } else {
+      // Set final rotation to exact target value (normalized)
       cardObject.rotation.x = targetRotation;
       saveState();
     }
@@ -7464,13 +7489,85 @@ function updateCardVisuals(cardObject) {
         // Fill background first
         frontCtx.fillStyle = cardData.mainColor || '#ffffff';
         frontCtx.fillRect(0, 0, 128, 180);
-        // Draw image in upper portion of card (below title)
-        // Image area: from y=25 to y=100, centered horizontally
-        const imgWidth = 100;
-        const imgHeight = 70;
-        const imgX = (128 - imgWidth) / 2;
-        const imgY = 30;
-        frontCtx.drawImage(img, imgX, imgY, imgWidth, imgHeight);
+
+        // Get image fit mode
+        const fitMode = cardData.frontImageFit || 'contain';
+
+        // Canvas dimensions
+        const canvasWidth = 128;
+        const canvasHeight = 180;
+
+        // Calculate image dimensions based on fit mode
+        let imgX, imgY, imgWidth, imgHeight;
+        const imgRatio = img.width / img.height;
+
+        if (fitMode === 'fill') {
+          // Fill entire card (no title/description visible)
+          imgX = 0;
+          imgY = 0;
+          imgWidth = canvasWidth;
+          imgHeight = canvasHeight;
+          // Draw image
+          frontCtx.drawImage(img, imgX, imgY, imgWidth, imgHeight);
+          // Don't draw title/description overlay for fill mode
+          const frontTexture = new THREE.CanvasTexture(frontCanvas);
+          frontFace.material.map = frontTexture;
+          frontFace.material.needsUpdate = true;
+          return;
+        } else if (fitMode === 'cover') {
+          // Cover the designated image area (crop to fill)
+          // Image area: from y=25 to y=105 (80px height), full width with padding
+          const areaWidth = 120;
+          const areaHeight = 80;
+          const areaX = 4;
+          const areaY = 25;
+          const areaRatio = areaWidth / areaHeight;
+
+          if (imgRatio > areaRatio) {
+            // Image is wider - fit height, crop width
+            imgHeight = areaHeight;
+            imgWidth = imgHeight * imgRatio;
+            imgX = areaX + (areaWidth - imgWidth) / 2;
+            imgY = areaY;
+          } else {
+            // Image is taller - fit width, crop height
+            imgWidth = areaWidth;
+            imgHeight = imgWidth / imgRatio;
+            imgX = areaX;
+            imgY = areaY + (areaHeight - imgHeight) / 2;
+          }
+          // Clip to area and draw
+          frontCtx.save();
+          frontCtx.beginPath();
+          frontCtx.rect(areaX, areaY, areaWidth, areaHeight);
+          frontCtx.clip();
+          frontCtx.drawImage(img, imgX, imgY, imgWidth, imgHeight);
+          frontCtx.restore();
+        } else {
+          // 'contain' mode (default) - fit within area maintaining aspect ratio
+          // Image area: from y=30 to y=100 (70px height), centered horizontally
+          const areaWidth = 100;
+          const areaHeight = 70;
+          const areaX = (canvasWidth - areaWidth) / 2;
+          const areaY = 30;
+          const areaRatio = areaWidth / areaHeight;
+
+          if (imgRatio > areaRatio) {
+            // Image is wider - fit width
+            imgWidth = areaWidth;
+            imgHeight = imgWidth / imgRatio;
+            imgX = areaX;
+            imgY = areaY + (areaHeight - imgHeight) / 2;
+          } else {
+            // Image is taller - fit height
+            imgHeight = areaHeight;
+            imgWidth = imgHeight * imgRatio;
+            imgX = areaX + (areaWidth - imgWidth) / 2;
+            imgY = areaY;
+          }
+          frontCtx.drawImage(img, imgX, imgY, imgWidth, imgHeight);
+        }
+
         drawFrontContent();
       };
       img.onerror = () => {
@@ -16416,6 +16513,14 @@ function updateCustomizationPanel(object) {
                 <button id="card-front-image-clear-edit" style="padding: 10px 15px; background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 8px; color: #ef4444; cursor: pointer;">
                   Clear Front Image
                 </button>
+                <div style="margin-top: 8px;">
+                  <label style="color: rgba(255,255,255,0.6); display: block; margin-bottom: 6px; font-size: 11px;">Image Fit</label>
+                  <select id="card-front-image-fit-edit" style="width: 100%; padding: 8px; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); border-radius: 6px; color: #fff; font-size: 12px;">
+                    <option value="contain" ${(object.userData.frontImageFit || 'contain') === 'contain' ? 'selected' : ''}>Fit (contain)</option>
+                    <option value="cover" ${object.userData.frontImageFit === 'cover' ? 'selected' : ''}>Fill area (cover)</option>
+                    <option value="fill" ${object.userData.frontImageFit === 'fill' ? 'selected' : ''}>Full card (fill)</option>
+                  </select>
+                </div>
                 <div style="color: rgba(255,255,255,0.5); font-size: 11px;">Custom front image set</div>
               ` : ''}
             </div>
@@ -17924,6 +18029,16 @@ function setupCardCustomizationHandlers(object) {
 
         // Refresh the customization panel to remove clear button
         updateCustomizationPanel(object);
+      });
+    }
+
+    // Front image fit selector
+    const frontImageFitSelect = document.getElementById('card-front-image-fit-edit');
+    if (frontImageFitSelect) {
+      frontImageFitSelect.addEventListener('change', () => {
+        object.userData.frontImageFit = frontImageFitSelect.value;
+        updateCardVisuals(object);
+        saveState();
       });
     }
 
@@ -26279,6 +26394,10 @@ async function saveStateImmediate() {
           if (obj.userData.backImage) {
             data.backImage = obj.userData.backImage;
           }
+          // Save front image fit mode
+          if (obj.userData.frontImageFit && obj.userData.frontImageFit !== 'contain') {
+            data.frontImageFit = obj.userData.frontImageFit;
+          }
           // Save rotation state for flip (around X axis)
           data.rotationX = obj.rotation.x;
           break;
@@ -26976,6 +27095,8 @@ async function loadState() {
                 // Restore custom images
                 if (objData.frontImage) obj.userData.frontImage = objData.frontImage;
                 if (objData.backImage) obj.userData.backImage = objData.backImage;
+                // Restore front image fit mode
+                if (objData.frontImageFit) obj.userData.frontImageFit = objData.frontImageFit;
                 // Restore rotation state (around X axis for flip)
                 if (objData.rotationX !== undefined) {
                   obj.rotation.x = objData.rotationX;
