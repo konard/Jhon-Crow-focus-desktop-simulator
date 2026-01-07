@@ -13313,24 +13313,26 @@ function onMouseMove(event) {
     const screenFacesCamera = normalizedRotationY < Math.PI / 2 || normalizedRotationY > 3 * Math.PI / 2;
 
     // Calculate direction multiplier based on orientation
-    // Laptop starts at -90° (normal open position), can close to 0° (fully closed)
-    // When screen faces camera: pulling down (positive deltaY) = closing lid = toward 0° (less negative, increase)
-    // When screen faces away: pulling down (positive deltaY) = opening lid = more negative (decrease)
+    // Laptop starts at -90° (normal open position), can ONLY close to 0° (fully closed)
+    // Cannot open beyond -90° (prevents 200%+ opening)
+    // When screen faces camera: pulling down (positive deltaY) = closing lid = toward 0° (increase)
+    // When screen faces away: pushing up (negative deltaY) = closing lid = toward 0° (increase)
     // Formula: newRotation = start - (deltaY * sensitivity * multiplier)
     // Screen faces camera, pull down (+deltaY): -90 - (+ * sensitivity * -1) = -90 + value = increase (close) ✓
-    // Screen faces away, pull down (+deltaY): -90 - (+ * sensitivity * +1) = -90 - value = decrease (open) ✓
+    // Screen faces away, push up (-deltaY): -90 - (- * sensitivity * +1) = -90 + value = increase (close) ✓
     const directionMultiplier = screenFacesCamera ? -1 : 1;
 
     // Calculate target rotation with orientation-aware direction
-    // Positive deltaY (pull down/toward you) with screen facing camera = close lid (toward 0°)
-    // Positive deltaY (pull down/toward you) with screen facing away = open lid (more negative, away from 0°)
+    // Closing only mode: lid can only move from -90° (open) toward 0° (closed)
+    // Opening beyond -90° is prevented by clamping
     let newRotation = lidDragState.startLidRotation - (lidDragState.accumulatedDeltaY * rotationSensitivity * directionMultiplier);
 
-    // Clamp rotation range: -90° (normal open position) to -180° (folded backward)
+    // Clamp rotation range: -90° (normal open position) to 0° (fully closed)
     // Starting position: -90° (normal laptop open position, 90° physical angle)
-    // Can close further: -90° to -180° range (180° total movement, folding lid backward past flat)
-    const minRotation = -Math.PI; // -180° (folded completely backward, past flat position)
-    const maxRotation = -Math.PI / 2; // -90° (normal open position, 90° physical angle)
+    // Can close: -90° to 0° range (90° total movement, from normal to closed)
+    // Cannot open beyond normal position (prevents 200%+ opening)
+    const minRotation = -Math.PI / 2; // -90° (normal open position, 90° physical angle = 100% open)
+    const maxRotation = 0; // 0° (fully closed, lid flat on keyboard = 0% open)
     newRotation = Math.max(minRotation, Math.min(maxRotation, newRotation));
 
     // Only update and log if rotation actually changed
