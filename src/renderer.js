@@ -7414,13 +7414,17 @@ function flipCard(cardObject, direction = null) {
       : 1 - Math.pow(-2 * progress + 2, 2) / 2;
 
     // Interpolate rotation
-    cardObject.rotation.x = startRotation + (targetRotation - startRotation) * eased;
+    const currentRotation = startRotation + (targetRotation - startRotation) * eased;
+    cardObject.rotation.x = currentRotation;
+    // Keep baseTiltX in sync during animation to prevent tilt physics from overwriting
+    cardObject.userData.baseTiltX = currentRotation;
 
     if (progress < 1) {
       requestAnimationFrame(animateFlip);
     } else {
       // Set exact final rotation and clear animation flag
       cardObject.rotation.x = targetRotation;
+      cardObject.userData.baseTiltX = targetRotation;
       cardObject.userData.isFlipping = false;
       saveState();
     }
