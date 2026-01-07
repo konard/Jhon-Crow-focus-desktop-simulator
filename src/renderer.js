@@ -7210,7 +7210,8 @@ function createCard(options = {}) {
   const frontMaterial = new THREE.MeshStandardMaterial({
     map: frontTexture,
     roughness: 0.3,
-    metalness: 0.0
+    metalness: 0.0,
+    side: THREE.DoubleSide // Ensure front face is visible when card is flipped
   });
 
   const frontFace = new THREE.Mesh(faceGeometry, frontMaterial);
@@ -7266,7 +7267,8 @@ function createCard(options = {}) {
   const backMaterial = new THREE.MeshStandardMaterial({
     map: backTexture,
     roughness: 0.3,
-    metalness: 0.0
+    metalness: 0.0,
+    side: THREE.DoubleSide // Ensure back face is visible when card is flipped
   });
 
   const backFace = new THREE.Mesh(faceGeometry, backMaterial);
@@ -7415,10 +7417,13 @@ function flipCard(cardObject) {
 
   animateFlip();
 
-  // Log card flip
+  // Log card flip with rotation details
   activityLog.add('CLICK', 'Card flipped', {
     cardId: cardObject.userData.id,
-    showingFront: cardObject.userData.isFlipped
+    showingFront: cardObject.userData.isFlipped,
+    startRotation: actualStartRotation.toFixed(4),
+    delta: delta.toFixed(4),
+    targetRotation: targetRotation.toFixed(4)
   });
 }
 

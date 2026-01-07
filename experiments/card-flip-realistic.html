@@ -130,7 +130,8 @@
             const frontTexture = new THREE.CanvasTexture(frontCanvas);
             const frontMaterial = new THREE.MeshStandardMaterial({
                 map: frontTexture,
-                roughness: 0.3
+                roughness: 0.3,
+                side: THREE.DoubleSide // Ensure visible from both directions after flip
             });
             const frontFace = new THREE.Mesh(faceGeometry, frontMaterial);
             frontFace.rotation.x = -Math.PI / 2;
@@ -172,7 +173,8 @@
             const backTexture = new THREE.CanvasTexture(backCanvas);
             const backMaterial = new THREE.MeshStandardMaterial({
                 map: backTexture,
-                roughness: 0.3
+                roughness: 0.3,
+                side: THREE.DoubleSide // Ensure visible from both directions after flip
             });
             const backFace = new THREE.Mesh(faceGeometry, backMaterial);
             backFace.rotation.x = Math.PI / 2;
