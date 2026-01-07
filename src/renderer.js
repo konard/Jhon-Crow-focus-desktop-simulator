@@ -13323,17 +13323,10 @@ function onMouseMove(event) {
     const directionMultiplier = screenFacesCamera ? -1 : 1;
 
     // Calculate target rotation with orientation-aware direction
-    // Closing only mode: lid can only move from -90° (open) toward 0° (closed)
-    // Opening beyond -90° is prevented by clamping
+    // Unlimited rotation mode: lid can rotate freely in both directions
     let newRotation = lidDragState.startLidRotation - (lidDragState.accumulatedDeltaY * rotationSensitivity * directionMultiplier);
 
-    // Clamp rotation range: -90° (normal open position) to 0° (fully closed)
-    // Starting position: -90° (normal laptop open position, 90° physical angle)
-    // Can close: -90° to 0° range (90° total movement, from normal to closed)
-    // Cannot open beyond normal position (prevents 200%+ opening)
-    const minRotation = -Math.PI / 2; // -90° (normal open position, 90° physical angle = 100% open)
-    const maxRotation = 0; // 0° (fully closed, lid flat on keyboard = 0% open)
-    newRotation = Math.max(minRotation, Math.min(maxRotation, newRotation));
+    // No rotation limits - unlimited rotation in both positive and negative directions
 
     // Only update and log if rotation actually changed
     const rotationChanged = Math.abs(newRotation - laptop.userData.targetLidRotation) > 0.001;
