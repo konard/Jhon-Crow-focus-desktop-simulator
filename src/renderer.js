@@ -22508,19 +22508,37 @@ function setupDocumentCustomizationHandlers(object) {
       resolutionSlider.value = object.userData.docResolution || 512;
       resolutionDisplay.textContent = (object.userData.docResolution || 512) + 'px';
 
+      // Debounce timer for real-time resolution updates
+      let resolutionDebounceTimer = null;
+
       resolutionSlider.addEventListener('input', (e) => {
         const newRes = parseInt(e.target.value);
         resolutionDisplay.textContent = newRes + 'px';
         object.userData.docResolution = newRes;
-        saveState();
+
+        // Debounced re-render for immediate visual feedback while dragging
+        if (resolutionDebounceTimer) {
+          clearTimeout(resolutionDebounceTimer);
+        }
+        resolutionDebounceTimer = setTimeout(() => {
+          if (object.userData.isOpen && object.userData.htmlContent) {
+            updateDocumentPagesWithContent(object);
+          }
+        }, 50); // 50ms debounce for smooth updates
       });
 
-      // Re-render pages on change (when user releases slider)
+      // Save state on change (when user releases slider)
       resolutionSlider.addEventListener('change', () => {
+        // Clear any pending debounce timer and do final render
+        if (resolutionDebounceTimer) {
+          clearTimeout(resolutionDebounceTimer);
+          resolutionDebounceTimer = null;
+        }
         // Re-render document pages with new resolution
-        if (object.userData.isOpen && object.userData.docHtmlContent) {
+        if (object.userData.isOpen && object.userData.htmlContent) {
           updateDocumentPagesWithContent(object);
         }
+        saveState();
       });
     }
   }, 0);
