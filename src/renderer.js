@@ -15991,6 +15991,68 @@ function updateCustomizationPanel(object) {
       `;
       setupDictaphoneCustomizationHandlers(object);
       break;
+
+    case 'card':
+      dynamicOptions.innerHTML = `
+        <div class="customization-group" style="margin-top: 20px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.1);">
+          <div style="color: rgba(255,255,255,0.9); font-weight: bold; margin-bottom: 12px;">📄 Front Side</div>
+          <div style="margin-bottom: 12px;">
+            <label style="color: rgba(255,255,255,0.7); display: block; margin-bottom: 8px; font-size: 12px;">Title</label>
+            <input type="text" id="card-title-edit" value="${object.userData.title || ''}"
+                   placeholder="Enter card title"
+                   style="width: 100%; padding: 10px; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; color: #fff; box-sizing: border-box;">
+          </div>
+          <div>
+            <label style="color: rgba(255,255,255,0.7); display: block; margin-bottom: 8px; font-size: 12px;">Description</label>
+            <textarea id="card-description-edit" placeholder="Enter card description"
+                      style="width: 100%; height: 70px; padding: 10px; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; color: #fff; resize: vertical; box-sizing: border-box;">${object.userData.description || ''}</textarea>
+          </div>
+        </div>
+
+        <div class="customization-group" style="margin-top: 15px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.1);">
+          <div style="color: rgba(255,255,255,0.9); font-weight: bold; margin-bottom: 12px;">🎴 Back Side</div>
+          <div style="margin-bottom: 12px;">
+            <label style="color: rgba(255,255,255,0.7); display: block; margin-bottom: 8px; font-size: 12px;">Back Title</label>
+            <input type="text" id="card-back-title-edit" value="${object.userData.backTitle || ''}"
+                   placeholder="Title on card back"
+                   style="width: 100%; padding: 10px; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; color: #fff; box-sizing: border-box;">
+          </div>
+          <div style="margin-bottom: 12px;">
+            <label style="display: flex; align-items: center; gap: 8px; color: rgba(255,255,255,0.7); cursor: pointer; font-size: 12px;">
+              <input type="checkbox" id="card-show-back-title-edit" ${object.userData.showTitleOnBack ? 'checked' : ''}
+                     style="width: 16px; height: 16px;">
+              Show title on back
+            </label>
+          </div>
+          <div>
+            <label style="color: rgba(255,255,255,0.7); display: block; margin-bottom: 8px; font-size: 12px;">Custom Back Image</label>
+            <div style="display: flex; flex-direction: column; gap: 8px;">
+              <input type="file" id="card-back-image-edit" accept="image/*" style="display: none;">
+              <button id="card-back-image-btn-edit" style="padding: 10px 15px; background: rgba(79, 70, 229, 0.3); border: 1px solid rgba(79, 70, 229, 0.5); border-radius: 8px; color: #fff; cursor: pointer;">
+                ${object.userData.backImage ? '🖼️ Change Back Image' : '📁 Upload Back Image'}
+              </button>
+              ${object.userData.backImage ? `
+                <button id="card-back-image-clear-edit" style="padding: 10px 15px; background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 8px; color: #ef4444; cursor: pointer;">
+                  Clear Back Image
+                </button>
+                <div style="color: rgba(255,255,255,0.5); font-size: 11px;">Custom back image set</div>
+              ` : ''}
+            </div>
+          </div>
+        </div>
+
+        <div class="customization-group" style="margin-top: 15px;">
+          <button id="card-flip-edit" style="width: 100%; padding: 12px; background: rgba(79, 70, 229, 0.3); border: 1px solid rgba(79, 70, 229, 0.5); border-radius: 8px; color: #fff; cursor: pointer; font-size: 13px;">
+            🔄 Flip Card
+          </button>
+        </div>
+
+        <div style="margin-top: 15px; color: rgba(255,255,255,0.4); font-size: 11px;">
+          Tip: Middle-click on card to quickly flip it
+        </div>
+      `;
+      setupCardCustomizationHandlers(object);
+      break;
   }
 
   // Add sound settings for objects that have sounds
@@ -17363,6 +17425,103 @@ function setupPhotoFrameCustomizationHandlers(object) {
           photoSurface.material.needsUpdate = true;
           saveState();
         }
+      });
+    }
+  }, 0);
+}
+
+function setupCardCustomizationHandlers(object) {
+  setTimeout(() => {
+    const titleInput = document.getElementById('card-title-edit');
+    const descriptionInput = document.getElementById('card-description-edit');
+    const backTitleInput = document.getElementById('card-back-title-edit');
+    const showBackTitleCheckbox = document.getElementById('card-show-back-title-edit');
+    const backImageInput = document.getElementById('card-back-image-edit');
+    const backImageBtn = document.getElementById('card-back-image-btn-edit');
+    const backImageClearBtn = document.getElementById('card-back-image-clear-edit');
+    const flipBtn = document.getElementById('card-flip-edit');
+
+    // Title input - live update
+    if (titleInput) {
+      titleInput.addEventListener('input', () => {
+        object.userData.title = titleInput.value;
+        object.userData.name = titleInput.value || 'Card';
+        updateCardVisuals(object);
+        saveState();
+        // Update customization panel title
+        const panelTitle = document.getElementById('customization-title');
+        if (panelTitle) {
+          panelTitle.textContent = `Customize: ${object.userData.name}`;
+        }
+      });
+    }
+
+    // Description input - live update
+    if (descriptionInput) {
+      descriptionInput.addEventListener('input', () => {
+        object.userData.description = descriptionInput.value;
+        updateCardVisuals(object);
+        saveState();
+      });
+    }
+
+    // Back title input - live update
+    if (backTitleInput) {
+      backTitleInput.addEventListener('input', () => {
+        object.userData.backTitle = backTitleInput.value;
+        updateCardVisuals(object);
+        saveState();
+      });
+    }
+
+    // Show back title checkbox - live update
+    if (showBackTitleCheckbox) {
+      showBackTitleCheckbox.addEventListener('change', () => {
+        object.userData.showTitleOnBack = showBackTitleCheckbox.checked;
+        updateCardVisuals(object);
+        saveState();
+      });
+    }
+
+    // Back image upload
+    if (backImageBtn && backImageInput) {
+      backImageBtn.addEventListener('click', () => {
+        backImageInput.click();
+      });
+
+      backImageInput.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (file && file.type.startsWith('image/')) {
+          const reader = new FileReader();
+          reader.onload = (event) => {
+            object.userData.backImage = event.target.result;
+            updateCardVisuals(object);
+            saveState();
+
+            // Refresh the customization panel to show clear button
+            updateCustomizationPanel(object);
+          };
+          reader.readAsDataURL(file);
+        }
+      });
+    }
+
+    // Clear back image button
+    if (backImageClearBtn) {
+      backImageClearBtn.addEventListener('click', () => {
+        object.userData.backImage = null;
+        updateCardVisuals(object);
+        saveState();
+
+        // Refresh the customization panel to remove clear button
+        updateCustomizationPanel(object);
+      });
+    }
+
+    // Flip card button
+    if (flipBtn) {
+      flipBtn.addEventListener('click', () => {
+        flipCard(object);
       });
     }
   }, 0);
