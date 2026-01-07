@@ -1,0 +1,654 @@
+Focus Desktop Simulator - Activity Log
+Generated: 2026-01-06T15:40:38.869Z
+Session Duration: 73.58s
+
+================================================================================
+
+
+[2026-01-06T15:40:40.883Z] [+75.59s] [SYSTEM] Log recording started
+  Details: {
+    "filePath": "I:\\Загрузки\\focuse-desktop-sim\\activity-log-2026-01-06T15-40-38-870Z.txt"
+  }
+
+[2026-01-06T15:40:41.779Z] [+76.49s] [MODE] Pointer lock activated (FPS camera mode)
+  Details: {
+    "cameraPosition": {
+      "x": "0.54",
+      "y": "3.25",
+      "z": "4.49"
+    }
+  }
+
+[2026-01-06T15:40:43.181Z] [+77.89s] [MODE] Pointer lock deactivated
+
+[2026-01-06T15:40:45.205Z] [+79.91s] [OBJECT] Object added to desk
+  Details: {
+    "type": "laptop",
+    "id": 16,
+    "position": {
+      "x": "-0.13",
+      "z": "2.88"
+    },
+    "rotation": "0.00",
+    "scale": "1.00"
+  }
+
+[2026-01-06T15:40:46.295Z] [+81.00s] [LAPTOP] Lid drag started
+  Details: {
+    "objectId": 16,
+    "currentRotation": "-90.0°",
+    "currentRotationRadians": "-1.5708",
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true
+  }
+
+[2026-01-06T15:40:46.590Z] [+81.30s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-89.5°",
+    "newRotationRadians": "-1.5618",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:46.607Z] [+81.31s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-88.5°",
+    "newRotationRadians": "-1.5438",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:46.623Z] [+81.33s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-86.9°",
+    "newRotationRadians": "-1.5168",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:46.640Z] [+81.35s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-85.0°",
+    "newRotationRadians": "-1.4838",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:46.657Z] [+81.36s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-83.3°",
+    "newRotationRadians": "-1.4538",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:46.673Z] [+81.38s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-81.2°",
+    "newRotationRadians": "-1.4178",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:46.690Z] [+81.40s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-78.8°",
+    "newRotationRadians": "-1.3758",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:46.707Z] [+81.42s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-76.8°",
+    "newRotationRadians": "-1.3398",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:46.723Z] [+81.43s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-74.2°",
+    "newRotationRadians": "-1.2948",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:46.740Z] [+81.45s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-71.8°",
+    "newRotationRadians": "-1.2528",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:46.757Z] [+81.47s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-69.2°",
+    "newRotationRadians": "-1.2078",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:46.773Z] [+81.48s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-66.1°",
+    "newRotationRadians": "-1.1538",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:46.790Z] [+81.50s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-63.9°",
+    "newRotationRadians": "-1.1148",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:46.807Z] [+81.52s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-61.8°",
+    "newRotationRadians": "-1.0788",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:46.823Z] [+81.53s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-59.9°",
+    "newRotationRadians": "-1.0458",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:46.840Z] [+81.55s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-58.5°",
+    "newRotationRadians": "-1.0218",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:46.857Z] [+81.56s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-57.5°",
+    "newRotationRadians": "-1.0038",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:46.873Z] [+81.58s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-56.3°",
+    "newRotationRadians": "-0.9828",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:46.890Z] [+81.60s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-55.6°",
+    "newRotationRadians": "-0.9708",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:46.907Z] [+81.61s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-54.8°",
+    "newRotationRadians": "-0.9558",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:46.923Z] [+81.63s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-54.1°",
+    "newRotationRadians": "-0.9438",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:46.940Z] [+81.65s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-53.6°",
+    "newRotationRadians": "-0.9348",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:46.957Z] [+81.67s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-53.2°",
+    "newRotationRadians": "-0.9288",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:46.973Z] [+81.68s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-52.7°",
+    "newRotationRadians": "-0.9198",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:46.990Z] [+81.70s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-52.2°",
+    "newRotationRadians": "-0.9108",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:47.007Z] [+81.72s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-51.5°",
+    "newRotationRadians": "-0.8988",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:47.023Z] [+81.73s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-51.3°",
+    "newRotationRadians": "-0.8958",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:47.057Z] [+81.77s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-51.2°",
+    "newRotationRadians": "-0.8928",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:47.069Z] [+81.78s] [LAPTOP] Lid drag ended
+  Details: {
+    "objectId": 16,
+    "finalRotation": "-51.2°",
+    "finalRotationRadians": "-0.8928",
+    "isOpen": true
+  }
+
+[2026-01-06T15:40:47.171Z] [+81.88s] [MODE] Pointer lock activated (FPS camera mode)
+  Details: {
+    "cameraPosition": {
+      "x": "0.54",
+      "y": "3.25",
+      "z": "4.49"
+    }
+  }
+
+[2026-01-06T15:40:47.945Z] [+82.65s] [LAPTOP] Lid drag started
+  Details: {
+    "objectId": 16,
+    "currentRotation": "-51.2°",
+    "currentRotationRadians": "-0.8936",
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true
+  }
+
+[2026-01-06T15:40:47.973Z] [+82.68s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-51.0°",
+    "newRotationRadians": "-0.8906",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:48.006Z] [+82.72s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-50.7°",
+    "newRotationRadians": "-0.8846",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:48.023Z] [+82.73s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-50.5°",
+    "newRotationRadians": "-0.8816",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:48.040Z] [+82.75s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-50.2°",
+    "newRotationRadians": "-0.8756",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:48.053Z] [+82.76s] [LAPTOP] Lid drag ended
+  Details: {
+    "objectId": 16,
+    "finalRotation": "-50.2°",
+    "finalRotationRadians": "-0.8756",
+    "isOpen": true
+  }
+
+[2026-01-06T15:40:48.205Z] [+82.91s] [LAPTOP] Lid drag started
+  Details: {
+    "objectId": 16,
+    "currentRotation": "-50.3°",
+    "currentRotationRadians": "-0.8785",
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true
+  }
+
+[2026-01-06T15:40:48.311Z] [+83.02s] [LAPTOP] Lid drag ended
+  Details: {
+    "objectId": 16,
+    "finalRotation": "-50.2°",
+    "finalRotationRadians": "-0.8756",
+    "isOpen": true
+  }
+
+[2026-01-06T15:40:48.605Z] [+83.31s] [LAPTOP] Lid drag started
+  Details: {
+    "objectId": 16,
+    "currentRotation": "-50.2°",
+    "currentRotationRadians": "-0.8766",
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true
+  }
+
+[2026-01-06T15:40:48.673Z] [+83.38s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-48.3°",
+    "newRotationRadians": "-0.8436",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:48.690Z] [+83.40s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-46.1°",
+    "newRotationRadians": "-0.8046",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:48.707Z] [+83.42s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-43.9°",
+    "newRotationRadians": "-0.7656",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:48.723Z] [+83.43s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-40.6°",
+    "newRotationRadians": "-0.7086",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:48.740Z] [+83.45s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-37.0°",
+    "newRotationRadians": "-0.6456",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:48.757Z] [+83.47s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-33.0°",
+    "newRotationRadians": "-0.5766",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:48.773Z] [+83.48s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-27.0°",
+    "newRotationRadians": "-0.4716",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:48.790Z] [+83.50s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-23.4°",
+    "newRotationRadians": "-0.4086",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:48.807Z] [+83.52s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-19.6°",
+    "newRotationRadians": "-0.3426",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:48.823Z] [+83.53s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-16.2°",
+    "newRotationRadians": "-0.2826",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:48.840Z] [+83.55s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-12.6°",
+    "newRotationRadians": "-0.2196",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:48.857Z] [+83.56s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-9.1°",
+    "newRotationRadians": "-0.1596",
+    "isOpen": true,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:48.873Z] [+83.58s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-5.7°",
+    "newRotationRadians": "-0.0996",
+    "isOpen": false,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:48.890Z] [+83.60s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "-2.6°",
+    "newRotationRadians": "-0.0456",
+    "isOpen": false,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:48.907Z] [+83.61s] [LAPTOP] Lid position changed
+  Details: {
+    "objectId": 16,
+    "newRotation": "0.0°",
+    "newRotationRadians": "0.0000",
+    "isOpen": false,
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true,
+    "directionMultiplier": -1
+  }
+
+[2026-01-06T15:40:49.344Z] [+84.05s] [LAPTOP] Lid drag ended
+  Details: {
+    "objectId": 16,
+    "finalRotation": "0.0°",
+    "finalRotationRadians": "0.0000",
+    "isOpen": false
+  }
+
+[2026-01-06T15:40:50.197Z] [+84.91s] [LAPTOP] Lid drag started (from closed)
+  Details: {
+    "objectId": 16,
+    "currentRotation": "-0.0°",
+    "clickPosition": "top part (to open)",
+    "laptopOrientation": "0.0°",
+    "screenFacesCamera": true
+  }
+
+[2026-01-06T15:40:50.911Z] [+85.62s] [LAPTOP] Lid drag ended
+  Details: {
+    "objectId": 16,
+    "finalRotation": "0.0°",
+    "finalRotationRadians": "0.0000",
+    "isOpen": false
+  }
+
+[2026-01-06T15:40:52.062Z] [+86.77s] [MODE] Pointer lock deactivated
+
+[2026-01-06T15:40:53.445Z] [+88.15s] [USER_ACTION] Stop log recording button clicked
+
+
+================================================================================
+
+Session ended: 2026-01-06T15:40:53.446Z
