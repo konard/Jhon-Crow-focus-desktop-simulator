@@ -3646,9 +3646,11 @@ function createLaptop(options = {}) {
     powerButtonGlow: options.powerButtonGlow !== undefined ? options.powerButtonGlow : true, // Whether button glows
     powerButtonBrightness: options.powerButtonBrightness !== undefined ? options.powerButtonBrightness : 50, // Glow brightness 0-100
     powerLedColor: options.powerLedColor || '#00ff00', // Power LED on color
-    isLidOpen: true, // Whether laptop lid is open (starts at normal position -90°)
-    lidRotation: -Math.PI / 2, // Current lid rotation (starts at -90° normal position, can close to 0°)
-    targetLidRotation: -Math.PI / 2 // Target lid rotation for smooth animation (starts at -90° normal position)
+    isLidOpen: false, // Whether laptop lid is open (starts closed at 0°)
+    lidRotation: 0, // Current lid rotation (starts at 0° closed position)
+    targetLidRotation: 0, // Target lid rotation for smooth animation (starts at 0° closed position)
+    lidMinRotation: 0, // Minimum lid rotation (0° = fully closed, cannot close further)
+    lidMaxRotation: -Math.PI * 130 / 180 // Maximum lid rotation (-130° = fully open, about -2.27 radians)
   };
 
   // Base/keyboard part
@@ -3692,7 +3694,7 @@ function createLaptop(options = {}) {
   // Position screenGroup at the hinge point (bottom edge of screen)
   // Original position was y=0.28, but now we offset children by 0.25, so adjust group position down
   screenGroup.position.set(0, 0.03, -0.23);
-  screenGroup.rotation.x = -Math.PI / 2; // Start at normal laptop position (-90° = 90° physical angle)
+  screenGroup.rotation.x = 0; // Start at closed position (0° = lid flat on keyboard)
   group.add(screenGroup);
 
   // Keyboard area
@@ -9107,6 +9109,8 @@ function updateObjectColor(object, colorType, colorValue) {
       typeSpecificData.editorContent = object.userData.editorContent;
       typeSpecificData.editorFileName = object.userData.editorFileName;
       typeSpecificData.wallpaperDataUrl = object.userData.wallpaperDataUrl;
+      typeSpecificData.lidMinRotation = object.userData.lidMinRotation;
+      typeSpecificData.lidMaxRotation = object.userData.lidMaxRotation;
       break;
     case 'pen':
       typeSpecificData.penColor = object.userData.penColor;
@@ -13003,34 +13007,74 @@ function onMouseDown(event) {
               });
             }
           } else {
-            // Lid is open - always start lid dragging when clicking on lid
-            isLidDragging = true;
-            lidDragState.laptop = object;
-            lidDragState.startLidRotation = object.userData.lidRotation;
-            lidDragState.accumulatedDeltaY = 0; // Reset accumulated delta
+            // Lid is open - check where user clicked on the screen
+            // Upper half of screen → rotate lid
+            // Lower half of screen (near hinge) → move whole laptop
 
-            // Log lid drag start with orientation info
-            const rotationDegrees = (object.userData.lidRotation * 180 / Math.PI).toFixed(1);
-            const normalizedRotationY = ((object.rotation.y % (2 * Math.PI)) + (2 * Math.PI)) % (2 * Math.PI);
-            const laptopRotationYDegrees = (normalizedRotationY * 180 / Math.PI).toFixed(1);
-            const screenFacesCamera = normalizedRotationY < Math.PI / 2 || normalizedRotationY > 3 * Math.PI / 2;
-            activityLog.add('LAPTOP', 'Lid drag started', {
+            // Get intersection point in world coordinates
+            const intersectionPointOpen = intersects[0].point.clone();
+
+            // Convert to local coordinates of the screenGroup
+            const screenGroupWorldMatrixOpen = new THREE.Matrix4();
+            screenGroup.updateMatrixWorld(true);
+            screenGroupWorldMatrixOpen.copy(screenGroup.matrixWorld).invert();
+            const localPointOpen = intersectionPointOpen.applyMatrix4(screenGroupWorldMatrixOpen);
+
+            // Screen geometry is 0.78 x 0.5, centered at origin in local space
+            // localPoint.y: 0 = bottom (near hinge), +0.5 = top (far from hinge)
+            // Split at y = 0.25 (middle of screen)
+            const clickedOnUpperHalf = localPointOpen.y > 0.25;
+
+            console.log('[LAPTOP] Open lid click:', {
               objectId: object.userData.id,
-              currentRotation: `${rotationDegrees}°`,
-              currentRotationRadians: object.userData.lidRotation.toFixed(4),
-              laptopOrientation: `${laptopRotationYDegrees}°`,
-              screenFacesCamera: screenFacesCamera
-            });
-            console.log('[LAPTOP] Lid drag started:', {
-              objectId: object.userData.id,
-              currentRotation: `${rotationDegrees}°`,
-              currentRotationRadians: object.userData.lidRotation.toFixed(4),
-              laptopOrientation: `${laptopRotationYDegrees}°`,
-              screenFacesCamera: screenFacesCamera
+              localY: localPointOpen.y.toFixed(3),
+              clickedOnUpperHalf: clickedOnUpperHalf,
+              action: clickedOnUpperHalf ? 'rotate lid' : 'move laptop'
             });
 
-            document.getElementById('customization-panel').classList.remove('open');
-            return; // Don't start normal object dragging
+            if (clickedOnUpperHalf) {
+              // Clicking on upper half → rotate the lid
+              isLidDragging = true;
+              lidDragState.laptop = object;
+              lidDragState.startLidRotation = object.userData.lidRotation;
+              lidDragState.accumulatedDeltaY = 0; // Reset accumulated delta
+
+              // Log lid drag start with orientation info
+              const rotationDegrees = (object.userData.lidRotation * 180 / Math.PI).toFixed(1);
+              const normalizedRotationY = ((object.rotation.y % (2 * Math.PI)) + (2 * Math.PI)) % (2 * Math.PI);
+              const laptopRotationYDegrees = (normalizedRotationY * 180 / Math.PI).toFixed(1);
+              const screenFacesCamera = normalizedRotationY < Math.PI / 2 || normalizedRotationY > 3 * Math.PI / 2;
+              activityLog.add('LAPTOP', 'Lid drag started', {
+                objectId: object.userData.id,
+                currentRotation: `${rotationDegrees}°`,
+                currentRotationRadians: object.userData.lidRotation.toFixed(4),
+                laptopOrientation: `${laptopRotationYDegrees}°`,
+                screenFacesCamera: screenFacesCamera,
+                clickPosition: 'upper half'
+              });
+              console.log('[LAPTOP] Lid drag started:', {
+                objectId: object.userData.id,
+                currentRotation: `${rotationDegrees}°`,
+                currentRotationRadians: object.userData.lidRotation.toFixed(4),
+                laptopOrientation: `${laptopRotationYDegrees}°`,
+                screenFacesCamera: screenFacesCamera,
+                clickPosition: 'upper half'
+              });
+
+              document.getElementById('customization-panel').classList.remove('open');
+              return; // Don't start normal object dragging
+            } else {
+              // Clicking on lower half (near hinge) → allow normal object dragging
+              activityLog.add('LAPTOP', 'Moving laptop (grabbed lower screen)', {
+                objectId: object.userData.id,
+                clickPosition: 'lower half (near hinge)'
+              });
+              console.log('[LAPTOP] Moving laptop (grabbed lower screen):', {
+                objectId: object.userData.id,
+                clickPosition: 'lower half (near hinge)'
+              });
+              // Don't return here, let it fall through to normal dragging logic
+            }
           }
         }
       }
@@ -13323,10 +13367,14 @@ function onMouseMove(event) {
     const directionMultiplier = screenFacesCamera ? -1 : 1;
 
     // Calculate target rotation with orientation-aware direction
-    // Unlimited rotation mode: lid can rotate freely in both directions
     let newRotation = lidDragState.startLidRotation - (lidDragState.accumulatedDeltaY * rotationSensitivity * directionMultiplier);
 
-    // No rotation limits - unlimited rotation in both positive and negative directions
+    // Apply rotation limits based on user-configurable min/max
+    // lidMinRotation = 0° (closed, cannot close further)
+    // lidMaxRotation = -130° or user-configured (fully open)
+    const minRotation = laptop.userData.lidMinRotation !== undefined ? laptop.userData.lidMinRotation : 0;
+    const maxRotation = laptop.userData.lidMaxRotation !== undefined ? laptop.userData.lidMaxRotation : -Math.PI * 130 / 180;
+    newRotation = Math.max(maxRotation, Math.min(minRotation, newRotation));
 
     // Only update and log if rotation actually changed
     const rotationChanged = Math.abs(newRotation - laptop.userData.targetLidRotation) > 0.001;
@@ -14940,6 +14988,23 @@ function updateCustomizationPanel(object) {
           </div>
         </div>
         <div class="customization-group" style="margin-top: 15px;">
+          <label>Lid Rotation Limits</label>
+          <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 8px;">
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <label style="color: rgba(255,255,255,0.7); font-size: 12px; min-width: 70px;">Min (closed):</label>
+              <input type="range" id="laptop-lid-min-angle" min="0" max="45" value="${Math.round((object.userData.lidMinRotation || 0) * -180 / Math.PI)}"
+                     style="flex: 1; cursor: pointer;">
+              <span id="laptop-lid-min-angle-val" style="color: rgba(255,255,255,0.7); font-size: 12px; min-width: 35px;">${Math.round((object.userData.lidMinRotation || 0) * -180 / Math.PI)}°</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <label style="color: rgba(255,255,255,0.7); font-size: 12px; min-width: 70px;">Max (open):</label>
+              <input type="range" id="laptop-lid-max-angle" min="90" max="180" value="${Math.round((object.userData.lidMaxRotation !== undefined ? object.userData.lidMaxRotation : -Math.PI * 130 / 180) * -180 / Math.PI)}"
+                     style="flex: 1; cursor: pointer;">
+              <span id="laptop-lid-max-angle-val" style="color: rgba(255,255,255,0.7); font-size: 12px; min-width: 35px;">${Math.round((object.userData.lidMaxRotation !== undefined ? object.userData.lidMaxRotation : -Math.PI * 130 / 180) * -180 / Math.PI)}°</span>
+            </div>
+          </div>
+        </div>
+        <div class="customization-group" style="margin-top: 15px;">
           <label>Desktop Wallpaper</label>
           <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 8px;">
             <label style="display: inline-block; padding: 10px 15px; background: rgba(79, 70, 229, 0.3); border: 1px solid rgba(79, 70, 229, 0.5); border-radius: 8px; color: #fff; cursor: pointer; text-align: center;">
@@ -15932,6 +15997,46 @@ function setupLaptopCustomizationHandlers(object) {
         saveState();
         // Refresh the panel to update button text
         updateCustomizationPanel(object);
+      });
+    }
+
+    // Lid angle limit handlers
+    const lidMinAngle = document.getElementById('laptop-lid-min-angle');
+    const lidMinAngleVal = document.getElementById('laptop-lid-min-angle-val');
+    const lidMaxAngle = document.getElementById('laptop-lid-max-angle');
+    const lidMaxAngleVal = document.getElementById('laptop-lid-max-angle-val');
+
+    if (lidMinAngle) {
+      lidMinAngle.addEventListener('input', (e) => {
+        const angleDegrees = parseInt(e.target.value);
+        // Convert degrees to radians (negative because lid opens in negative direction)
+        object.userData.lidMinRotation = -angleDegrees * Math.PI / 180;
+        if (lidMinAngleVal) lidMinAngleVal.textContent = angleDegrees + '°';
+        saveState();
+      });
+      // Add scroll support
+      addScrollToSlider(lidMinAngle, (val) => {
+        const angleDegrees = parseInt(val);
+        object.userData.lidMinRotation = -angleDegrees * Math.PI / 180;
+        if (lidMinAngleVal) lidMinAngleVal.textContent = angleDegrees + '°';
+        saveState();
+      });
+    }
+
+    if (lidMaxAngle) {
+      lidMaxAngle.addEventListener('input', (e) => {
+        const angleDegrees = parseInt(e.target.value);
+        // Convert degrees to radians (negative because lid opens in negative direction)
+        object.userData.lidMaxRotation = -angleDegrees * Math.PI / 180;
+        if (lidMaxAngleVal) lidMaxAngleVal.textContent = angleDegrees + '°';
+        saveState();
+      });
+      // Add scroll support
+      addScrollToSlider(lidMaxAngle, (val) => {
+        const angleDegrees = parseInt(val);
+        object.userData.lidMaxRotation = -angleDegrees * Math.PI / 180;
+        if (lidMaxAngleVal) lidMaxAngleVal.textContent = angleDegrees + '°';
+        saveState();
       });
     }
 
@@ -23315,6 +23420,17 @@ async function saveStateImmediate() {
           if (obj.userData.iconPositions) {
             data.iconPositions = obj.userData.iconPositions;
           }
+          // Save lid rotation limits
+          if (obj.userData.lidMinRotation !== undefined) {
+            data.lidMinRotation = obj.userData.lidMinRotation;
+          }
+          if (obj.userData.lidMaxRotation !== undefined) {
+            data.lidMaxRotation = obj.userData.lidMaxRotation;
+          }
+          // Save current lid rotation state
+          if (obj.userData.lidRotation !== undefined) {
+            data.lidRotation = obj.userData.lidRotation;
+          }
           break;
         case 'pen':
           data.penColor = obj.userData.penColor;
@@ -23877,6 +23993,24 @@ async function loadState() {
                 // Restore icon positions for desktop
                 if (objData.iconPositions) {
                   obj.userData.iconPositions = objData.iconPositions;
+                }
+                // Restore lid rotation limits
+                if (objData.lidMinRotation !== undefined) {
+                  obj.userData.lidMinRotation = objData.lidMinRotation;
+                }
+                if (objData.lidMaxRotation !== undefined) {
+                  obj.userData.lidMaxRotation = objData.lidMaxRotation;
+                }
+                // Restore lid rotation state and update visual
+                if (objData.lidRotation !== undefined) {
+                  obj.userData.lidRotation = objData.lidRotation;
+                  obj.userData.targetLidRotation = objData.lidRotation;
+                  obj.userData.isLidOpen = (objData.lidRotation < -0.1);
+                  // Update the screen group rotation
+                  const screenGroup = obj.getObjectByName('screenGroup');
+                  if (screenGroup) {
+                    screenGroup.rotation.x = objData.lidRotation;
+                  }
                 }
                 // Restore power state (laptop was on/off when saved)
                 if (objData.isOn) {
