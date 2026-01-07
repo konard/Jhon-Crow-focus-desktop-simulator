@@ -9631,13 +9631,16 @@ function getStackingRadius(object) {
   const type = object.userData.type;
   const scale = object.scale?.x || 1;
 
-  // Use predefined stacking radius if available
+  // Get per-object stack collision radius multiplier (default 1.0 = 100%)
+  const objectMultiplier = object.userData.objectStackCollisionRadiusMultiplier || 1.0;
+
+  // Use predefined stacking radius if available (with per-object multiplier applied)
   if (OBJECT_STACKING_RADII[type] !== undefined) {
-    return OBJECT_STACKING_RADII[type] * scale;
+    return OBJECT_STACKING_RADII[type] * objectMultiplier * scale;
   }
 
   // For unknown types, use default stacking radius
-  return DEFAULT_STACKING_RADIUS * scale;
+  return DEFAULT_STACKING_RADIUS * objectMultiplier * scale;
 }
 
 // Get additional collision points for objects with complex shapes (e.g., laptop monitor)
@@ -9806,7 +9809,10 @@ function createCollisionHelper(object) {
 
   // Stacking radius visualization (blue/cyan - used for stacking detection)
   // Uses physics.height as stacking considers the visual height
-  const stackingGeometry = new THREE.CylinderGeometry(stackingRadius, stackingRadius, physics.height, 16, 1, true);
+  // Apply height multiplier for accurate debug visualization
+  const stackHeightMultiplier = object.userData.objectStackCollisionHeightMultiplier || 1.0;
+  const visualStackHeight = physics.height * stackHeightMultiplier;
+  const stackingGeometry = new THREE.CylinderGeometry(stackingRadius, stackingRadius, visualStackHeight, 16, 1, true);
   const stackingMaterial = new THREE.MeshBasicMaterial({
     color: 0x00aaff,
     transparent: true,
@@ -9815,7 +9821,7 @@ function createCollisionHelper(object) {
     depthWrite: false
   });
   const stackingHelper = new THREE.Mesh(stackingGeometry, stackingMaterial);
-  stackingHelper.position.y = physics.height / 2;
+  stackingHelper.position.y = visualStackHeight / 2;
   helperGroup.add(stackingHelper);
 
   // Add stacking radius ring at the base
@@ -10320,7 +10326,8 @@ function findSupportingY(object, x, z) {
     const otherPhysics = getObjectPhysics(other);
     const otherRadius = getStackingRadius(other);
     const otherScale = other.userData.scale || other.scale.x || 1.0;
-    const otherTop = other.position.y + otherPhysics.height * otherScale;
+    const otherHeightMultiplier = other.userData.objectStackCollisionHeightMultiplier || 1.0;
+    const otherTop = other.position.y + otherPhysics.height * otherScale * otherHeightMultiplier;
 
     // Check horizontal overlap
     const dx = x - other.position.x;
@@ -11598,7 +11605,7 @@ function setupEventListeners() {
         if (wasdKey === 'KeyA') bookReadingState.panOffsetX -= panSpeed;
         if (wasdKey === 'KeyD') bookReadingState.panOffsetX += panSpeed;
 
-        // Clamp pan offsets to reasonable limits
+        // Clamp pan offsets to reasonable limits (fixed bounds allow full navigation)
         bookReadingState.panOffsetX = Math.max(-1.5, Math.min(1.5, bookReadingState.panOffsetX));
         bookReadingState.panOffsetZ = Math.max(-1.5, Math.min(1.5, bookReadingState.panOffsetZ));
 
@@ -11684,6 +11691,203 @@ function setupEventListeners() {
         camera.position.x = Math.max(-8, Math.min(8, camera.position.x));
         camera.position.z = Math.max(-5, Math.min(12, camera.position.z));
         camera.position.y = Math.max(1, Math.min(8, camera.position.y));
+      }
+    }
+
+    // Quick navigation shortcuts in reading mode: Q, E, Z, C
+    // Aligns book corners with screen corners regardless of zoom level
+    // Q - top-left corner of book at top-left corner of screen
+    // E - top-right corner of book at top-right corner of screen
+    // Z - bottom-left corner of book at bottom-left corner of screen
+    // C - bottom-right corner of book at bottom-right corner of screen
+    const quickNavKey = e.code;
+    if (quickNavKey === 'KeyQ' || quickNavKey === 'KeyE' || quickNavKey === 'KeyZ' || quickNavKey === 'KeyC') {
+      // Don't process if typing in an input field
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+      // Only works in reading mode
+      if (bookReadingState.active && bookReadingState.book && bookReadingState.bookWorldPos) {
+        e.preventDefault();
+        const bookWorldPos = bookReadingState.bookWorldPos;
+
+        // Calculate visible area at the book plane by unprojecting viewport corners
+        // This approach is exact and handles all camera transformations (FOV, aspect, rotation)
+        const bookY = bookWorldPos.y;
+
+        // Create a horizontal plane at the book's Y level
+        const bookPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -bookY);
+
+        // IMPORTANT: Save current camera position and temporarily move camera to centered position
+        // This ensures consistent intersection calculations regardless of current pan offsets
+        // Without this, repeated presses of the same key cause "jumpy" behavior because
+        // intersections depend on current camera position
+        const savedCameraPos = camera.position.clone();
+        const centeredCameraPos = new THREE.Vector3(
+          bookWorldPos.x,  // No pan offset X
+          bookWorldPos.y + bookReadingState.zoomDistance,
+          bookWorldPos.z + 0.65  // No pan offset Z
+        );
+        camera.position.copy(centeredCameraPos);
+        camera.updateMatrixWorld();
+
+        // Unproject the four corners of the viewport to find where they hit the book plane
+        // Viewport corners in NDC (Normalized Device Coordinates):
+        // In Three.js NDC: X: -1 (left) to +1 (right), Y: -1 (top) to +1 (bottom)
+        const raycaster = new THREE.Raycaster();
+        const corners = [
+          new THREE.Vector2(-1, -1), // top-left (left + top)
+          new THREE.Vector2(1, -1),  // top-right (right + top)
+          new THREE.Vector2(-1, 1),  // bottom-left (left + bottom)
+          new THREE.Vector2(1, 1)    // bottom-right (right + bottom)
+        ];
+
+        const intersections = corners.map(corner => {
+          raycaster.setFromCamera(corner, camera);
+          const intersectPoint = new THREE.Vector3();
+          raycaster.ray.intersectPlane(bookPlane, intersectPoint);
+          return intersectPoint;
+        });
+
+        // Restore camera position (will be updated with new pan offsets below)
+        camera.position.copy(savedCameraPos);
+
+        // Book dimensions when open (two pages side by side)
+        // Each page is 0.28 wide, so open book is ~0.56 wide (0.28 * 2)
+        // Book depth is 0.38
+        const bookType = bookReadingState.book.userData.type;
+        let bookHalfWidth, bookHalfDepth;
+
+        if (bookType === 'magazine') {
+          // Magazine: 0.22 x 0.30 closed, open width is ~0.44
+          bookHalfWidth = 0.22; // Half of open magazine width
+          bookHalfDepth = 0.15; // Half of magazine depth
+        } else {
+          // Book: 0.28 x 0.38 closed, open width is ~0.56
+          bookHalfWidth = 0.28; // Half of open book width
+          bookHalfDepth = 0.19; // Half of book depth
+        }
+
+        // Calculate camera shifts to align book corners with viewport corners
+        // The idea: shift camera so that the desired book corner appears at the desired viewport corner
+        //
+        // Current viewport corners hit these points on book plane:
+        // - Top-left viewport corner → intersections[0]
+        // - Top-right viewport corner → intersections[1]
+        // - Bottom-left viewport corner → intersections[2]
+        // - Bottom-right viewport corner → intersections[3]
+        //
+        // Book corners in world space:
+        // Camera is at (bookX, bookY + zoomDistance, bookZ + 0.65), looking down towards -Z
+        // From camera's perspective:
+        // - Top corners have larger Z (closer to camera, towards +Z)
+        // - Bottom corners have smaller Z (farther from camera, towards -Z)
+        // - Left corners have negative X (towards -X)
+        // - Right corners have positive X (towards +X)
+        //
+        // - Top-left: (bookX - bookHalfWidth, bookY, bookZ + bookHalfDepth)
+        // - Top-right: (bookX + bookHalfWidth, bookY, bookZ + bookHalfDepth)
+        // - Bottom-left: (bookX - bookHalfWidth, bookY, bookZ - bookHalfDepth)
+        // - Bottom-right: (bookX + bookHalfWidth, bookY, bookZ - bookHalfDepth)
+        //
+        // To align book's top-left with viewport's top-left, we need to shift camera by:
+        // deltaX = (bookX - bookHalfWidth) - intersections[0].x
+        // deltaZ = (bookZ + bookHalfDepth) - intersections[0].z
+
+        const bookTopLeftX = bookWorldPos.x - bookHalfWidth;  // Left side (negative X)
+        const bookTopLeftZ = bookWorldPos.z + bookHalfDepth;  // Top = larger Z (closer to camera)
+        const bookTopRightX = bookWorldPos.x + bookHalfWidth;  // Right side (positive X)
+        const bookTopRightZ = bookWorldPos.z + bookHalfDepth;  // Top = larger Z (closer to camera)
+        const bookBottomLeftX = bookWorldPos.x - bookHalfWidth;  // Left side (negative X)
+        const bookBottomLeftZ = bookWorldPos.z - bookHalfDepth;  // Bottom = smaller Z (farther from camera)
+        const bookBottomRightX = bookWorldPos.x + bookHalfWidth;  // Right side (positive X)
+        const bookBottomRightZ = bookWorldPos.z - bookHalfDepth;  // Bottom = smaller Z (farther from camera)
+
+        // Calculate shifts for each corner alignment
+        // Note: intersections are calculated from CENTERED camera position (panOffset = 0, 0)
+        // This ensures consistent results regardless of current camera position
+        // intersections[N] represents where viewport corner N hits the book plane when camera is centered
+        // To align book corner with viewport corner: panOffset = viewportCorner - bookCorner
+        // (with X inverted because camera movement is opposite to scene appearance)
+
+        if (quickNavKey === 'KeyQ') {
+          // Q - align book's top-left with viewport's top-left
+          // Note: X-axis is inverted because moving camera right makes content appear left
+          const shiftX = intersections[0].x - bookTopLeftX;  // Inverted X
+          const shiftZ = bookTopLeftZ - intersections[0].z;
+          bookReadingState.panOffsetX = shiftX;
+          bookReadingState.panOffsetZ = shiftZ;
+        } else if (quickNavKey === 'KeyE') {
+          // E - align book's top-right with viewport's top-right
+          // Note: X-axis is inverted because moving camera right makes content appear left
+          const shiftX = intersections[1].x - bookTopRightX;  // Inverted X
+          const shiftZ = bookTopRightZ - intersections[1].z;
+          bookReadingState.panOffsetX = shiftX;
+          bookReadingState.panOffsetZ = shiftZ;
+        } else if (quickNavKey === 'KeyZ') {
+          // Z - align book's bottom-left with viewport's bottom-left
+          // Note: X-axis is inverted because moving camera right makes content appear left
+          const shiftX = intersections[2].x - bookBottomLeftX;  // Inverted X
+          const shiftZ = bookBottomLeftZ - intersections[2].z;
+          bookReadingState.panOffsetX = shiftX;
+          bookReadingState.panOffsetZ = shiftZ;
+        } else if (quickNavKey === 'KeyC') {
+          // C - align book's bottom-right with viewport's bottom-right
+          // Note: X-axis is inverted because moving camera right makes content appear left
+          const shiftX = intersections[3].x - bookBottomRightX;  // Inverted X
+          const shiftZ = bookBottomRightZ - intersections[3].z;
+          bookReadingState.panOffsetX = shiftX;
+          bookReadingState.panOffsetZ = shiftZ;
+        }
+
+        // Note: No constraints applied here - the shift values are calculated precisely
+        // to align book corners with viewport corners. Applying constraints would
+        // defeat the purpose of corner alignment.
+
+        // Update camera position with calculated offsets
+        camera.position.set(
+          bookWorldPos.x + bookReadingState.panOffsetX,
+          bookWorldPos.y + bookReadingState.zoomDistance,
+          bookWorldPos.z + 0.65 + bookReadingState.panOffsetZ
+        );
+
+        // Log camera jump for debugging and analysis
+        const cornerNames = {
+          'KeyQ': 'top-left',
+          'KeyE': 'top-right',
+          'KeyZ': 'bottom-left',
+          'KeyC': 'bottom-right'
+        };
+        activityLog.add('CAMERA', 'Quick navigation to corner', {
+          corner: cornerNames[quickNavKey],
+          key: quickNavKey,
+          cameraPosition: {
+            x: camera.position.x.toFixed(3),
+            y: camera.position.y.toFixed(3),
+            z: camera.position.z.toFixed(3)
+          },
+          panOffset: {
+            x: bookReadingState.panOffsetX.toFixed(3),
+            z: bookReadingState.panOffsetZ.toFixed(3)
+          },
+          zoomDistance: bookReadingState.zoomDistance.toFixed(3),
+          bookWorldPos: {
+            x: bookWorldPos.x.toFixed(3),
+            y: bookWorldPos.y.toFixed(3),
+            z: bookWorldPos.z.toFixed(3)
+          },
+          bookDimensions: {
+            halfWidth: bookHalfWidth.toFixed(3),
+            halfDepth: bookHalfDepth.toFixed(3)
+          },
+          viewportIntersections: {
+            topLeft: `(${intersections[0].x.toFixed(3)}, ${intersections[0].z.toFixed(3)})`,
+            topRight: `(${intersections[1].x.toFixed(3)}, ${intersections[1].z.toFixed(3)})`,
+            bottomLeft: `(${intersections[2].x.toFixed(3)}, ${intersections[2].z.toFixed(3)})`,
+            bottomRight: `(${intersections[3].x.toFixed(3)}, ${intersections[3].z.toFixed(3)})`
+          }
+        });
+
+        return;
       }
     }
   });
@@ -11843,6 +12047,36 @@ function setupEventListeners() {
     }
   });
 
+  // Exit Application button
+  document.getElementById('exit-app-btn').addEventListener('click', async () => {
+    if (confirm('Are you sure you want to exit the application? The current state will be saved and sound settings will be restored.')) {
+      activityLog.add('USER_ACTION', 'Exit application confirmed');
+
+      try {
+        // First, unmute other applications if they are muted
+        const muteOtherAppsCheckbox = document.getElementById('mute-other-apps-checkbox');
+        if (muteOtherAppsCheckbox && muteOtherAppsCheckbox.checked) {
+          console.log('Unchecking mute other apps before exit');
+          muteOtherAppsCheckbox.checked = false;
+          // Trigger the change event to actually unmute
+          await window.electronAPI.setMuteOtherApps(false);
+        }
+
+        // Save the current state before exiting (now with muteOtherApps: false)
+        await saveStateImmediate();
+        console.log('State saved before exit');
+
+        // Quit the application
+        await window.electronAPI.quitApplication();
+      } catch (error) {
+        console.error('Error during application exit:', error);
+        alert('Failed to properly exit the application. Please try again or close the window manually.');
+      }
+    } else {
+      activityLog.add('USER_ACTION', 'Exit application canceled');
+    }
+  });
+
   // Window Settings - Fullscreen Borderless Mode
   const fullscreenBorderlessCheckbox = document.getElementById('fullscreen-borderless-checkbox');
   if (fullscreenBorderlessCheckbox) {
@@ -11942,6 +12176,25 @@ function setupEventListeners() {
         e.target.checked = !enabled;
         alert('Error setting mute other apps: ' + error.message);
       }
+    });
+  }
+
+  // Interface Settings - Show Control Hints
+  const showControlHintsCheckbox = document.getElementById('show-control-hints-checkbox');
+  const instructionsElement = document.getElementById('instructions');
+  if (showControlHintsCheckbox && instructionsElement) {
+    showControlHintsCheckbox.addEventListener('change', (e) => {
+      const enabled = e.target.checked;
+      activityLog.add('USER_ACTION', 'Show control hints toggled', { enabled });
+
+      if (enabled) {
+        instructionsElement.classList.add('visible');
+      } else {
+        instructionsElement.classList.remove('visible');
+      }
+
+      // Save state to persist setting across restarts
+      saveState();
     });
   }
 
@@ -12191,6 +12444,104 @@ function setupEventListeners() {
     });
   }
 
+  // Per-object stack collision radius slider
+  const objectStackCollisionRadiusSlider = document.getElementById('object-stack-collision-radius-slider');
+  const objectStackCollisionRadiusValue = document.getElementById('object-stack-collision-radius-value');
+  if (objectStackCollisionRadiusSlider && objectStackCollisionRadiusValue) {
+    objectStackCollisionRadiusSlider.addEventListener('input', (e) => {
+      if (!selectedObject) return;
+      const oldValue = selectedObject.userData.objectStackCollisionRadiusMultiplier || 1.0;
+      const percentage = parseInt(e.target.value);
+      const newValue = percentage / 100;
+      selectedObject.userData.objectStackCollisionRadiusMultiplier = newValue;
+      objectStackCollisionRadiusValue.textContent = percentage + '%';
+
+      // Log stack collision radius change
+      activityLog.add('OBJECT', 'Object stack collision radius changed (edit mode)', {
+        type: selectedObject.userData.type,
+        id: selectedObject.userData.id,
+        oldValue: (oldValue * 100).toFixed(0) + '%',
+        newValue: percentage + '%'
+      });
+
+      saveState();
+      // Update collision debug visualization if enabled
+      if (debugState.showCollisionRadii) {
+        updateCollisionDebugHelpers();
+      }
+    });
+    // Add scroll-based adjustment
+    addScrollToSlider(objectStackCollisionRadiusSlider, (value) => {
+      if (!selectedObject) return;
+      const oldValue = selectedObject.userData.objectStackCollisionRadiusMultiplier || 1.0;
+      const newValue = value / 100;
+      selectedObject.userData.objectStackCollisionRadiusMultiplier = newValue;
+      objectStackCollisionRadiusValue.textContent = value + '%';
+
+      // Log stack collision radius change
+      activityLog.add('OBJECT', 'Object stack collision radius changed (edit mode)', {
+        type: selectedObject.userData.type,
+        id: selectedObject.userData.id,
+        oldValue: (oldValue * 100).toFixed(0) + '%',
+        newValue: value + '%'
+      });
+
+      saveState();
+      if (debugState.showCollisionRadii) {
+        updateCollisionDebugHelpers();
+      }
+    });
+  }
+
+  // Per-object stack collision height slider
+  const objectStackCollisionHeightSlider = document.getElementById('object-stack-collision-height-slider');
+  const objectStackCollisionHeightValue = document.getElementById('object-stack-collision-height-value');
+  if (objectStackCollisionHeightSlider && objectStackCollisionHeightValue) {
+    objectStackCollisionHeightSlider.addEventListener('input', (e) => {
+      if (!selectedObject) return;
+      const oldValue = selectedObject.userData.objectStackCollisionHeightMultiplier || 1.0;
+      const percentage = parseInt(e.target.value);
+      const newValue = percentage / 100;
+      selectedObject.userData.objectStackCollisionHeightMultiplier = newValue;
+      objectStackCollisionHeightValue.textContent = percentage + '%';
+
+      // Log stack collision height change
+      activityLog.add('OBJECT', 'Object stack collision height changed (edit mode)', {
+        type: selectedObject.userData.type,
+        id: selectedObject.userData.id,
+        oldValue: (oldValue * 100).toFixed(0) + '%',
+        newValue: percentage + '%'
+      });
+
+      saveState();
+      // Update collision debug visualization if enabled
+      if (debugState.showCollisionRadii) {
+        updateCollisionDebugHelpers();
+      }
+    });
+    // Add scroll-based adjustment
+    addScrollToSlider(objectStackCollisionHeightSlider, (value) => {
+      if (!selectedObject) return;
+      const oldValue = selectedObject.userData.objectStackCollisionHeightMultiplier || 1.0;
+      const newValue = value / 100;
+      selectedObject.userData.objectStackCollisionHeightMultiplier = newValue;
+      objectStackCollisionHeightValue.textContent = value + '%';
+
+      // Log stack collision height change
+      activityLog.add('OBJECT', 'Object stack collision height changed (edit mode)', {
+        type: selectedObject.userData.type,
+        id: selectedObject.userData.id,
+        oldValue: (oldValue * 100).toFixed(0) + '%',
+        newValue: value + '%'
+      });
+
+      saveState();
+      if (debugState.showCollisionRadii) {
+        updateCollisionDebugHelpers();
+      }
+    });
+  }
+
   // Per-object collision reset button
   const collisionResetBtn = document.getElementById('collision-reset-btn');
   if (collisionResetBtn) {
@@ -12199,11 +12550,17 @@ function setupEventListeners() {
       // Reset to default (1.0 = 100%)
       selectedObject.userData.objectCollisionRadiusMultiplier = 1.0;
       selectedObject.userData.objectCollisionHeightMultiplier = 1.0;
+      selectedObject.userData.objectStackCollisionRadiusMultiplier = 1.0;
+      selectedObject.userData.objectStackCollisionHeightMultiplier = 1.0;
       // Update UI
       if (objectCollisionRadiusSlider) objectCollisionRadiusSlider.value = 100;
       if (objectCollisionRadiusValue) objectCollisionRadiusValue.textContent = '100%';
       if (objectCollisionHeightSlider) objectCollisionHeightSlider.value = 100;
       if (objectCollisionHeightValue) objectCollisionHeightValue.textContent = '100%';
+      if (objectStackCollisionRadiusSlider) objectStackCollisionRadiusSlider.value = 100;
+      if (objectStackCollisionRadiusValue) objectStackCollisionRadiusValue.textContent = '100%';
+      if (objectStackCollisionHeightSlider) objectStackCollisionHeightSlider.value = 100;
+      if (objectStackCollisionHeightValue) objectStackCollisionHeightValue.textContent = '100%';
 
       // Log collision reset
       activityLog.add('OBJECT', 'Object collision settings reset to default (edit mode)', {
@@ -12434,13 +12791,13 @@ function onMouseDown(event) {
       return;
     }
 
-    // In reading mode, MMB hold for 300ms exits reading mode
+    // In reading mode, MMB hold exits reading mode
     if (bookReadingState.active) {
       bookReadingState.middleMouseDownTime = Date.now();
-      bookReadingState.exitHoldTimeout = setTimeout(() => {
+      bookReadingState.holdTimeout = setTimeout(() => {
         // Hold for 300ms - exit reading mode
         exitBookReadingMode();
-        bookReadingState.exitHoldTimeout = null; // Mark as already handled
+        bookReadingState.holdTimeout = null; // Mark as already handled
       }, 300);
       return;
     }
@@ -12839,6 +13196,146 @@ function onMouseDown(event) {
     // Clear dynamic options
     const dynamicOptions = document.getElementById('object-specific-options');
     if (dynamicOptions) dynamicOptions.innerHTML = '';
+  }
+
+  // Check if any laptop is in zoom mode - if so, block all interactions except with that laptop
+  let inLaptopZoomMode = false;
+  let zoomedLaptop = null;
+  for (const obj of deskObjects) {
+    if (obj.userData.type === 'laptop' && obj.userData.isZoomedIn) {
+      inLaptopZoomMode = true;
+      zoomedLaptop = obj;
+      break;
+    }
+  }
+
+  // If in laptop zoom mode, handle clicks specially
+  if (inLaptopZoomMode && zoomedLaptop) {
+    // If cursor mode is active, process cursor-based clicks on the laptop screen
+    // even if the raycaster hits something else or nothing
+    if (laptopCursorState.visible && laptopCursorState.targetLaptop === zoomedLaptop) {
+      // Process the click as a laptop screen interaction using cursor position
+      // This handles the case where the crosshair points outside the laptop
+      // but the user is clicking with the cursor on the laptop screen
+
+      if (zoomedLaptop.userData.isOn && !zoomedLaptop.userData.isBooting) {
+        const now = Date.now();
+        const timeDiff = now - laptopDoubleClickState.lastClickTime;
+
+        // Use cursor position for click coordinates
+        const clickX = laptopCursorState.x / 512;
+        const clickY = 1 - (laptopCursorState.y / 384); // Flip Y
+        const canvasX = laptopCursorState.x;
+        const canvasY = laptopCursorState.y;
+
+        // Check Start button click (single click)
+        const startBtnX = 5;
+        const startBtnY = 384 - 24;
+        const startBtnW = 60;
+        const startBtnH = 20;
+
+        if (canvasX >= startBtnX && canvasX <= startBtnX + startBtnW &&
+            canvasY >= startBtnY && canvasY <= startBtnY + startBtnH) {
+          // Toggle start menu
+          if (laptopStartMenuState.isOpen && laptopStartMenuState.targetLaptop === zoomedLaptop) {
+            laptopStartMenuState.isOpen = false;
+            laptopStartMenuState.targetLaptop = null;
+          } else {
+            laptopStartMenuState.isOpen = true;
+            laptopStartMenuState.targetLaptop = zoomedLaptop;
+          }
+          updateLaptopDesktopWithCursor(zoomedLaptop);
+          laptopDoubleClickState.lastClickTime = now;
+          return;
+        }
+
+        // Check shutdown button click if start menu is open (Windows XP style)
+        if (laptopStartMenuState.isOpen && laptopStartMenuState.targetLaptop === zoomedLaptop) {
+          const menuX = 0;
+          const menuY = 384 - 28 - 160;  // Updated for XP menu height
+          const menuW = 200;             // Updated for XP menu width
+          const menuH = 160;
+          const bottomBarY = menuY + menuH - 34;  // Orange bottom bar
+          const shutdownX = menuX + menuW - 90;
+          const shutdownY = bottomBarY + 7;
+
+          // Check if clicking on Turn Off button in orange bar
+          if (canvasX >= shutdownX && canvasX <= shutdownX + 80 &&
+              canvasY >= shutdownY && canvasY <= shutdownY + 20) {
+            // Shutdown the laptop
+            laptopStartMenuState.isOpen = false;
+            laptopStartMenuState.targetLaptop = null;
+            toggleLaptopPower(zoomedLaptop);
+            laptopDoubleClickState.lastClickTime = now;
+            return;
+          }
+
+          // Click outside menu closes it
+          if (canvasX < menuX || canvasX > menuX + menuW ||
+              canvasY < menuY || canvasY > menuY + menuH) {
+            laptopStartMenuState.isOpen = false;
+            laptopStartMenuState.targetLaptop = null;
+            updateLaptopDesktopWithCursor(zoomedLaptop);
+            laptopDoubleClickState.lastClickTime = now;
+            return;
+          }
+        }
+
+        // Get icon position from saved positions or default
+        const iconPos = zoomedLaptop.userData.iconPositions || { obsidian: { x: 60, y: 60 } };
+        const iconPosX = iconPos.obsidian?.x || 60;
+        const iconPosY = iconPos.obsidian?.y || 60;
+        const iconSize = 48;
+
+        // Check if click is on the icon (using canvas coordinates)
+        const dx = canvasX - iconPosX;
+        const dy = canvasY - iconPosY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const onIcon = dist < iconSize;
+
+        if (timeDiff < laptopDoubleClickState.doubleClickThreshold) {
+          // Double-click detected - open editor if on icon
+          if (onIcon) {
+            openMarkdownEditor(zoomedLaptop);
+            laptopDoubleClickState.lastClickTime = 0;
+            return;
+          }
+        } else if (onIcon) {
+          // Single click on icon - start dragging
+          laptopIconDragState.isDragging = true;
+          laptopIconDragState.iconName = 'obsidian';
+          laptopIconDragState.startX = canvasX;
+          laptopIconDragState.startY = canvasY;
+          laptopIconDragState.offsetX = canvasX - iconPosX;
+          laptopIconDragState.offsetY = canvasY - iconPosY;
+          laptopIconDragState.targetLaptop = zoomedLaptop;
+        }
+
+        laptopDoubleClickState.lastClickTime = now;
+        return;
+      }
+      // If laptop is off or booting, just block the click
+      return;
+    }
+
+    // If not in cursor mode, check if the raycaster hit the laptop
+    if (intersects.length > 0) {
+      let object = intersects[0].object;
+      while (object.parent && !deskObjects.includes(object)) {
+        object = object.parent;
+      }
+
+      // Only process the click if it's on the zoomed laptop
+      if (object === zoomedLaptop) {
+        // Continue to normal laptop screen interaction handling below
+      } else {
+        // Block interaction with any other object while in laptop zoom mode
+        return;
+      }
+    } else {
+      // No object clicked while in laptop mode - block interaction
+      return;
+    }
   }
 
   if (intersects.length > 0) {
@@ -13427,12 +13924,11 @@ function onMouseUp(event) {
       return;
     }
 
-    // If in reading mode, check if we need to clear the exit timeout
+    // If in reading mode, MMB quick release cancels the hold timeout (don't exit)
     if (bookReadingState.active) {
-      // If user releases before the hold timeout fired (300ms), cancel the exit
-      if (bookReadingState.exitHoldTimeout) {
-        clearTimeout(bookReadingState.exitHoldTimeout);
-        bookReadingState.exitHoldTimeout = null;
+      if (bookReadingState.holdTimeout) {
+        clearTimeout(bookReadingState.holdTimeout);
+        bookReadingState.holdTimeout = null;
       }
       return;
     }
@@ -13779,7 +14275,8 @@ function calculateDragStackingY(draggedObject, posX, posZ) {
     if (horizontalDist < overlapThreshold) {
       // Calculate the top surface of the object below
       const otherScale = obj.userData.scale || obj.scale.x || 1.0;
-      const objTopY = obj.position.y + otherPhysics.height * otherScale;
+      const heightMultiplier = obj.userData.objectStackCollisionHeightMultiplier || 1.0;
+      const objTopY = obj.position.y + otherPhysics.height * otherScale * heightMultiplier;
       overlappingObjects.push({ obj, topY: objTopY });
     }
   });
@@ -13858,7 +14355,8 @@ function calculateStackingY(droppedObject) {
     if (horizontalDist < overlapThreshold) {
       // Calculate the top surface of the object below
       const otherScale = obj.userData.scale || obj.scale.x || 1.0;
-      const objTopY = obj.position.y + otherPhysics.height * otherScale;
+      const heightMultiplier = obj.userData.objectStackCollisionHeightMultiplier || 1.0;
+      const objTopY = obj.position.y + otherPhysics.height * otherScale * heightMultiplier;
       overlappingObjects.push({ obj, topY: objTopY });
     }
   });
@@ -13922,7 +14420,8 @@ function calculatePullResistance(draggedObject, currentX, currentZ, targetX, tar
     if (horizontalDist < overlapThreshold) {
       // Check if dragged object is UNDER this object (based on Y positions)
       const draggedScale = draggedObject.userData.scale || draggedObject.scale.x || 1.0;
-      const draggedTop = draggedObject.position.y + draggedPhysics.height * draggedScale;
+      const draggedHeightMultiplier = draggedObject.userData.objectStackCollisionHeightMultiplier || 1.0;
+      const draggedTop = draggedObject.position.y + draggedPhysics.height * draggedScale * draggedHeightMultiplier;
       const objBottom = obj.position.y;
 
       // If the object above us has its bottom at or above our top, we're under it
@@ -14301,6 +14800,10 @@ function updateObjectCollisionUI(object) {
   const radiusValue = document.getElementById('object-collision-radius-value');
   const heightSlider = document.getElementById('object-collision-height-slider');
   const heightValue = document.getElementById('object-collision-height-value');
+  const stackRadiusSlider = document.getElementById('object-stack-collision-radius-slider');
+  const stackRadiusValue = document.getElementById('object-stack-collision-radius-value');
+  const stackHeightSlider = document.getElementById('object-stack-collision-height-slider');
+  const stackHeightValue = document.getElementById('object-stack-collision-height-value');
 
   if (radiusSlider && radiusValue) {
     const radiusMultiplier = object.userData.objectCollisionRadiusMultiplier || 1.0;
@@ -14314,6 +14817,20 @@ function updateObjectCollisionUI(object) {
     const heightPercent = Math.round(heightMultiplier * 100);
     heightSlider.value = heightPercent;
     heightValue.textContent = heightPercent + '%';
+  }
+
+  if (stackRadiusSlider && stackRadiusValue) {
+    const stackRadiusMultiplier = object.userData.objectStackCollisionRadiusMultiplier || 1.0;
+    const stackRadiusPercent = Math.round(stackRadiusMultiplier * 100);
+    stackRadiusSlider.value = stackRadiusPercent;
+    stackRadiusValue.textContent = stackRadiusPercent + '%';
+  }
+
+  if (stackHeightSlider && stackHeightValue) {
+    const stackHeightMultiplier = object.userData.objectStackCollisionHeightMultiplier || 1.0;
+    const stackHeightPercent = Math.round(stackHeightMultiplier * 100);
+    stackHeightSlider.value = stackHeightPercent;
+    stackHeightValue.textContent = stackHeightPercent + '%';
   }
 }
 
@@ -18748,7 +19265,7 @@ function openMarkdownEditor(laptop) {
   });
 
   // Function to save and close the editor (exitLaptopMode: also exit laptop zoom mode)
-  async function saveAndClose(exitLaptopMode = false) {
+  function saveAndClose(exitLaptopMode = false) {
     laptop.userData.editorContent = sourceTextarea.value;
     laptop.userData.editorFileName = filenameInput.value || 'notes.md';
 
@@ -18775,37 +19292,6 @@ function openMarkdownEditor(laptop) {
     saveState();
     document.removeEventListener('keydown', handleEditorKeys);
     document.removeEventListener('mousedown', handleEditorMiddleClick);
-
-    // Save to file if content is not empty
-    if (sourceTextarea.value.trim().length > 0) {
-      try {
-        // Use configured folder or default app folder
-        let folderPath = laptop.userData.notesFolderPath;
-        if (!folderPath) {
-          const defaultResult = await window.electronAPI.getDefaultNotesFolder();
-          if (defaultResult.success) {
-            folderPath = defaultResult.folderPath;
-          }
-        }
-
-        if (folderPath) {
-          // Add timestamp to filename when saving
-          const timestampedFilename = getTimestampedFilename(laptop.userData.editorFileName);
-          const result = await window.electronAPI.saveMarkdownFile(
-            folderPath,
-            timestampedFilename,
-            sourceTextarea.value
-          );
-          if (result.success) {
-            console.log('Note saved to:', result.filePath);
-          } else {
-            console.error('Failed to save note:', result.error);
-          }
-        }
-      } catch (error) {
-        console.error('Error saving note to file:', error);
-      }
-    }
 
     // Exit laptop zoom mode if requested
     if (exitLaptopMode) {
@@ -23789,6 +24275,12 @@ async function saveStateImmediate() {
       if (obj.userData.objectCollisionHeightMultiplier !== undefined && obj.userData.objectCollisionHeightMultiplier !== 1.0) {
         data.objectCollisionHeightMultiplier = obj.userData.objectCollisionHeightMultiplier;
       }
+      if (obj.userData.objectStackCollisionRadiusMultiplier !== undefined && obj.userData.objectStackCollisionRadiusMultiplier !== 1.0) {
+        data.objectStackCollisionRadiusMultiplier = obj.userData.objectStackCollisionRadiusMultiplier;
+      }
+      if (obj.userData.objectStackCollisionHeightMultiplier !== undefined && obj.userData.objectStackCollisionHeightMultiplier !== 1.0) {
+        data.objectStackCollisionHeightMultiplier = obj.userData.objectStackCollisionHeightMultiplier;
+      }
 
       // Save floor/fallen state (Y position is already saved above for all objects)
       if (obj.userData.isOnFloor) {
@@ -23837,6 +24329,8 @@ async function saveStateImmediate() {
             data.firstPageAsCover = true;
           }
           data.currentPage = obj.userData.currentPage || 0;
+          // Save open/close state
+          data.isOpen = obj.userData.isOpen || false;
           break;
         case 'magazine':
           data.magazineTitle = obj.userData.magazineTitle;
@@ -23865,6 +24359,8 @@ async function saveStateImmediate() {
             data.firstPageAsCover = true;
           }
           data.currentPage = obj.userData.currentPage || 0;
+          // Save open/close state
+          data.isOpen = obj.userData.isOpen || false;
           break;
         case 'document':
           data.documentTitle = obj.userData.documentTitle;
@@ -24120,7 +24616,8 @@ async function saveStateImmediate() {
     windowSettings: {
       fullscreenBorderless: document.getElementById('fullscreen-borderless-checkbox')?.checked || false,
       ignoreShortcuts: document.getElementById('ignore-shortcuts-checkbox')?.checked || false,
-      muteOtherApps: document.getElementById('mute-other-apps-checkbox')?.checked || false
+      muteOtherApps: document.getElementById('mute-other-apps-checkbox')?.checked || false,
+      showControlHints: document.getElementById('show-control-hints-checkbox')?.checked || false
     }
   };
 
@@ -24209,6 +24706,19 @@ async function loadState() {
             window.electronAPI.setMuteOtherApps(true).catch(err => {
               console.error('Failed to restore mute other apps:', err);
             });
+          }
+        }
+
+        // Restore show control hints checkbox state and apply setting
+        const showControlHintsCheckbox = document.getElementById('show-control-hints-checkbox');
+        const instructionsElement = document.getElementById('instructions');
+        if (showControlHintsCheckbox && instructionsElement && savedSettings.showControlHints !== undefined) {
+          showControlHintsCheckbox.checked = savedSettings.showControlHints;
+          // Apply the setting
+          if (savedSettings.showControlHints) {
+            instructionsElement.classList.add('visible');
+          } else {
+            instructionsElement.classList.remove('visible');
           }
         }
       }
@@ -24335,6 +24845,19 @@ async function loadState() {
                   const fitMode = obj.userData.coverFitMode || 'contain';
                   applyCoverImageWithFit(obj, objData.coverImageDataUrl, fitMode);
                 }
+                // Restore open/close state
+                if (objData.isOpen) {
+                  obj.userData.isOpen = true;
+                  const closedGroup = obj.getObjectByName('closedBook');
+                  const openGroup = obj.getObjectByName('openBook');
+                  if (closedGroup) closedGroup.visible = false;
+                  if (openGroup) {
+                    openGroup.visible = true;
+                    // Update pages to show content after PDF loads
+                    // Use setTimeout to ensure PDF loading has started
+                    setTimeout(() => updateBookPages(obj), 100);
+                  }
+                }
                 break;
               case 'magazine':
                 // Restore magazine-specific data
@@ -24418,6 +24941,19 @@ async function loadState() {
                   obj.userData.coverImageDirty = true;
                   const fitMode = obj.userData.coverFitMode || 'cover';
                   applyMagazineCoverImageWithFit(obj, objData.coverImageDataUrl, fitMode);
+                }
+                // Restore open/close state
+                if (objData.isOpen) {
+                  obj.userData.isOpen = true;
+                  const closedGroup = obj.getObjectByName('closedMagazine');
+                  const openGroup = obj.getObjectByName('openMagazine');
+                  if (closedGroup) closedGroup.visible = false;
+                  if (openGroup) {
+                    openGroup.visible = true;
+                    // Update pages to show content after PDF loads
+                    // Use setTimeout to ensure PDF loading has started
+                    setTimeout(() => updateMagazinePages(obj), 100);
+                  }
                 }
                 break;
               case 'document':
@@ -24708,6 +25244,12 @@ async function loadState() {
             }
             if (objData.objectCollisionHeightMultiplier !== undefined) {
               obj.userData.objectCollisionHeightMultiplier = objData.objectCollisionHeightMultiplier;
+            }
+            if (objData.objectStackCollisionRadiusMultiplier !== undefined) {
+              obj.userData.objectStackCollisionRadiusMultiplier = objData.objectStackCollisionRadiusMultiplier;
+            }
+            if (objData.objectStackCollisionHeightMultiplier !== undefined) {
+              obj.userData.objectStackCollisionHeightMultiplier = objData.objectStackCollisionHeightMultiplier;
             }
 
             // Restore sound-related properties for all object types (generic approach)
