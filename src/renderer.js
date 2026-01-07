@@ -3646,10 +3646,10 @@ function createLaptop(options = {}) {
     powerButtonGlow: options.powerButtonGlow !== undefined ? options.powerButtonGlow : true, // Whether button glows
     powerButtonBrightness: options.powerButtonBrightness !== undefined ? options.powerButtonBrightness : 50, // Glow brightness 0-100
     powerLedColor: options.powerLedColor || '#00ff00', // Power LED on color
-    isLidOpen: false, // Whether laptop lid is open (starts closed at 0°)
-    lidRotation: 0, // Current lid rotation (starts at 0° closed position)
-    targetLidRotation: 0, // Target lid rotation for smooth animation (starts at 0° closed position)
-    lidMinRotation: 0, // Minimum lid rotation (0° = fully closed, cannot close further)
+    isLidOpen: true, // Whether laptop lid is open (starts open at -90°)
+    lidRotation: -Math.PI / 2, // Current lid rotation (starts at -90° open position)
+    targetLidRotation: -Math.PI / 2, // Target lid rotation for smooth animation (starts at -90° open position)
+    lidMinRotation: -Math.PI, // Minimum lid rotation (-180° = beyond closed, allows full range)
     lidMaxRotation: -Math.PI * 130 / 180 // Maximum lid rotation (-130° = fully open, about -2.27 radians)
   };
 
@@ -3694,7 +3694,7 @@ function createLaptop(options = {}) {
   // Position screenGroup at the hinge point (bottom edge of screen)
   // Original position was y=0.28, but now we offset children by 0.25, so adjust group position down
   screenGroup.position.set(0, 0.03, -0.23);
-  screenGroup.rotation.x = 0; // Start at closed position (0° = lid flat on keyboard)
+  screenGroup.rotation.x = -Math.PI / 2; // Start at open position (-90° = lid perpendicular to keyboard)
   group.add(screenGroup);
 
   // Keyboard area
@@ -13370,11 +13370,14 @@ function onMouseMove(event) {
     let newRotation = lidDragState.startLidRotation - (lidDragState.accumulatedDeltaY * rotationSensitivity * directionMultiplier);
 
     // Apply rotation limits based on user-configurable min/max
-    // lidMinRotation = 0° (closed, cannot close further)
-    // lidMaxRotation = -130° or user-configured (fully open)
-    const minRotation = laptop.userData.lidMinRotation !== undefined ? laptop.userData.lidMinRotation : 0;
-    const maxRotation = laptop.userData.lidMaxRotation !== undefined ? laptop.userData.lidMaxRotation : -Math.PI * 130 / 180;
-    newRotation = Math.max(maxRotation, Math.min(minRotation, newRotation));
+    // lidMinRotation = "closed" limit (default -180°, numerically larger values = less open)
+    // lidMaxRotation = "open" limit (default -130°, numerically smaller values = more open)
+    const closedLimit = laptop.userData.lidMinRotation !== undefined ? laptop.userData.lidMinRotation : -Math.PI;
+    const openLimit = laptop.userData.lidMaxRotation !== undefined ? laptop.userData.lidMaxRotation : -Math.PI * 130 / 180;
+    // Clamp between the two limits, using min/max of the actual values for robustness
+    const lowerBound = Math.min(closedLimit, openLimit);
+    const upperBound = Math.max(closedLimit, openLimit);
+    newRotation = Math.max(lowerBound, Math.min(upperBound, newRotation));
 
     // Only update and log if rotation actually changed
     const rotationChanged = Math.abs(newRotation - laptop.userData.targetLidRotation) > 0.001;
@@ -14992,15 +14995,15 @@ function updateCustomizationPanel(object) {
           <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 8px;">
             <div style="display: flex; align-items: center; gap: 10px;">
               <label style="color: rgba(255,255,255,0.7); font-size: 12px; min-width: 70px;">Min (closed):</label>
-              <input type="range" id="laptop-lid-min-angle" min="0" max="45" value="${Math.round((object.userData.lidMinRotation || 0) * -180 / Math.PI)}"
+              <input type="range" id="laptop-lid-min-angle" min="-180" max="0" value="${Math.round((object.userData.lidMinRotation !== undefined ? object.userData.lidMinRotation : -Math.PI) * 180 / Math.PI)}"
                      style="flex: 1; cursor: pointer;">
-              <span id="laptop-lid-min-angle-val" style="color: rgba(255,255,255,0.7); font-size: 12px; min-width: 35px;">${Math.round((object.userData.lidMinRotation || 0) * -180 / Math.PI)}°</span>
+              <span id="laptop-lid-min-angle-val" style="color: rgba(255,255,255,0.7); font-size: 12px; min-width: 45px;">${Math.round((object.userData.lidMinRotation !== undefined ? object.userData.lidMinRotation : -Math.PI) * 180 / Math.PI)}°</span>
             </div>
             <div style="display: flex; align-items: center; gap: 10px;">
               <label style="color: rgba(255,255,255,0.7); font-size: 12px; min-width: 70px;">Max (open):</label>
-              <input type="range" id="laptop-lid-max-angle" min="90" max="180" value="${Math.round((object.userData.lidMaxRotation !== undefined ? object.userData.lidMaxRotation : -Math.PI * 130 / 180) * -180 / Math.PI)}"
+              <input type="range" id="laptop-lid-max-angle" min="-180" max="0" value="${Math.round((object.userData.lidMaxRotation !== undefined ? object.userData.lidMaxRotation : -Math.PI * 130 / 180) * 180 / Math.PI)}"
                      style="flex: 1; cursor: pointer;">
-              <span id="laptop-lid-max-angle-val" style="color: rgba(255,255,255,0.7); font-size: 12px; min-width: 35px;">${Math.round((object.userData.lidMaxRotation !== undefined ? object.userData.lidMaxRotation : -Math.PI * 130 / 180) * -180 / Math.PI)}°</span>
+              <span id="laptop-lid-max-angle-val" style="color: rgba(255,255,255,0.7); font-size: 12px; min-width: 45px;">${Math.round((object.userData.lidMaxRotation !== undefined ? object.userData.lidMaxRotation : -Math.PI * 130 / 180) * 180 / Math.PI)}°</span>
             </div>
           </div>
         </div>
@@ -16009,15 +16012,15 @@ function setupLaptopCustomizationHandlers(object) {
     if (lidMinAngle) {
       lidMinAngle.addEventListener('input', (e) => {
         const angleDegrees = parseInt(e.target.value);
-        // Convert degrees to radians (negative because lid opens in negative direction)
-        object.userData.lidMinRotation = -angleDegrees * Math.PI / 180;
+        // Convert degrees to radians (already negative from slider)
+        object.userData.lidMinRotation = angleDegrees * Math.PI / 180;
         if (lidMinAngleVal) lidMinAngleVal.textContent = angleDegrees + '°';
         saveState();
       });
       // Add scroll support
       addScrollToSlider(lidMinAngle, (val) => {
         const angleDegrees = parseInt(val);
-        object.userData.lidMinRotation = -angleDegrees * Math.PI / 180;
+        object.userData.lidMinRotation = angleDegrees * Math.PI / 180;
         if (lidMinAngleVal) lidMinAngleVal.textContent = angleDegrees + '°';
         saveState();
       });
@@ -16026,15 +16029,15 @@ function setupLaptopCustomizationHandlers(object) {
     if (lidMaxAngle) {
       lidMaxAngle.addEventListener('input', (e) => {
         const angleDegrees = parseInt(e.target.value);
-        // Convert degrees to radians (negative because lid opens in negative direction)
-        object.userData.lidMaxRotation = -angleDegrees * Math.PI / 180;
+        // Convert degrees to radians (already negative from slider)
+        object.userData.lidMaxRotation = angleDegrees * Math.PI / 180;
         if (lidMaxAngleVal) lidMaxAngleVal.textContent = angleDegrees + '°';
         saveState();
       });
       // Add scroll support
       addScrollToSlider(lidMaxAngle, (val) => {
         const angleDegrees = parseInt(val);
-        object.userData.lidMaxRotation = -angleDegrees * Math.PI / 180;
+        object.userData.lidMaxRotation = angleDegrees * Math.PI / 180;
         if (lidMaxAngleVal) lidMaxAngleVal.textContent = angleDegrees + '°';
         saveState();
       });
