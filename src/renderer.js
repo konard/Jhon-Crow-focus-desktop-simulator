@@ -21951,7 +21951,10 @@ async function loadDocFromDataUrl(docObject, dataUrl) {
 }
 
 // Render HTML content to canvas for a specific page
+// Uses visual word-wrapping pagination (same algorithm as calculateDocumentPageCount)
 function renderDocumentPageToCanvas(htmlContent, pageIndex, totalPages, width, height) {
+  console.log('[DOC-RENDER] renderDocumentPageToCanvas called:', { pageIndex, totalPages, width, height, htmlContentLength: htmlContent?.length });
+
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
@@ -21961,59 +21964,119 @@ function renderDocumentPageToCanvas(htmlContent, pageIndex, totalPages, width, h
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, width, height);
 
-  // Create a temporary div to measure and render HTML
+  // Extract text content from HTML
   const tempDiv = document.createElement('div');
-  tempDiv.style.position = 'absolute';
-  tempDiv.style.left = '-9999px';
-  tempDiv.style.width = `${width - 40}px`; // Padding
-  tempDiv.style.fontFamily = 'Arial, sans-serif';
-  tempDiv.style.fontSize = '14px';
-  tempDiv.style.lineHeight = '1.6';
   tempDiv.innerHTML = htmlContent;
-  document.body.appendChild(tempDiv);
-
-  // Simple text rendering from HTML
   const text = tempDiv.textContent || tempDiv.innerText || '';
-  document.body.removeChild(tempDiv);
 
-  // Calculate characters per page
-  const charsPerPage = 3000;
-  const startChar = pageIndex * charsPerPage;
-  const endChar = startChar + charsPerPage;
-  const pageText = text.substring(startChar, endChar);
+  console.log('[DOC-RENDER] Extracted text length:', text.length, 'preview:', text.substring(0, 100));
 
-  // Render text to canvas
-  ctx.fillStyle = '#000000';
+  if (!text || text.length === 0) {
+    // No content - show placeholder
+    console.log('[DOC-RENDER] No text content, showing placeholder');
+    ctx.fillStyle = '#666666';
+    ctx.font = 'bold 24px Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('No Content', width / 2, height / 2);
+    return canvas;
+  }
+
+  // Setup text rendering parameters (must match calculateDocumentPageCount)
   ctx.font = '14px Arial, sans-serif';
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'top';
-
   const padding = 20;
   const maxWidth = width - padding * 2;
   const lineHeight = 20;
-  let y = padding;
+  const maxTextHeight = height - padding * 2 - 30; // Leave room for page number
 
-  // Word wrap
-  const words = pageText.split(' ');
+  // Split text into words
+  const words = text.split(/\s+/);
+
+  // Find which words belong to the requested page using visual word-wrapping
+  let currentPage = 0;
+  let y = 0;
   let line = '';
+  let pageStartWordIndex = 0;
+  let pageEndWordIndex = 0;
 
-  for (const word of words) {
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i];
     const testLine = line + word + ' ';
     const metrics = ctx.measureText(testLine);
 
     if (metrics.width > maxWidth && line !== '') {
-      ctx.fillText(line, padding, y);
+      // Move to next line
       line = word + ' ';
       y += lineHeight;
 
-      if (y + lineHeight > height - padding) break;
+      // Check if we need a new page
+      if (y + lineHeight > maxTextHeight) {
+        // Current page is full
+        if (currentPage === pageIndex) {
+          // We found our page - pageEndWordIndex is i (exclusive)
+          pageEndWordIndex = i;
+          break;
+        }
+        currentPage++;
+        pageStartWordIndex = i;
+        y = 0;
+      }
     } else {
       line = testLine;
     }
   }
 
-  if (y + lineHeight <= height - padding) {
-    ctx.fillText(line, padding, y);
+  // Handle case where we're on the last page or target page wasn't found yet
+  if (currentPage === pageIndex && pageEndWordIndex === 0) {
+    pageEndWordIndex = words.length;
+  } else if (currentPage < pageIndex) {
+    // Page index is beyond available content
+    console.log('[DOC-RENDER] Page index beyond content:', { currentPage, pageIndex });
+    ctx.fillStyle = '#666666';
+    ctx.font = '16px Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('(End of document)', width / 2, height / 2);
+
+    // Page number at bottom
+    ctx.fillStyle = '#666666';
+    ctx.font = '12px Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(`Page ${pageIndex + 1} of ${totalPages}`, width / 2, height - 15);
+    return canvas;
+  }
+
+  // Get the words for this page
+  const pageWords = words.slice(pageStartWordIndex, pageEndWordIndex);
+  console.log('[DOC-RENDER] Page words:', { pageStartWordIndex, pageEndWordIndex, pageWordsCount: pageWords.length, totalWordsCount: words.length });
+
+  // Render the text for this page
+  ctx.fillStyle = '#000000';
+  ctx.font = '14px Arial, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+
+  y = padding;
+  line = '';
+
+  for (const word of pageWords) {
+    const testLine = line + word + ' ';
+    const metrics = ctx.measureText(testLine);
+
+    if (metrics.width > maxWidth && line !== '') {
+      ctx.fillText(line.trim(), padding, y);
+      line = word + ' ';
+      y += lineHeight;
+
+      if (y + lineHeight > height - padding - 30) break;
+    } else {
+      line = testLine;
+    }
+  }
+
+  // Draw remaining line
+  if (line.trim() && y + lineHeight <= height - padding - 30) {
+    ctx.fillText(line.trim(), padding, y);
   }
 
   // Page number at bottom
