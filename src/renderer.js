@@ -8697,34 +8697,32 @@ function getDrawingCanvas(drawableObject) {
   return canvas;
 }
 
-// NOTE: rotateCanvasContent() function has been REMOVED.
-// Canvas rotation compensation was causing coordinate misalignment.
-// See updateDrawingTexture() for explanation.
-
 // Update the 3D texture from the drawing canvas
 function updateDrawingTexture(drawableObject) {
   if (!drawableObject || !drawableObject.userData.drawingCanvas) return;
 
   const canvas = drawableObject.userData.drawingCanvas;
 
-  // NOTE: Canvas rotation compensation has been REMOVED.
+  // FIX for issue #105: Drawing Position on Rotated Paper
   //
-  // The previous approach tried to counter-rotate canvas content when paper rotated,
-  // to keep existing drawings visually stable from the observer's perspective.
-  // However, this caused a coordinate mismatch: the worldToDrawingCoords() function
-  // calculates coordinates in paper-local space, but the canvas was being rotated
-  // independently, causing new drawings to appear offset from the pen tip.
+  // The solution uses raycast UV coordinates directly in addDrawingPoint().
+  // UV coordinates are LOCAL to the geometry and independent of world rotation,
+  // so drawing always appears at the correct position regardless of paper rotation.
   //
-  // The fix is to NOT rotate the canvas content. Drawing coordinates are calculated
-  // in paper-local space and the canvas is in paper-local space, so everything matches.
-  // When the paper rotates, the drawing rotates with it naturally (attached to the paper).
-  //
-  // This ensures: Drawing ALWAYS appears directly under the pen tip.
+  // Canvas rotation compensation was removed because it caused coordinate mismatch.
+  // The canvas stays in paper-local space, and when the paper rotates in 3D,
+  // the drawing naturally rotates with it (attached to the paper texture).
 
   // Create or update texture
   if (!drawableObject.userData.drawingTexture) {
     const texture = new THREE.CanvasTexture(canvas);
-    texture.flipY = false; // Don't flip texture - we handle orientation in worldToDrawingCoords()
+    // FIX for issue #105: Use default flipY=true for correct UV mapping
+    // THREE.js CanvasTexture defaults to flipY=true because:
+    // - Canvas/Image Y=0 is at TOP, increases downward
+    // - WebGL/UV Y=0 is at BOTTOM, increases upward
+    // With flipY=true, the texture is flipped to match WebGL conventions,
+    // which makes UV coordinates work correctly with the canvas.
+    texture.flipY = true;
     texture.needsUpdate = true;
     drawableObject.userData.drawingTexture = texture;
 
@@ -8800,9 +8798,6 @@ function addDrawingPoint(worldPos) {
 
   if (!deskObjects.includes(target)) return;
 
-  // Use the provided worldPos (crosshair intersection) for accurate drawing
-  const intersectionPoint = worldPos.clone();
-
   // Set as current target if not set
   if (penDrawingMode.targetObject !== target) {
     // Save previous target's drawing if different
@@ -8818,8 +8813,25 @@ function addDrawingPoint(worldPos) {
 
   const ctx = target.userData.drawingCtx;
 
-  // Convert intersection point to canvas coordinates
-  const coords = worldToDrawingCoords(intersectionPoint, target);
+  // FIX for issue #105: Use UV coordinates from raycast intersection
+  // The raycast provides UV coordinates that are already correctly mapped to the
+  // geometry's surface, regardless of object rotation. This eliminates the need
+  // for manual coordinate transformation which was causing the drawing offset bug.
+  let coords = null;
+  const uv = intersects[0].uv;
+  if (uv) {
+    // UV coordinates are normalized (0-1), convert to canvas pixels (512x512)
+    // UV.x maps directly to canvas X
+    // UV.y needs to be inverted (1 - y) because canvas Y=0 is top, but UV Y=0 is bottom
+    const canvasSize = 512;
+    coords = {
+      x: Math.floor(uv.x * canvasSize),
+      y: Math.floor((1 - uv.y) * canvasSize)
+    };
+  } else {
+    // Fallback to world coordinate transformation if UV is not available
+    coords = worldToDrawingCoords(worldPos, target);
+  }
   if (!coords || coords.x < 0 || coords.x > 512 || coords.y < 0 || coords.y > 512) return;
 
   // Get pen ink color

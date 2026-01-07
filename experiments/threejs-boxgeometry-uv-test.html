@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>THREE.js BoxGeometry UV Mapping Test - Issue #105</title>
+    <style>
+        body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+        }
+        #container {
+            display: flex;
+            height: 100vh;
+        }
+        #canvas-container {
+            flex: 1;
+            position: relative;
+        }
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(255,255,255,0.9);
+            padding: 15px;
+            border-radius: 8px;
+            font-size: 12px;
+            max-width: 350px;
+        }
+        #controls {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            background: rgba(255,255,255,0.9);
+            padding: 15px;
+            border-radius: 8px;
+        }
+        #drawing-canvas {
+            width: 300px;
+            height: 300px;
+            border: 2px solid #333;
+            background: white;
+            cursor: crosshair;
+        }
+        #side-panel {
+            width: 350px;
+            padding: 15px;
+            background: #f0f0f0;
+            overflow-y: auto;
+        }
+        button {
+            margin: 5px;
+            padding: 8px 15px;
+            cursor: pointer;
+        }
+        input[type="range"] {
+            width: 150px;
+        }
+        .highlight {
+            background: yellow;
+            padding: 2px 5px;
+        }
+        pre {
+            background: #333;
+            color: #0f0;
+            padding: 10px;
+            font-size: 10px;
+            overflow-x: auto;
+        }
+        h3 { margin-top: 20px; }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div id="canvas-container">
+            <div id="info">
+                <h3>THREE.js UV Test for Issue #105</h3>
+                <p><strong>Mouse Position:</strong> <span id="mouse-pos">-</span></p>
+                <p><strong>World Coords:</strong> <span id="world-coords">-</span></p>
+                <p><strong>Local Coords:</strong> <span id="local-coords">-</span></p>
+                <p><strong>Canvas Coords:</strong> <span id="canvas-coords">-</span></p>
+                <p><strong>Paper Rotation:</strong> <span id="rotation">0</span>°</p>
+                <hr>
+                <p><strong>Click on the 3D paper to draw!</strong></p>
+                <p>Use rotation slider to rotate paper.</p>
+                <p class="highlight">Watch if drawing appears under cursor.</p>
+            </div>
+            <div id="controls">
+                <label>Paper Rotation Y: <input type="range" id="rotation-slider" min="-180" max="180" value="0"></label>
+                <br>
+                <button id="clear-btn">Clear Drawing</button>
+                <button id="test-center">Draw at Center</button>
+                <button id="test-corners">Draw Corners</button>
+            </div>
+        </div>
+        <div id="side-panel">
+            <h3>2D Canvas Preview</h3>
+            <canvas id="drawing-canvas" width="512" height="512"></canvas>
+
+            <h3>BoxGeometry UV Face Order</h3>
+            <pre>
+Face 0-1: +X (right)
+Face 2-3: -X (left)
+Face 4-5: +Y (top) <- This is what we draw on!
+Face 6-7: -Y (bottom)
+Face 8-9: +Z (front)
+Face 10-11: -Z (back)
+            </pre>
+
+            <h3>Coordinate Transformation</h3>
+            <pre id="transform-log">
+// Current implementation:
+worldToDrawingCoords(worldPos):
+  1. Get paper center
+  2. Calculate world offset
+  3. Apply inverse rotation
+  4. Normalize to 0-1
+  5. Convert to canvas pixels
+            </pre>
+
+            <h3>Debug Log</h3>
+            <div id="debug-log" style="height: 200px; overflow-y: auto; font-size: 11px; background: #fff; padding: 10px;"></div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        // Setup
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0xcccccc);
+
+        const camera = new THREE.PerspectiveCamera(60, container.clientWidth / container.clientHeight, 0.1, 1000);
+        camera.position.set(0, 2, 2);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        container.appendChild(renderer.domElement);
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight.position.set(5, 10, 5);
+        scene.add(directionalLight);
+
+        // Drawing canvas
+        const drawingCanvas = document.getElementById('drawing-canvas');
+        const drawingCtx = drawingCanvas.getContext('2d');
+        drawingCtx.fillStyle = 'white';
+        drawingCtx.fillRect(0, 0, 512, 512);
+
+        // Create 3D canvas for texture
+        const textureCanvas = document.createElement('canvas');
+        textureCanvas.width = 512;
+        textureCanvas.height = 512;
+        const textureCtx = textureCanvas.getContext('2d');
+        textureCtx.fillStyle = 'white';
+        textureCtx.fillRect(0, 0, 512, 512);
+
+        // Add grid to texture for reference
+        function drawGrid(ctx) {
+            ctx.strokeStyle = '#ddd';
+            ctx.lineWidth = 1;
+            for (let i = 0; i <= 8; i++) {
+                const pos = i * 64;
+                ctx.beginPath();
+                ctx.moveTo(pos, 0);
+                ctx.lineTo(pos, 512);
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.moveTo(0, pos);
+                ctx.lineTo(512, pos);
+                ctx.stroke();
+            }
+            // Draw center cross
+            ctx.strokeStyle = '#aaa';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(256, 0);
+            ctx.lineTo(256, 512);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(0, 256);
+            ctx.lineTo(512, 256);
+            ctx.stroke();
+            // Mark corners
+            ctx.fillStyle = 'red';
+            ctx.font = '20px Arial';
+            ctx.fillText('(0,0)', 5, 25);
+            ctx.fillText('(512,0)', 430, 25);
+            ctx.fillText('(0,512)', 5, 500);
+            ctx.fillText('(512,512)', 410, 500);
+        }
+        drawGrid(textureCtx);
+        drawGrid(drawingCtx);
+
+        // Create texture
+        const texture = new THREE.CanvasTexture(textureCanvas);
+        texture.flipY = false; // Match current implementation
+        texture.needsUpdate = true;
+
+        // Paper dimensions (same as in renderer.js)
+        const PAPER_WIDTH = 0.28;
+        const PAPER_DEPTH = 0.4;
+        const PAPER_THICKNESS = 0.01;
+
+        // Create paper (BoxGeometry like in renderer.js)
+        const paperGeometry = new THREE.BoxGeometry(PAPER_WIDTH, PAPER_THICKNESS, PAPER_DEPTH);
+        const paperMaterial = new THREE.MeshStandardMaterial({
+            map: texture,
+            roughness: 0.95
+        });
+        const paper = new THREE.Mesh(paperGeometry, paperMaterial);
+        paper.position.y = PAPER_THICKNESS / 2;
+        scene.add(paper);
+
+        // Add desk surface
+        const deskGeometry = new THREE.BoxGeometry(2, 0.05, 2);
+        const deskMaterial = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
+        const desk = new THREE.Mesh(deskGeometry, deskMaterial);
+        desk.position.y = -0.025;
+        scene.add(desk);
+
+        // Add coordinate axes helper
+        const axesHelper = new THREE.AxesHelper(0.5);
+        axesHelper.position.copy(paper.position);
+        scene.add(axesHelper);
+
+        // Raycaster
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+
+        // Transform function - EXACT copy from renderer.js
+        function worldToDrawingCoords(worldPos, drawableObject) {
+            if (!drawableObject) return null;
+
+            // Get object's world position (paper center)
+            const objPos = new THREE.Vector3();
+            drawableObject.getWorldPosition(objPos);
+
+            // Calculate offset from object center in WORLD space
+            const worldOffsetX = worldPos.x - objPos.x;
+            const worldOffsetZ = worldPos.z - objPos.z;
+
+            // Get paper rotation around Y axis
+            const rotation = drawableObject.rotation.y;
+
+            // Apply INVERSE rotation to transform world offset to paper-local offset
+            const cos = Math.cos(-rotation);
+            const sin = Math.sin(-rotation);
+            const localX = worldOffsetX * cos - worldOffsetZ * sin;
+            const localZ = worldOffsetX * sin + worldOffsetZ * cos;
+
+            // Get object dimensions
+            const width = PAPER_WIDTH;
+            const depth = PAPER_DEPTH;
+
+            // Convert to normalized coordinates (0-1) in PAPER-LOCAL space
+            const normalizedX = (localX / width) + 0.5;
+            const normalizedY = 1.0 - ((localZ / depth) + 0.5);
+
+            // Convert to canvas coordinates (512x512 for drawing)
+            const canvasSize = 512;
+            return {
+                x: Math.floor(normalizedX * canvasSize),
+                y: Math.floor(normalizedY * canvasSize),
+                // Debug info
+                debug: {
+                    worldOffsetX,
+                    worldOffsetZ,
+                    rotation,
+                    localX,
+                    localZ,
+                    normalizedX,
+                    normalizedY
+                }
+            };
+        }
+
+        // Log function
+        function log(msg) {
+            const logDiv = document.getElementById('debug-log');
+            logDiv.innerHTML = `[${new Date().toLocaleTimeString()}] ${msg}<br>` + logDiv.innerHTML;
+        }
+
+        // Draw point on both canvases
+        function drawPoint(canvasCoords, color = 'blue') {
+            // Draw on preview canvas
+            drawingCtx.fillStyle = color;
+            drawingCtx.beginPath();
+            drawingCtx.arc(canvasCoords.x, canvasCoords.y, 5, 0, Math.PI * 2);
+            drawingCtx.fill();
+
+            // Draw on texture canvas
+            textureCtx.fillStyle = color;
+            textureCtx.beginPath();
+            textureCtx.arc(canvasCoords.x, canvasCoords.y, 5, 0, Math.PI * 2);
+            textureCtx.fill();
+
+            // Update texture
+            texture.needsUpdate = true;
+        }
+
+        // Mouse handling
+        let isDrawing = false;
+        let lastPoint = null;
+
+        renderer.domElement.addEventListener('mousedown', (e) => {
+            if (e.button === 0) {
+                isDrawing = true;
+                lastPoint = null;
+                handleMouseMove(e, true);
+            }
+        });
+
+        renderer.domElement.addEventListener('mouseup', () => {
+            isDrawing = false;
+            lastPoint = null;
+        });
+
+        renderer.domElement.addEventListener('mousemove', (e) => {
+            handleMouseMove(e, isDrawing);
+        });
+
+        function handleMouseMove(e, draw = false) {
+            const rect = renderer.domElement.getBoundingClientRect();
+            mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+            mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+            document.getElementById('mouse-pos').textContent = `(${mouse.x.toFixed(3)}, ${mouse.y.toFixed(3)})`;
+
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObject(paper);
+
+            if (intersects.length > 0) {
+                const point = intersects[0].point;
+                document.getElementById('world-coords').textContent =
+                    `(${point.x.toFixed(4)}, ${point.y.toFixed(4)}, ${point.z.toFixed(4)})`;
+
+                const coords = worldToDrawingCoords(point, paper);
+                if (coords) {
+                    document.getElementById('local-coords').textContent =
+                        `(${coords.debug.localX.toFixed(4)}, ${coords.debug.localZ.toFixed(4)})`;
+                    document.getElementById('canvas-coords').textContent =
+                        `(${coords.x}, ${coords.y})`;
+
+                    if (draw) {
+                        if (lastPoint) {
+                            // Draw line
+                            const ctx = textureCtx;
+                            ctx.strokeStyle = 'blue';
+                            ctx.lineWidth = 3;
+                            ctx.lineCap = 'round';
+                            ctx.beginPath();
+                            ctx.moveTo(lastPoint.x, lastPoint.y);
+                            ctx.lineTo(coords.x, coords.y);
+                            ctx.stroke();
+
+                            // Also draw on preview
+                            drawingCtx.strokeStyle = 'blue';
+                            drawingCtx.lineWidth = 3;
+                            drawingCtx.lineCap = 'round';
+                            drawingCtx.beginPath();
+                            drawingCtx.moveTo(lastPoint.x, lastPoint.y);
+                            drawingCtx.lineTo(coords.x, coords.y);
+                            drawingCtx.stroke();
+
+                            texture.needsUpdate = true;
+                        }
+                        lastPoint = coords;
+
+                        log(`Draw at canvas (${coords.x}, ${coords.y}) from world (${point.x.toFixed(3)}, ${point.z.toFixed(3)})`);
+                    }
+                }
+            }
+        }
+
+        // Rotation slider
+        const rotationSlider = document.getElementById('rotation-slider');
+        rotationSlider.addEventListener('input', (e) => {
+            const degrees = parseFloat(e.target.value);
+            paper.rotation.y = degrees * Math.PI / 180;
+            document.getElementById('rotation').textContent = degrees.toFixed(1);
+            log(`Rotation changed to ${degrees}°`);
+        });
+
+        // Clear button
+        document.getElementById('clear-btn').addEventListener('click', () => {
+            textureCtx.fillStyle = 'white';
+            textureCtx.fillRect(0, 0, 512, 512);
+            drawGrid(textureCtx);
+            drawingCtx.fillStyle = 'white';
+            drawingCtx.fillRect(0, 0, 512, 512);
+            drawGrid(drawingCtx);
+            texture.needsUpdate = true;
+            log('Canvas cleared');
+        });
+
+        // Test center button
+        document.getElementById('test-center').addEventListener('click', () => {
+            // Get paper center in world coords
+            const centerWorld = new THREE.Vector3();
+            paper.getWorldPosition(centerWorld);
+
+            const coords = worldToDrawingCoords(centerWorld, paper);
+            drawPoint(coords, 'red');
+            log(`Center: world (${centerWorld.x.toFixed(3)}, ${centerWorld.z.toFixed(3)}) -> canvas (${coords.x}, ${coords.y})`);
+        });
+
+        // Test corners button
+        document.getElementById('test-corners').addEventListener('click', () => {
+            const rotation = paper.rotation.y;
+            const halfW = PAPER_WIDTH / 2;
+            const halfD = PAPER_DEPTH / 2;
+
+            // Define corners in local space, then rotate to world
+            const localCorners = [
+                { x: -halfW, z: -halfD, name: 'Back-Left' },
+                { x: halfW, z: -halfD, name: 'Back-Right' },
+                { x: -halfW, z: halfD, name: 'Front-Left' },
+                { x: halfW, z: halfD, name: 'Front-Right' }
+            ];
+
+            const colors = ['green', 'purple', 'orange', 'cyan'];
+
+            const objPos = new THREE.Vector3();
+            paper.getWorldPosition(objPos);
+
+            localCorners.forEach((corner, i) => {
+                // Rotate local corner to world
+                const cos = Math.cos(rotation);
+                const sin = Math.sin(rotation);
+                const worldX = corner.x * cos - corner.z * sin + objPos.x;
+                const worldZ = corner.x * sin + corner.z * cos + objPos.z;
+
+                const worldPos = new THREE.Vector3(worldX, objPos.y, worldZ);
+                const coords = worldToDrawingCoords(worldPos, paper);
+
+                drawPoint(coords, colors[i]);
+                log(`${corner.name}: world (${worldX.toFixed(3)}, ${worldZ.toFixed(3)}) -> canvas (${coords.x}, ${coords.y})`);
+            });
+        });
+
+        // Animation loop
+        function animate() {
+            requestAnimationFrame(animate);
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        // Handle resize
+        window.addEventListener('resize', () => {
+            camera.aspect = container.clientWidth / container.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        });
+
+        log('THREE.js UV test initialized');
+        log('FlipY = false (matching current implementation)');
+    </script>
+</body>
+</html>

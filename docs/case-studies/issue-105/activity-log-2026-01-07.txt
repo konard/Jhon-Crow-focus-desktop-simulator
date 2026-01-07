@@ -1,0 +1,76 @@
+Focus Desktop Simulator - Activity Log
+Generated: 2026-01-07T10:11:56.621Z
+Session Duration: 45.74s
+
+================================================================================
+
+
+[2026-01-07T10:11:58.499Z] [+47.62s] [SYSTEM] Log recording started
+  Details: {
+    "filePath": "I:\\Загрузки\\focuse-desktop-sim\\activity-log-2026-01-07T10-11-56-621Z.txt"
+  }
+
+[2026-01-07T10:11:59.075Z] [+48.19s] [MODE] Pointer lock activated (FPS camera mode)
+  Details: {
+    "cameraPosition": {
+      "x": "0.54",
+      "y": "3.25",
+      "z": "4.49"
+    }
+  }
+
+[2026-01-07T10:12:03.356Z] [+52.47s] [DRAWING] Drawing stroke completed
+  Details: {
+    "targetObject": "notebook",
+    "targetId": 15,
+    "pointsCount": 50,
+    "color": "#3b82f6",
+    "lineWidth": 2
+  }
+
+[2026-01-07T10:12:07.564Z] [+56.68s] [DRAWING] Drawing stroke completed
+  Details: {
+    "targetObject": "notebook",
+    "targetId": 15,
+    "pointsCount": 45,
+    "color": "#3b82f6",
+    "lineWidth": 2
+  }
+
+[2026-01-07T10:12:09.437Z] [+58.55s] [MODE] Entered edit mode (customization panel)
+  Details: {
+    "objectType": "pen",
+    "objectId": 3,
+    "objectName": "Blue Pen"
+  }
+
+[2026-01-07T10:12:09.439Z] [+58.56s] [MODE] Pointer lock deactivated
+
+[2026-01-07T10:12:11.841Z] [+60.96s] [MODE] Exited pen drawing mode
+  Details: {
+    "penId": 3
+  }
+
+[2026-01-07T10:12:13.213Z] [+62.33s] [MODE] Exited edit mode (customization panel)
+  Details: {
+    "objectType": "pen",
+    "objectId": 3
+  }
+
+[2026-01-07T10:12:13.413Z] [+62.53s] [MODE] Pointer lock activated (FPS camera mode)
+  Details: {
+    "cameraPosition": {
+      "x": "0.54",
+      "y": "3.25",
+      "z": "4.49"
+    }
+  }
+
+[2026-01-07T10:12:13.532Z] [+62.65s] [MODE] Pointer lock deactivated
+
+[2026-01-07T10:12:15.080Z] [+64.20s] [USER_ACTION] Stop log recording button clicked
+
+
+================================================================================
+
+Session ended: 2026-01-07T10:12:15.080Z
