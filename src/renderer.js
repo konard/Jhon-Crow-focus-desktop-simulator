@@ -15182,10 +15182,10 @@ function updateCustomizationPanel(object) {
         <div class="customization-group" style="margin-top: 15px;">
           <label>Document File</label>
           <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 8px;">
-            <label style="display: inline-block; padding: 10px 15px; background: rgba(79, 70, 229, 0.3); border: 1px solid rgba(79, 70, 229, 0.5); border-radius: 8px; color: #fff; cursor: pointer; text-align: center;">
+            <button id="document-doc-edit-btn" style="padding: 10px 15px; background: rgba(79, 70, 229, 0.3); border: 1px solid rgba(79, 70, 229, 0.5); border-radius: 8px; color: #fff; cursor: pointer; text-align: center;">
               ${object.userData.docPath ? 'Change Document' : 'Choose Document'}
-              <input type="file" id="document-doc-edit" accept=".doc,.docx,.rtf" style="display: none;">
-            </label>
+            </button>
+            <input type="file" id="document-doc-edit" accept=".doc,.docx,.rtf" style="display: none;">
             ${object.userData.docPath ? `
               <div style="color: rgba(255,255,255,0.5); font-size: 12px;">
                 Current: ${object.userData.docPath.split('/').pop() || object.userData.docPath.split('\\\\').pop()}
@@ -17927,10 +17927,10 @@ function getInteractionContent(object) {
           </div>
           <div style="margin-top: 15px;">
             <label style="color: rgba(255,255,255,0.7); display: block; margin-bottom: 8px;">Document File</label>
-            <label class="timer-btn start" style="cursor: pointer; display: inline-block; width: 100%; text-align: center;">
+            <button id="document-doc-btn" class="timer-btn start" style="cursor: pointer; display: inline-block; width: 100%; text-align: center;">
               ${object.userData.docPath ? 'Change Document' : 'Choose Document'}
-              <input type="file" id="document-doc" accept=".doc,.docx,.rtf" style="display: none;">
-            </label>
+            </button>
+            <input type="file" id="document-doc" accept=".doc,.docx,.rtf" style="display: none;">
             ${object.userData.docPath ? `
               <div style="color: rgba(255,255,255,0.5); margin-top: 8px; font-size: 12px;">
                 Current: ${object.userData.docPath.split('/').pop() || object.userData.docPath.split('\\\\').pop()}
@@ -22287,10 +22287,21 @@ function setupDocumentHandlers(object) {
   } else {
   }
 
-  // Document file upload
+  // Document file upload - use explicit button click to trigger file input
+  const docBtn = document.getElementById('document-doc-btn');
   const docInput = document.getElementById('document-doc');
-  console.log('[DOC-UPLOAD] Setting up document-doc handler, element found:', !!docInput);
-  if (docInput) {
+  console.log('[DOC-UPLOAD] Setting up handlers, button found:', !!docBtn, ', input found:', !!docInput);
+
+  if (docBtn && docInput) {
+    // Button click triggers the file input
+    docBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      console.log('[DOC-UPLOAD] Button clicked, triggering file input');
+      docInput.click();
+    });
+
+    // Handle file selection
     docInput.addEventListener('change', (e) => {
       console.log('[DOC-UPLOAD] Change event fired, files:', e.target.files.length);
       const file = e.target.files[0];
@@ -22315,7 +22326,7 @@ function setupDocumentHandlers(object) {
       e.target.value = ''; // Reset input to allow selecting the same file again
     });
   } else {
-    console.error('[DOC-UPLOAD] document-doc element NOT FOUND');
+    console.error('[DOC-UPLOAD] Elements NOT FOUND - button:', !!docBtn, ', input:', !!docInput);
   }
 
   // Previous page button
@@ -22428,10 +22439,21 @@ function setupDocumentCustomizationHandlers(object) {
       });
     }
 
-    // Document file upload (edit mode)
+    // Document file upload (edit mode) - use explicit button click to trigger file input
+    const docEditBtn = document.getElementById('document-doc-edit-btn');
     const docEditInput = document.getElementById('document-doc-edit');
-    console.log('[DOC-UPLOAD-EDIT] Setting up document-doc-edit handler, element found:', !!docEditInput);
-    if (docEditInput) {
+    console.log('[DOC-UPLOAD-EDIT] Setting up handlers, button found:', !!docEditBtn, ', input found:', !!docEditInput);
+
+    if (docEditBtn && docEditInput) {
+      // Button click triggers the file input
+      docEditBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        console.log('[DOC-UPLOAD-EDIT] Button clicked, triggering file input');
+        docEditInput.click();
+      });
+
+      // Handle file selection
       docEditInput.addEventListener('change', (e) => {
         console.log('[DOC-UPLOAD-EDIT] Change event fired, files:', e.target.files.length);
         const file = e.target.files[0];
@@ -22457,7 +22479,7 @@ function setupDocumentCustomizationHandlers(object) {
         e.target.value = ''; // Reset input to allow selecting the same file again
       });
     } else {
-      console.error('[DOC-UPLOAD-EDIT] document-doc-edit element NOT FOUND');
+      console.error('[DOC-UPLOAD-EDIT] Elements NOT FOUND - button:', !!docEditBtn, ', input:', !!docEditInput);
     }
   }, 0);
 }
