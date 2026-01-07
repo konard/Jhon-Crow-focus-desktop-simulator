@@ -7115,6 +7115,13 @@ function drawCardFromDeck(deckObject) {
   });
 
   if (card) {
+    // Apply the same scale as the deck to the card
+    card.scale.copy(deckObject.scale);
+
+    // Adjust position offset based on deck scale to place card at the right distance
+    const scaledOffsetX = offsetX * deckObject.scale.x;
+    card.position.x = deckPos.x + scaledOffsetX;
+
     // Increment cards drawn counter
     deckData.cardsDrawn++;
     saveState();
@@ -7238,43 +7245,72 @@ function updateCardVisuals(cardObject) {
     backCanvas.height = 180;
     const backCtx = backCanvas.getContext('2d');
 
-    // Fill with back color
-    backCtx.fillStyle = cardData.backColor || '#c41e3a';
-    backCtx.fillRect(0, 0, 128, 180);
+    // Helper function to draw the back face content
+    const drawBackContent = () => {
+      // Add border
+      backCtx.strokeStyle = 'rgba(255,255,255,0.5)';
+      backCtx.lineWidth = 4;
+      backCtx.strokeRect(4, 4, 120, 172);
 
-    // Add pattern
-    backCtx.strokeStyle = 'rgba(255,255,255,0.3)';
-    backCtx.lineWidth = 2;
-    for (let i = 0; i < 5; i++) {
-      for (let j = 0; j < 7; j++) {
-        const cx = 12 + i * 26;
-        const cy = 12 + j * 26;
-        backCtx.beginPath();
-        backCtx.moveTo(cx, cy - 10);
-        backCtx.lineTo(cx + 10, cy);
-        backCtx.lineTo(cx, cy + 10);
-        backCtx.lineTo(cx - 10, cy);
-        backCtx.closePath();
-        backCtx.stroke();
+      // Add title on back if configured
+      if (cardData.showTitleOnBack && cardData.backTitle) {
+        // Draw text background for better readability
+        backCtx.fillStyle = 'rgba(0,0,0,0.5)';
+        backCtx.fillRect(10, 80, 108, 30);
+        backCtx.fillStyle = 'rgba(255,255,255,0.9)';
+        backCtx.font = 'bold 14px Arial';
+        backCtx.textAlign = 'center';
+        backCtx.fillText(cardData.backTitle, 64, 100);
       }
+
+      const backTexture = new THREE.CanvasTexture(backCanvas);
+      backFace.material.map = backTexture;
+      backFace.material.needsUpdate = true;
+    };
+
+    // Check for custom back image
+    if (cardData.backImage) {
+      const img = new Image();
+      img.onload = () => {
+        // Draw image covering the entire canvas
+        backCtx.drawImage(img, 0, 0, 128, 180);
+        drawBackContent();
+      };
+      img.onerror = () => {
+        // Fallback to default pattern if image fails to load
+        drawDefaultBackPattern(backCtx, cardData);
+        drawBackContent();
+      };
+      img.src = cardData.backImage;
+    } else {
+      // Draw default back pattern
+      drawDefaultBackPattern(backCtx, cardData);
+      drawBackContent();
     }
+  }
+}
 
-    // Add border
-    backCtx.strokeStyle = 'rgba(255,255,255,0.5)';
-    backCtx.lineWidth = 4;
-    backCtx.strokeRect(4, 4, 120, 172);
+// Helper function to draw the default card back pattern
+function drawDefaultBackPattern(ctx, cardData) {
+  // Fill with back color
+  ctx.fillStyle = cardData.backColor || '#c41e3a';
+  ctx.fillRect(0, 0, 128, 180);
 
-    // Add title on back if configured
-    if (cardData.showTitleOnBack && cardData.backTitle) {
-      backCtx.fillStyle = 'rgba(255,255,255,0.9)';
-      backCtx.font = 'bold 14px Arial';
-      backCtx.textAlign = 'center';
-      backCtx.fillText(cardData.backTitle, 64, 95);
+  // Add diamond pattern
+  ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+  ctx.lineWidth = 2;
+  for (let i = 0; i < 5; i++) {
+    for (let j = 0; j < 7; j++) {
+      const cx = 12 + i * 26;
+      const cy = 12 + j * 26;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy - 10);
+      ctx.lineTo(cx + 10, cy);
+      ctx.lineTo(cx, cy + 10);
+      ctx.lineTo(cx - 10, cy);
+      ctx.closePath();
+      ctx.stroke();
     }
-
-    const backTexture = new THREE.CanvasTexture(backCanvas);
-    backFace.material.map = backTexture;
-    backFace.material.needsUpdate = true;
   }
 }
 
@@ -18329,17 +18365,54 @@ function getInteractionContent(object) {
               ${object.userData.isFlipped ? 'Front side showing' : 'Back side showing'}
             </div>
           </div>
-          <div style="margin-top: 15px;">
-            <label style="color: rgba(255,255,255,0.7); display: block; margin-bottom: 8px;">Card Title</label>
-            <input type="text" id="card-title" value="${object.userData.title || ''}"
-                   placeholder="Enter card title"
-                   style="width: 100%; padding: 10px; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; color: #fff;">
+
+          <!-- Front Side Section -->
+          <div style="margin-top: 15px; padding: 12px; background: rgba(255,255,255,0.05); border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);">
+            <div style="color: rgba(255,255,255,0.9); font-weight: bold; margin-bottom: 12px;">📄 Front Side</div>
+            <div style="margin-bottom: 12px;">
+              <label style="color: rgba(255,255,255,0.7); display: block; margin-bottom: 8px;">Title</label>
+              <input type="text" id="card-title" value="${object.userData.title || ''}"
+                     placeholder="Enter card title"
+                     style="width: 100%; padding: 10px; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; color: #fff; box-sizing: border-box;">
+            </div>
+            <div>
+              <label style="color: rgba(255,255,255,0.7); display: block; margin-bottom: 8px;">Description</label>
+              <textarea id="card-description" placeholder="Enter card description"
+                        style="width: 100%; height: 70px; padding: 10px; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; color: #fff; resize: vertical; box-sizing: border-box;">${object.userData.description || ''}</textarea>
+            </div>
           </div>
-          <div style="margin-top: 15px;">
-            <label style="color: rgba(255,255,255,0.7); display: block; margin-bottom: 8px;">Description</label>
-            <textarea id="card-description" placeholder="Enter card description"
-                      style="width: 100%; height: 80px; padding: 10px; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; color: #fff; resize: vertical;">${object.userData.description || ''}</textarea>
+
+          <!-- Back Side Section -->
+          <div style="margin-top: 15px; padding: 12px; background: rgba(255,255,255,0.05); border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);">
+            <div style="color: rgba(255,255,255,0.9); font-weight: bold; margin-bottom: 12px;">🎴 Back Side</div>
+            <div style="margin-bottom: 12px;">
+              <label style="color: rgba(255,255,255,0.7); display: block; margin-bottom: 8px;">Back Title</label>
+              <input type="text" id="card-back-title" value="${object.userData.backTitle || ''}"
+                     placeholder="Title on card back"
+                     style="width: 100%; padding: 10px; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; color: #fff; box-sizing: border-box;">
+            </div>
+            <div style="margin-bottom: 12px;">
+              <label style="display: flex; align-items: center; gap: 8px; color: rgba(255,255,255,0.7); cursor: pointer;">
+                <input type="checkbox" id="card-show-back-title" ${object.userData.showTitleOnBack ? 'checked' : ''}
+                       style="width: 16px; height: 16px;">
+                Show title on back
+              </label>
+            </div>
+            <div>
+              <label style="color: rgba(255,255,255,0.7); display: block; margin-bottom: 8px;">Custom Back Image</label>
+              <div style="display: flex; gap: 8px; align-items: center;">
+                <input type="file" id="card-back-image" accept="image/*"
+                       style="display: none;">
+                <button id="card-back-image-btn" class="timer-btn"
+                        style="flex: 1; padding: 8px 12px; font-size: 12px;">
+                  ${object.userData.backImage ? '🖼️ Change Image' : '📁 Upload Image'}
+                </button>
+                ${object.userData.backImage ? '<button id="card-back-image-clear" class="timer-btn stop" style="padding: 8px 12px; font-size: 12px;">✕</button>' : ''}
+              </div>
+              ${object.userData.backImage ? '<div style="margin-top: 8px; color: rgba(255,255,255,0.5); font-size: 11px;">Custom back image set</div>' : ''}
+            </div>
           </div>
+
           <div class="timer-buttons" style="margin-top: 15px;">
             <button class="timer-btn start" id="card-flip">Flip Card</button>
             <button class="timer-btn pause" id="card-save">Save Changes</button>
@@ -21424,6 +21497,11 @@ function setupCardHandlers(object) {
   const saveBtn = document.getElementById('card-save');
   const titleInput = document.getElementById('card-title');
   const descriptionInput = document.getElementById('card-description');
+  const backTitleInput = document.getElementById('card-back-title');
+  const showBackTitleCheckbox = document.getElementById('card-show-back-title');
+  const backImageInput = document.getElementById('card-back-image');
+  const backImageBtn = document.getElementById('card-back-image-btn');
+  const backImageClearBtn = document.getElementById('card-back-image-clear');
 
   if (flipBtn) {
     flipBtn.addEventListener('click', () => {
@@ -21440,15 +21518,75 @@ function setupCardHandlers(object) {
     });
   }
 
+  // Back image upload button
+  if (backImageBtn && backImageInput) {
+    backImageBtn.addEventListener('click', () => {
+      backImageInput.click();
+    });
+
+    backImageInput.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          object.userData.backImage = event.target.result;
+          updateCardVisuals(object);
+          saveState();
+
+          // Refresh modal to show updated state
+          const content = document.getElementById('interaction-content');
+          if (content && interactionObject === object) {
+            content.innerHTML = getInteractionContent(object);
+            setupCardHandlers(object);
+          }
+        };
+        reader.readAsDataURL(file);
+      }
+    });
+  }
+
+  // Clear back image button
+  if (backImageClearBtn) {
+    backImageClearBtn.addEventListener('click', () => {
+      object.userData.backImage = null;
+      updateCardVisuals(object);
+      saveState();
+
+      // Refresh modal to show updated state
+      const content = document.getElementById('interaction-content');
+      if (content && interactionObject === object) {
+        content.innerHTML = getInteractionContent(object);
+        setupCardHandlers(object);
+      }
+    });
+  }
+
+  // Show back title checkbox (live update)
+  if (showBackTitleCheckbox) {
+    showBackTitleCheckbox.addEventListener('change', (e) => {
+      object.userData.showTitleOnBack = e.target.checked;
+      updateCardVisuals(object);
+      saveState();
+    });
+  }
+
   if (saveBtn) {
     saveBtn.addEventListener('click', () => {
-      // Save card content changes
+      // Save front side content
       if (titleInput) {
         object.userData.title = titleInput.value;
         object.userData.name = titleInput.value || 'Card';
       }
       if (descriptionInput) {
         object.userData.description = descriptionInput.value;
+      }
+
+      // Save back side content
+      if (backTitleInput) {
+        object.userData.backTitle = backTitleInput.value;
+      }
+      if (showBackTitleCheckbox) {
+        object.userData.showTitleOnBack = showBackTitleCheckbox.checked;
       }
 
       // Update visuals
