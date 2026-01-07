@@ -7090,8 +7090,12 @@ function createCard(options = {}) {
   group.add(backFace);
 
   // Set initial flip state
-  if (group.userData.isFlipped) {
-    group.rotation.x = Math.PI; // Flipped to show front
+  // Front face is on top (visible from above when rotation.x = 0)
+  // Back face is on bottom (visible from above when rotation.x = Math.PI)
+  // isFlipped = false means back is showing (card face-down) → rotate to show back
+  // isFlipped = true means front is showing (card face-up) → no rotation needed
+  if (!group.userData.isFlipped) {
+    group.rotation.x = Math.PI; // Face-down: rotate to show back face
   }
 
   group.position.y = getDeskSurfaceY() + cardThickness / 2;
@@ -7174,8 +7178,10 @@ function flipCard(cardObject) {
   cardObject.userData.isFlipped = !cardObject.userData.isFlipped;
 
   // Animate the flip around the X axis (flips the card over like turning a page)
+  // isFlipped = true means front showing → rotation.x = 0 (front face on top)
+  // isFlipped = false means back showing → rotation.x = Math.PI (back face on top)
   const startRotation = cardObject.rotation.x;
-  const targetRotation = cardObject.userData.isFlipped ? Math.PI : 0;
+  const targetRotation = cardObject.userData.isFlipped ? 0 : Math.PI;
   const duration = 300;
   const startTime = Date.now();
 
@@ -13291,8 +13297,19 @@ function onMouseDown(event) {
       return;
     }
 
-    // In reading mode, MMB does nothing (use LMB click to exit reading mode)
+    // In book reading mode, MMB does nothing (use LMB click to exit reading mode)
     if (bookReadingState.active) {
+      return;
+    }
+
+    // In card reading mode, MMB hold exits reading mode, quick click flips the card
+    if (cardReadingState.active && cardReadingState.card) {
+      cardReadingState.middleMouseDownTime = Date.now();
+      cardReadingState.holdTimeout = setTimeout(() => {
+        // Hold for 300ms - exit card reading mode
+        exitCardReadingMode();
+        cardReadingState.holdTimeout = null; // Mark as already handled
+      }, 300);
       return;
     }
 
@@ -14433,8 +14450,21 @@ function onMouseUp(event) {
       return;
     }
 
-    // If in reading mode, don't exit on release - stay in mode until user clicks elsewhere
+    // If in book reading mode, don't exit on release - stay in mode until user clicks elsewhere
     if (bookReadingState.active) {
+      return;
+    }
+
+    // If in card reading mode, MMB quick click flips the card, hold exits
+    if (cardReadingState.active && cardReadingState.card) {
+      // If user releases before the hold timeout fired (300ms), it's a quick click - flip the card
+      if (cardReadingState.holdTimeout) {
+        clearTimeout(cardReadingState.holdTimeout);
+        cardReadingState.holdTimeout = null;
+        // Quick click in reading mode - flip the card
+        flipCard(cardReadingState.card);
+      }
+      // If hold completed (timeout fired), exitCardReadingMode was already called
       return;
     }
 
