@@ -1,0 +1,283 @@
+Focus Desktop Simulator - Activity Log
+Generated: 2026-01-04T22:38:09.574Z
+Session Duration: 18.38s
+
+================================================================================
+
+
+[2026-01-04T22:38:16.793Z] [+25.60s] [SYSTEM] Log recording started
+  Details: {
+    "filePath": "I:\\Загрузки\\focuse-desktop-sim\\activity-log-2026-01-04T22-38-09-575Z.txt"
+  }
+
+[2026-01-04T22:38:18.448Z] [+27.25s] [UI] Menu opened
+
+[2026-01-04T22:38:22.439Z] [+31.25s] [OBJECT] Object added to desk
+  Details: {
+    "type": "document",
+    "id": 15,
+    "position": {
+      "x": "0.19",
+      "z": "3.07"
+    },
+    "rotation": "0.00",
+    "scale": "1.00"
+  }
+
+[2026-01-04T22:38:23.048Z] [+31.86s] [MODE] Entered edit mode (customization panel)
+  Details: {
+    "objectType": "document",
+    "objectId": 15,
+    "objectName": "Document"
+  }
+
+[2026-01-04T22:38:37.741Z] [+46.55s] [MODE] Entered edit mode (customization panel)
+  Details: {
+    "objectType": "document",
+    "objectId": 15,
+    "objectName": "Document"
+  }
+
+[2026-01-04T22:38:38.432Z] [+47.24s] [MODE] Exited edit mode (customization panel)
+  Details: {
+    "objectType": "document",
+    "objectId": 15
+  }
+
+[2026-01-04T22:38:38.433Z] [+47.24s] [OBJECT] Object picked up (lifting)
+  Details: {
+    "type": "document",
+    "id": 15,
+    "position": {
+      "x": "0.19",
+      "z": "3.07",
+      "y": "0.10"
+    }
+  }
+
+[2026-01-04T22:38:38.549Z] [+47.36s] [OBJECT] Object dropped
+  Details: {
+    "type": "document",
+    "id": 15,
+    "position": {
+      "x": "0.19",
+      "z": "3.07",
+      "y": "0.10"
+    },
+    "rotation": "0.00",
+    "scale": "1.00"
+  }
+
+[2026-01-04T22:38:38.666Z] [+47.47s] [MODE] Pointer lock activated (FPS camera mode)
+  Details: {
+    "cameraPosition": {
+      "x": "0.09",
+      "y": "2.52",
+      "z": "4.60"
+    }
+  }
+
+[2026-01-04T22:38:39.589Z] [+48.40s] [OBJECT] Object picked up (lifting)
+  Details: {
+    "type": "document",
+    "id": 15,
+    "position": {
+      "x": "0.19",
+      "z": "3.07",
+      "y": "0.10"
+    }
+  }
+
+[2026-01-04T22:38:39.765Z] [+48.57s] [OBJECT] Object dropped
+  Details: {
+    "type": "document",
+    "id": 15,
+    "position": {
+      "x": "0.13",
+      "z": "2.96",
+      "y": "0.10"
+    },
+    "rotation": "0.00",
+    "scale": "1.00"
+  }
+
+[2026-01-04T22:38:40.999Z] [+49.81s] [MODE] Entered edit mode (customization panel)
+  Details: {
+    "objectType": "document",
+    "objectId": 15,
+    "objectName": "Document"
+  }
+
+[2026-01-04T22:38:41.003Z] [+49.81s] [MODE] Pointer lock deactivated
+
+[2026-01-04T22:38:46.685Z] [+55.49s] [MODE] Exited edit mode (customization panel)
+  Details: {
+    "objectType": "document",
+    "objectId": 15
+  }
+
+[2026-01-04T22:38:46.942Z] [+55.75s] [MODE] Pointer lock activated (FPS camera mode)
+  Details: {
+    "cameraPosition": {
+      "x": "0.09",
+      "y": "2.52",
+      "z": "4.60"
+    }
+  }
+
+[2026-01-04T22:38:48.766Z] [+57.57s] [MODE] Entered edit mode (customization panel)
+  Details: {
+    "objectType": "document",
+    "objectId": 15,
+    "objectName": "Document"
+  }
+
+[2026-01-04T22:38:48.770Z] [+57.58s] [MODE] Pointer lock deactivated
+
+[2026-01-04T22:38:49.966Z] [+58.77s] [MODE] Exited edit mode (customization panel)
+  Details: {
+    "objectType": "document",
+    "objectId": 15
+  }
+
+[2026-01-04T22:38:49.966Z] [+58.77s] [OBJECT] Object picked up (lifting)
+  Details: {
+    "type": "document",
+    "id": 15,
+    "position": {
+      "x": "0.13",
+      "z": "2.96",
+      "y": "0.10"
+    }
+  }
+
+[2026-01-04T22:38:50.037Z] [+58.84s] [OBJECT] Object dropped
+  Details: {
+    "type": "document",
+    "id": 15,
+    "position": {
+      "x": "0.13",
+      "z": "2.96",
+      "y": "0.10"
+    },
+    "rotation": "0.00",
+    "scale": "1.00"
+  }
+
+[2026-01-04T22:38:50.142Z] [+58.95s] [MODE] Pointer lock activated (FPS camera mode)
+  Details: {
+    "cameraPosition": {
+      "x": "0.09",
+      "y": "2.52",
+      "z": "4.60"
+    }
+  }
+
+[2026-01-04T22:38:50.758Z] [+59.56s] [OBJECT] Object picked up (lifting)
+  Details: {
+    "type": "document",
+    "id": 15,
+    "position": {
+      "x": "0.13",
+      "z": "2.96",
+      "y": "0.10"
+    }
+  }
+
+[2026-01-04T22:38:51.933Z] [+60.74s] [OBJECT] Object dropped
+  Details: {
+    "type": "document",
+    "id": 15,
+    "position": {
+      "x": "0.10",
+      "z": "3.34",
+      "y": "0.10"
+    },
+    "rotation": "0.00",
+    "scale": "1.00"
+  }
+
+[2026-01-04T22:38:54.054Z] [+62.86s] [MODE] Entered edit mode (customization panel)
+  Details: {
+    "objectType": "document",
+    "objectId": 15,
+    "objectName": "Document"
+  }
+
+[2026-01-04T22:38:54.058Z] [+62.87s] [MODE] Pointer lock deactivated
+
+[2026-01-04T22:38:55.383Z] [+64.19s] [MODE] Exited edit mode (customization panel)
+  Details: {
+    "objectType": "document",
+    "objectId": 15
+  }
+
+[2026-01-04T22:38:55.383Z] [+64.19s] [OBJECT] Object picked up (lifting)
+  Details: {
+    "type": "document",
+    "id": 15,
+    "position": {
+      "x": "0.10",
+      "z": "3.34",
+      "y": "0.10"
+    }
+  }
+
+[2026-01-04T22:38:55.517Z] [+64.32s] [OBJECT] Object dropped
+  Details: {
+    "type": "document",
+    "id": 15,
+    "position": {
+      "x": "0.10",
+      "z": "3.34",
+      "y": "0.10"
+    },
+    "rotation": "0.00",
+    "scale": "1.00"
+  }
+
+[2026-01-04T22:38:55.627Z] [+64.43s] [MODE] Pointer lock activated (FPS camera mode)
+  Details: {
+    "cameraPosition": {
+      "x": "0.09",
+      "y": "2.52",
+      "z": "4.60"
+    }
+  }
+
+[2026-01-04T22:38:59.426Z] [+68.23s] [MODE] Entered book reading mode
+  Details: {
+    "bookType": "document",
+    "bookId": 15
+  }
+
+[2026-01-04T22:39:09.093Z] [+77.90s] [MODE] Exited book reading mode
+  Details: {
+    "bookType": "document",
+    "bookId": 15
+  }
+
+[2026-01-04T22:39:10.583Z] [+79.39s] [MODE] Entered edit mode (customization panel)
+  Details: {
+    "objectType": "document",
+    "objectId": 15,
+    "objectName": "Document"
+  }
+
+[2026-01-04T22:39:10.587Z] [+79.39s] [MODE] Pointer lock deactivated
+
+[2026-01-04T22:39:24.816Z] [+93.62s] [MODE] Entered edit mode (customization panel)
+  Details: {
+    "objectType": "document",
+    "objectId": 15,
+    "objectName": "Document"
+  }
+
+[2026-01-04T22:39:26.693Z] [+95.50s] [UI] Menu opened
+
+[2026-01-04T22:39:28.317Z] [+97.12s] [USER_ACTION] Stop log recording button clicked
+
+
+================================================================================
+
+Session ended: 2026-01-04T22:39:28.317Z
