@@ -24983,12 +24983,20 @@ function enterLaptopZoomMode(object) {
     }
   }
 
-  // Get screen position in world coordinates
+  // Get screen display center position in world coordinates
   const screenGroup = object.getObjectByName('screenGroup');
   if (!screenGroup) return;
 
+  // Get the actual display mesh (screen), not the screenGroup (which is at the hinge)
+  const display = screenGroup.getObjectByName('screen');
   const screenWorldPos = new THREE.Vector3();
-  screenGroup.getWorldPosition(screenWorldPos);
+  if (display) {
+    // Get the display's world position (center of the screen)
+    display.getWorldPosition(screenWorldPos);
+  } else {
+    // Fallback to screenGroup position if display not found
+    screenGroup.getWorldPosition(screenWorldPos);
+  }
 
   // Store original camera state for returning
   object.userData.originalCameraPos = camera.position.clone();
@@ -24996,14 +25004,19 @@ function enterLaptopZoomMode(object) {
   object.userData.originalCameraPitch = cameraLookState.pitch;
 
   // Calculate target position in front of the screen
-  const direction = new THREE.Vector3();
-  object.getWorldDirection(direction);
+  // Get the screen's world direction (normal vector pointing out from screen)
+  const screenNormal = new THREE.Vector3(0, 0, 1); // Screen faces +Z in local space
+  if (display) {
+    display.getWorldDirection(screenNormal);
+  }
 
-  // Position camera to look at screen from front
+  // Position camera in front of the screen at a comfortable viewing distance
+  // The camera should be positioned along the screen's normal direction
+  const viewDistance = 0.8;
   const targetCameraPos = new THREE.Vector3(
-    screenWorldPos.x,
-    screenWorldPos.y + 0.2,
-    screenWorldPos.z + 0.8
+    screenWorldPos.x + screenNormal.x * viewDistance,
+    screenWorldPos.y + 0.15, // Slight upward offset for comfortable viewing angle
+    screenWorldPos.z + screenNormal.z * viewDistance
   );
 
   // Animate camera to target position
