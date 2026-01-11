@@ -3170,7 +3170,9 @@ function createDrawers() {
   // Position drawers on the desk surface as a drawer unit/pedestal
   const startX = -CONFIG.desk.width / 2 + dc.width / 2 + 0.5; // Left edge with margin
   const startZ = CONFIG.desk.depth / 2 - dc.depth / 2 - 0.5; // Slightly back from front edge
-  const startY = dc.height / 2 + 0.05; // First drawer on top of desk surface
+  // All drawers should be ABOVE the desk surface (y=0), stacking upward
+  // Bottom drawer (index 2) at startY, middle drawer (index 1) above it, top drawer (index 0) highest
+  const bottomDrawerY = dc.height / 2 + 0.05; // Bottom drawer just above desk surface
 
   for (let i = 0; i < dc.count; i++) {
     // Each drawer is a group containing: outer box, inner space, handle
@@ -3182,8 +3184,9 @@ function createDrawers() {
       interactive: true
     };
 
-    // Position drawer vertically (top drawer is index 0)
-    const yOffset = startY - i * (dc.height + dc.spacing);
+    // Position drawer vertically (top drawer is index 0, bottom drawer is index count-1)
+    // Stack drawers upward from desk surface
+    const yOffset = bottomDrawerY + (dc.count - 1 - i) * (dc.height + dc.spacing);
     drawer.position.set(startX, yOffset, startZ);
 
     // Drawer materials
@@ -3275,11 +3278,14 @@ function createDrawers() {
   const housingDepth = dc.depth + 0.1;
   const housingWallThickness = 0.08;
 
+  // Housing center Y position (center of all drawers stacked upward)
+  const housingCenterY = bottomDrawerY + (dc.count - 1) * (dc.height + dc.spacing) / 2;
+
   // Housing left wall
   const housingLeftGeom = new THREE.BoxGeometry(housingWallThickness, housingHeight, housingDepth);
   const housingLeft = new THREE.Mesh(housingLeftGeom, housingMaterial);
   housingLeft.position.set(startX - housingWidth / 2 + housingWallThickness / 2,
-                            startY - (dc.count - 1) * (dc.height + dc.spacing) / 2,
+                            housingCenterY,
                             startZ);
   housingLeft.castShadow = true;
   drawerGroup.add(housingLeft);
@@ -3287,7 +3293,7 @@ function createDrawers() {
   // Housing right wall
   const housingRight = new THREE.Mesh(housingLeftGeom, housingMaterial);
   housingRight.position.set(startX + housingWidth / 2 - housingWallThickness / 2,
-                             startY - (dc.count - 1) * (dc.height + dc.spacing) / 2,
+                             housingCenterY,
                              startZ);
   housingRight.castShadow = true;
   drawerGroup.add(housingRight);
@@ -3296,25 +3302,26 @@ function createDrawers() {
   const housingBackGeom = new THREE.BoxGeometry(housingWidth - housingWallThickness * 2, housingHeight, housingWallThickness);
   const housingBack = new THREE.Mesh(housingBackGeom, housingMaterial);
   housingBack.position.set(startX,
-                            startY - (dc.count - 1) * (dc.height + dc.spacing) / 2,
+                            housingCenterY,
                             startZ - housingDepth / 2 + housingWallThickness / 2);
   housingBack.castShadow = true;
   drawerGroup.add(housingBack);
 
-  // Housing bottom
+  // Housing bottom (at desk surface level)
   const housingBottomGeom = new THREE.BoxGeometry(housingWidth, housingWallThickness, housingDepth);
   const housingBottom = new THREE.Mesh(housingBottomGeom, housingMaterial);
   housingBottom.position.set(startX,
-                              startY - dc.count * (dc.height + dc.spacing) - housingWallThickness / 2 + dc.spacing,
+                              housingWallThickness / 2, // Just above desk surface
                               startZ);
   housingBottom.castShadow = true;
   housingBottom.receiveShadow = true;
   drawerGroup.add(housingBottom);
 
-  // Housing top (connects to desk surface)
+  // Housing top (above the top drawer)
+  const topDrawerY = bottomDrawerY + (dc.count - 1) * (dc.height + dc.spacing);
   const housingTop = new THREE.Mesh(housingBottomGeom, housingMaterial);
   housingTop.position.set(startX,
-                           0, // At desk surface level
+                           topDrawerY + dc.height / 2 + housingWallThickness / 2, // Above top drawer
                            startZ);
   housingTop.receiveShadow = true;
   drawerGroup.add(housingTop);
