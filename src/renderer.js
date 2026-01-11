@@ -8837,6 +8837,13 @@ function removeObject(object) {
     deskObjects.splice(index, 1);
     scene.remove(object);
 
+    // Delete drawing file BEFORE disposeThreeObject() clears userData.drawingLines
+    // This is a notebook or paper with drawings
+    if ((object.userData.type === 'notebook' || object.userData.type === 'paper') &&
+        object.userData.drawingLines && object.userData.drawingLines.length > 0) {
+      deleteDrawingFile(object);
+    }
+
     // Properly dispose Three.js resources (geometries, materials, textures)
     disposeThreeObject(object);
 
@@ -8849,12 +8856,6 @@ function removeObject(object) {
     // Clean up friction sound state
     if (frictionSoundState.has(object.userData.id)) {
       stopFrictionSound(object);
-    }
-
-    // Delete drawing file if this is a notebook or paper with drawings
-    if ((object.userData.type === 'notebook' || object.userData.type === 'paper') &&
-        object.userData.drawingLines && object.userData.drawingLines.length > 0) {
-      deleteDrawingFile(object);
     }
 
     // Update debug visualization if active
@@ -8878,6 +8879,13 @@ function clearAllObjects() {
     const obj = deskObjects.pop();
     scene.remove(obj);
 
+    // Delete drawing file BEFORE disposeThreeObject() clears userData.drawingLines
+    // This is a notebook or paper with drawings
+    if ((obj.userData.type === 'notebook' || obj.userData.type === 'paper') &&
+        obj.userData.drawingLines && obj.userData.drawingLines.length > 0) {
+      deleteDrawingFile(obj);
+    }
+
     // Properly dispose Three.js resources (geometries, materials, textures)
     disposeThreeObject(obj);
 
@@ -8890,12 +8898,6 @@ function clearAllObjects() {
     // Clean up friction sound state
     if (frictionSoundState.has(obj.userData.id)) {
       stopFrictionSound(obj);
-    }
-
-    // Delete drawing file if this is a notebook or paper with drawings
-    if ((obj.userData.type === 'notebook' || obj.userData.type === 'paper') &&
-        obj.userData.drawingLines && obj.userData.drawingLines.length > 0) {
-      deleteDrawingFile(obj);
     }
   }
 
